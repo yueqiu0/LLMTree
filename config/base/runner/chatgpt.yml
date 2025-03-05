@@ -1,0 +1,6 @@
+config:
+  runner: openai_api
+  runner_args:
+    model_name: gpt-3.5-turbo-0613
+    request_interval: 0.2
+    timeout: 20

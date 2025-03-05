@@ -1,0 +1,55 @@
+name: car
+target: evaluate cars
+desc: ''
+label_meaning: evaluation
+features:
+- name: price
+  desc: buying price of the car
+  type: categorical
+  categories:
+    vhigh: very high
+    high: high
+    med: medium
+    low: low
+- name: maintainace
+  desc: maintainace fee of the car
+  type: categorical
+  categories:
+    vhigh: very high
+    high: high
+    med: medium
+    low: low
+- name: doors
+  desc: number of doors of the car
+  type: int
+- name: persons
+  desc: number of persons the car can hold
+  type: int
+- name: luggage boot size
+  desc: the size of luggage boot
+  type: categorical
+  categories:
+    small: small
+    med: medium
+    big: big
+- name: safety
+  desc: safety of the car
+  type: categorical
+  categories:
+    low: low
+    med: medium
+    high: high
+
+labels:
+- name: unacceptable
+  value: 0
+  desc: the car is unacceptable for buyers
+# - name: acceptable
+#   value: 1
+#   desc: the car is acceptable for buyers
+# - name: good
+#   value: 2
+#   desc: the car is good for buyers
+- name: good
+  value: 3
+  desc: the car is good for buyers

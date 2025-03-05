@@ -1,0 +1,5 @@
+config:
+  strategy: unknown_class
+  strategy_args:
+    max_depth: 3
+    hist_nbins: 10

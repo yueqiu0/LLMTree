@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/abalone.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./strategy/known_class.yml
+- ./common.yml
+
+config:
+  exp_name: chatgpt-abalone

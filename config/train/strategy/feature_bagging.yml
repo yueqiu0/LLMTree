@@ -1,0 +1,6 @@
+config:
+  strategy: feature_bagging
+  strategy_args:
+    num_trees: 3
+    max_depth: 3
+    hist_nbins: 10

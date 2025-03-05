@@ -1,0 +1,6 @@
+config:
+  random_seed: 0
+  num_tests_per_set: 5
+  test_size: 100
+  test_batch: 8
+  

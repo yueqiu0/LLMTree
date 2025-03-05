@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/abalone.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+
+config:
+  exp_name: abalone-xgboost
+  tree_only: true

@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/blood.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+
+config:
+  exp_name: blood-xgboost
+  tree_only: true

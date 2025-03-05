@@ -1,0 +1,54 @@
+{%- block system_directive %}
+You are a good data analyst that can find patterns of given data. You will be given a list of rules that you must follow, and you should predict the output of the given data based on the rules and your observation. Please don't give explanations.
+{% endblock-%}
+
+{% block dataset_intro -%}
+{%- if meta.target %}
+Here's your task. The data below is used to {{ meta.target }}.{%- endif %}
+{%- endblock %}
+
+{% block features_intro -%}
+The data consists of the following features:
+{% for feat in meta.features %}
+ ({{ loop.index }}) {{ feat.name }}{%if feat.desc %}: {{ feat.desc }}{% endif %}{{" "}}
+{%- endfor %}
+{%- endblock %}
+
+{% block labels_intro -%}
+For each data, the result can be one of the following:
+{% for label in meta.labels %}
+({{ loop.index }}) {{ label.name }}{%if label.desc %}: {{ label.desc }}{% endif %}{{" "}}
+{%- endfor -%}
+{%- endblock %}
+
+{% block format_descriptions -%}
+{%- if format_desc -%}{{ format_desc }}{%- endif -%}
+{%- endblock %}
+
+{% block incontext_examples -%}
+{% if examples -%}
+These are some known data points:
+{% for example in examples %}
+({{ loop.index }}) {{ example }}
+{%- endfor -%}
+{%- endif %}
+{%- endblock %}
+{% block tree_rules -%}
+{% if rules -%}
+The rules are as follows:
+{% for rule in rules %}
+({{loop.index}}) {{ rule }}
+{%- endfor %}
+{%- endif %}
+{%- endblock %}
+
+For data points that are not covered by any rule, you should predict the result based on your observation.
+
+{% block prediction_intro -%}
+{{ prediction_intro }}
+{%- endblock %}
+{% block test_cases -%}
+{% for case in tests %}
+({{ loop.index }}) {{ case }}
+{%- endfor %}
+{%- endblock %}

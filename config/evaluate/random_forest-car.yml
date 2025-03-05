@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/car.yml
+- ../base/common.yml
+- ./tree/random_forest.yml
+- ./common.yml
+
+config:
+  exp_name: car-random_forest
+  tree_only: true

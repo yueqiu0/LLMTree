@@ -1,0 +1,4 @@
+config:
+  tree_type: simple
+  tree_args:
+    max_depth: 3

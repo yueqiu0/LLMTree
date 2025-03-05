@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/car/data.csv
+    meta_file: dataset/car/meta.yml
+    format: csv
+    shuffle_column: true

@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/blood.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./tree/simple.yml
+- ./common.yml
+
+config:
+  exp_name: chatgpt-blood-baseline

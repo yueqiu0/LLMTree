@@ -1,0 +1,5 @@
+config:
+  serializer: tabular
+  template: template/basic.jinja
+  train_sizes: [1, 2, 4, 8, 16, 32]
+  output_dir: ./output/evaluate

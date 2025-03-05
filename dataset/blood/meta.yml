@@ -1,0 +1,25 @@
+name: blood
+target: predict whether a person donates blood this month # next month is artificial
+desc: ''
+label_meaning: expected donation
+features:
+- name: recency
+  desc: months since the person's last donation
+  type: int
+- name: frequency
+  desc: total number of times of the person's donation
+  type: int
+- name: monetary
+  desc: total blood donated in c.c.
+  type: int
+- name: time
+  desc: months since first donation
+  type: int
+
+labels:
+- name: will
+  value: 1
+  desc: the person will donate
+- name: won't
+  value: 0
+  desc: the person won't donate

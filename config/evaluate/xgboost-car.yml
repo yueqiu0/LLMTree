@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/car.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+
+config:
+  exp_name: car-xgboost
+  tree_only: true

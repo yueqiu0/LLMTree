@@ -1,0 +1,41 @@
+name: abalone
+target: predict the age of abalone from physical measurements
+desc: ''
+label_meaning: evaluation
+features:
+- name: sex
+  desc: sex of abalone
+  type: categorical
+  categories:
+    male: male
+    female: female
+    infant: infant
+- name: length
+  desc: longest shell measurement (mm)
+  type: float
+- name: diameter
+  desc: perpendicular to length (mm)
+  type: float
+- name: height
+  desc: with meat in shell (mm)
+  type: float
+- name: whole_weight
+  desc: whole abalone (grams)
+  type: float
+- name: shucked_weight
+  desc: weight of meat (grams)
+  type: float
+- name: viscera_weight
+  desc: gut weight (after bleeding) (grams)
+  type: float
+- name: shell_weight
+  desc: after being dried (grams)
+  type: float
+
+labels:
+- name: 'younger'
+  value: 0
+  desc: the age of abalone is less than or equal to 9
+- name: 'older'
+  value: 1
+  desc: the age of abalone is greater than 9

@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/abalone/data.csv
+    meta_file: dataset/abalone/meta.yml
+    format: csv
+    shuffle_column: true

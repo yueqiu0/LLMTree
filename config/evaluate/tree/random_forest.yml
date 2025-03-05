@@ -1,0 +1,5 @@
+config:
+  tree_type: random_forest
+  tree_args:
+    max_depth: 3
+    num_trees: 3
