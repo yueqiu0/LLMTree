@@ -5,13 +5,13 @@ from functools import reduce
 import random
 from tqdm import tqdm
 
-from .tree import DecisionTree
+from ..dataset import DatasetMeta, get_feature_importance_ranking
 from ..runner import Runner
 from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializer
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
-from ..dataset import DatasetMeta
 from .. import logger
 from .loss import LossFunction
+from .feature_selection import calculate_chi_square_scores, select_best_feature, calculate_weight_factor
 
 
 def _get_feature_values(
@@ -46,7 +46,7 @@ class TrainStrategy:
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         raise NotImplementedError
 
-    def step(self) -> tuple[bool, float | list[float]]:
+    def step(self) -> tuple[bool, float]:
         raise NotImplementedError
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
@@ -95,170 +95,84 @@ class UnknownClassStrategy(TrainStrategy):
         self.hist_nbins = hist_nbins
         self.loss_f = loss_f
 
+    @classmethod
+    def get_feature_ranking(cls, meta: DatasetMeta, runner: Runner) -> list[int]:
+        """获取数据集的特征重要性排序（类级别缓存）"""
+        if not hasattr(cls, '_cached_rankings'):
+            cls._cached_rankings = {}
+            
+        # 使用数据集名称作为缓存键
+        cache_key = meta.name
+        if cache_key not in cls._cached_rankings:
+            # 获取LLM对特征的排序
+            ranking = get_feature_importance_ranking(meta, runner)
+            if ranking:
+                cls._cached_rankings[cache_key] = ranking
+                logger.log(f"获取数据集 {cache_key} 的LLM特征重要性排序: {ranking}")
+            else:
+                # 如果获取失败，使用默认顺序
+                ranking = list(range(meta.feature_count()))
+                logger.log(f"无法获取LLM特征排序，使用默认顺序: {ranking}")
+                cls._cached_rankings[cache_key] = ranking
+                
+        return cls._cached_rankings[cache_key]
+
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
         self.train_y = train_y
-
+        
         self.split_values = _get_feature_values(self._meta, train_x, self.hist_nbins)
-
+        
         self.tree = DecisionTree(self.max_depth, self._meta.categories_map)
+        self.tree.set_train_data(train_x)
         self.last_loss = None
         self.lass_loss_components = None
+        
+        # 获取数据集的特征排序（使用缓存）
+        self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
 
     def _get_available_predictions(self) -> list[int]:
+        """获取可用的预测值列表"""
         return [-1, *range(self._meta.label_count())]
 
     def step(self) -> tuple[bool, float]:
+        """执行一步训练，返回是否继续训练和当前损失"""
+        # 获取下一个要分裂的节点
         next_split = self.tree.next_to_split()
         if next_split is None:
             return False, None
-
-        avail_predictions = self._get_available_predictions()
-        best_loss, best_loss_components = (
-            self.last_loss,
-            self.lass_loss_components,
-        )
-
-        best_split: tuple[int, float, bool, int, int] = None
-
-        # split train data into batches (self.train_batch)
-        x_train_splits = []
-        x_train_split_lens = []
-
-        for split_start in range(0, len(self.train_x), self.train_batch):
-            end = min(split_start + self.train_batch, len(self.train_x))
-            x_train_splits.append(self.train_x[split_start:end])
-            x_train_split_lens.append(len(x_train_splits[-1]))
-
-        all_train_data = []
-        for feat_idx, left_class, right_class in product(
-            range(self._meta.feature_count()), avail_predictions, avail_predictions
-        ):
-            if left_class == right_class:
-                continue
-            for split_value in self.split_values[feat_idx]:
-                next_split.split(
-                    feat_idx,
-                    split_value,
-                    self._meta.features[feat_idx].is_categorical,
-                    left_class,
-                    right_class,
-                )
-
-                prompts = []
-                for split_x in x_train_splits:
-                    prompt = self._gen_prompt(split_x)
-                    if prompt is None:
-                        break
-                    prompts.append(prompt)
-
-                else:
-                    tree_results_raw = self.predict_tree_raw(self.train_x)
-                    all_train_data.append(
-                        (
-                            prompts,
-                            feat_idx,
-                            self._meta.features[feat_idx].is_categorical,
-                            split_value,
-                            left_class,
-                            right_class,
-                            tree_results_raw,
-                        )
-                    )
-
-        for train_data in tqdm(all_train_data, desc="Split points"):
-            (
-                prompts,
-                feat_idx,
-                is_categorical,
-                split_value,
-                left_class,
-                right_class,
-                tree_results_raw,
-            ) = train_data
-
-            results = self._predict_llm_with_tree_batched(prompts, x_train_split_lens)
-
-            if results is None:
-                logger.log(
-                    "Invalid response for split (feature={}, split={}, left={}, right={}), skip...".format(
-                        feat_idx, split_value, left_class, right_class
-                    )
-                )
-                continue
-
-            results = reduce(lambda x, y: x + y, results, [])
-
-            loss, loss_components = self.loss_f(
-                self.train_y, np.array(results), np.array(tree_results_raw)
-            )
-
-            if best_loss is None or loss < best_loss:
-                best_split = (
-                    feat_idx,
-                    split_value,
-                    is_categorical,
-                    left_class,
-                    right_class,
-                )
-                logger.log(
-                    (
-                        "Found better split (feature={}, split={}, left={}, right={}), "
-                        + "loss: {} -> {:3f} (loss components: [{}])"
-                    ).format(
-                        feat_idx,
-                        split_value,
-                        left_class,
-                        right_class,
-                        f"{'' if best_loss is None else f'{best_loss:.3f}'}",
-                        loss,
-                        ", ".join(
-                            [
-                                f"{'' if x1 is None else f'{x1:.3f}'} -> {x2:.3f}"
-                                for x1, x2 in zip(
-                                    best_loss_components
-                                    if best_loss_components is not None
-                                    else [None] * len(loss_components),
-                                    loss_components,
-                                )
-                            ]
-                        ),
-                    )
-                )
-                best_loss, best_loss_components = loss, loss_components
-
-                if best_loss < self.LOSS_THRESHOLD:
-                    logger.log("Loss is small enough, stop training")
-                    break
-            else:
-                logger.log(
-                    "Split (feature={}, split={}, left={}, right={}) loss: {:.3f} (loss components: [{}])".format(
-                        feat_idx,
-                        split_value,
-                        left_class,
-                        right_class,
-                        loss,
-                        ", ".join([f"{x:.3f}" for x in loss_components]),
-                    )
-                )
-
-        if best_split is None:
-            next_split.unsplit()
+        
+        samples = next_split.get_samples()
+        # 确保samples不是None，并且长度检查安全
+        if samples is None or len(samples) < 2 or next_split.depth >= self.max_depth:
             next_split.freeze()
-            logger.log("No better split found, freeze node")
-            return True, best_loss
-
-        next_split.split(*best_split)
-        self.prune_tree()
-        self.last_loss = best_loss
-        self.lass_loss_components = best_loss_components
-        logger.log(
-            "New split: feature={}, split={} (categorical={}), left={}, right={}".format(
-                *best_split
-            )
-        )
-
-        return (best_loss >= self.LOSS_THRESHOLD), best_loss
+            return True, None
+        
+        # 批量处理：根据LLM排序一次性选择特征和分裂点
+        node_samples = samples
+        
+        # 使用缓存的特征重要性排序
+        best_feature = self._quick_feature_selection(next_split)
+        if best_feature is None:
+            next_split.freeze()
+            return True, None
+        
+        # 快速确定分裂点（减少LLM调用）
+        split_values = self._quick_split_values(best_feature, next_split)
+        if len(split_values) == 0:
+            next_split.freeze()
+            return True, None
+        
+        # 简单启发式选择标签
+        left_class, right_class = self._assign_leaf_values(next_split, best_feature, split_values[0])
+        
+        # 执行分裂
+        next_split.split(best_feature, split_values[0], 
+                        self._meta.features[best_feature].is_categorical,
+                        left_class, right_class)
+        
+        # 无需每次都调用LLM评估
+        return True, 0.0
 
     def prune_tree(self) -> None:
         """
@@ -449,9 +363,109 @@ class UnknownClassStrategy(TrainStrategy):
     def _meta(self) -> DatasetMeta:
         return self.serializer.meta
 
+    def _evaluate_split(self, node: Node) -> float:
+        """评估当前分裂的损失值"""
+        #我们不再使用LLM评估分裂
+        pass
+
+    def _quick_feature_selection(self, node):
+        """快速特征选择，使用缓存的LLM排序和简单统计"""
+        # 获取已使用的特征
+        used_features = node.get_used_features()
+        
+        # 获取节点样本
+        node_samples = node.get_samples()
+        node_x = self.train_x[node_samples]
+        node_y = self.train_y[node_samples]
+        
+        # 计算特征的卡方检验分数
+        chi_square_scores = calculate_chi_square_scores(
+            node_x, node_y, self._meta
+        )
+        
+        # 使用缓存的LLM排序和卡方分数选择最佳特征
+        depth = node.depth
+        best_feature = select_best_feature(
+            self.llm_feature_ranking,
+            chi_square_scores,
+            depth,
+            used_features
+        )
+        
+        return best_feature
+    
+    def _quick_split_values(self, feature_idx, node):
+        """快速确定分裂点，不调用LLM"""
+        if self._meta.features[feature_idx].is_categorical:
+            return self.split_values[feature_idx]
+        
+        # 获取节点样本数据
+        node_samples = node.get_samples()
+        node_data = self.train_x[node_samples, feature_idx]
+        
+        # 获取唯一值
+        unique_values = np.unique(node_data)
+        if len(unique_values) <= 1:
+            logger.log(f"特征 {self._meta.features[feature_idx].name} 的所有值都相同，跳过分裂")
+            return []
+        
+        # 如果只有两个不同的值，使用它们的中点
+        if len(unique_values) == 2:
+            split_point = (unique_values[0] + unique_values[1]) / 2
+            logger.log(f"使用中点 {split_point} 作为分裂点")
+            return [split_point]
+        
+        # 使用统计分位数作为分裂点
+        split_points = np.percentile(unique_values, [50])  # 只使用中位数，减少分裂数
+        split_points = np.unique(split_points)
+        logger.log(f"使用分位数作为分裂点: {split_points}")
+        return split_points.tolist()
+    
+    def _assign_leaf_values(self, node, feature_idx, split_value):
+        """使用多数投票快速确定叶节点值"""
+        node_samples = node.get_samples()
+        node_x = self.train_x[node_samples]
+        node_y = self.train_y[node_samples]
+        
+        # 根据分裂值将样本分为左右两组
+        if self._meta.features[feature_idx].is_categorical:
+            left_mask = node_x[:, feature_idx] == split_value
+        else:
+            left_mask = node_x[:, feature_idx] < split_value
+        
+        right_mask = ~left_mask
+        
+        # 获取左右子节点的标签
+        left_y = node_y[left_mask] if np.any(left_mask) else []
+        right_y = node_y[right_mask] if np.any(right_mask) else []
+        
+        # 使用多数投票确定叶节点值，确保结果在有效范围内
+        valid_labels = list(range(self._meta.label_count()))
+        
+        # 左子节点标签处理
+        if len(left_y) > 0:
+            # 计算各标签出现次数
+            counts = np.bincount(left_y)
+            # 限制为有效标签范围
+            valid_counts = [counts[i] if i < len(counts) else 0 for i in valid_labels]
+            left_class = valid_labels[np.argmax(valid_counts)]
+        else:
+            left_class = 0  # 默认标签
+        
+        # 右子节点标签处理
+        if len(right_y) > 0:
+            counts = np.bincount(right_y)
+            valid_counts = [counts[i] if i < len(counts) else 0 for i in valid_labels]
+            right_class = valid_labels[np.argmax(valid_counts)]
+        else:
+            right_class = 0  # 默认标签
+        
+        return left_class, right_class
+
 
 class KnownClassStrategy(UnknownClassStrategy):
     def _get_available_predictions(self) -> list[int]:
+        """获取可用的预测值列表（不包含unknown）"""
         return [*range(self._meta.label_count())]
 
 
