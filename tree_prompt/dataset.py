@@ -2,8 +2,12 @@ import yaml
 import sklearn.datasets
 import pandas as pd
 import numpy as np
+from typing import List
+import re
 
 from .common_args import DatasetArgs
+from .runner import Runner
+from . import logger
 
 
 class DatasetMeta:
@@ -206,3 +210,71 @@ def sample_balanced(
         all_samples.append((samples_x, samples_y))
 
     return all_samples
+
+
+def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
+    """创建用于特征重要性排序的提示"""
+    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.labal_meaning or "the target variable"}.
+
+Dataset Information:
+The dataset consists of the following features:
+"""
+    for i, feat in enumerate(meta.features):
+        prompt += f"{i+1}. {feat.name}: {feat.desc or 'No description available'}\n"
+    
+    prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
+    prompt += "Possible values: " + ", ".join([f"{label.name}" for label in meta.labels]) + "\n\n"
+    prompt += """Based on common knowledge and intuition about this kind of data, rank the features from most important to least important for predicting the target variable.
+
+Please return your answer as a comma-separated list of feature indices, ordered from most important to least important. For example: 2,4,1,3
+
+Feature Ranking: """
+    return prompt
+
+
+def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[int]:
+    """获取LLM对特征重要性的排序"""
+    prompt = create_feature_ranking_prompt(meta)
+    logger.log(f"请求特征重要性排序，提示词:\n{prompt}")
+    
+    for responses in runner.run([prompt]):
+        for response in responses:
+            logger.log(f"收到LLM响应:\n{response}")
+            
+            # 尝试从回复中提取特征排序
+            try:
+                # 首先尝试直接查找逗号分隔的数字列表
+                number_lists = re.findall(r'(\d+(?:\s*,\s*\d+)*)', response)
+                for number_list in number_lists:
+                    # 分割并转换为整数列表
+                    ranking = [int(num.strip()) - 1 for num in number_list.split(',')]
+                    
+                    # 验证排序的有效性
+                    if (len(ranking) == meta.feature_count() and 
+                        all(0 <= x < meta.feature_count() for x in ranking) and
+                        len(set(ranking)) == len(ranking)):
+                        logger.log(f"成功解析特征排序: {ranking}")
+                        return ranking
+                    else:
+                        logger.log(f"跳过无效的特征排序: {ranking} (长度={len(ranking)}, 期望长度={meta.feature_count()})")
+                
+                # 如果没有找到有效的排序，尝试查找单独的数字
+                numbers = re.findall(r'\b(\d+)\b', response)
+                if numbers:
+                    ranking = [int(num) - 1 for num in numbers]
+                    if (len(ranking) == meta.feature_count() and 
+                        all(0 <= x < meta.feature_count() for x in ranking) and
+                        len(set(ranking)) == len(ranking)):
+                        logger.log(f"通过单独数字解析特征排序: {ranking}")
+                        return ranking
+                    else:
+                        logger.log(f"跳过无效的单独数字排序: {ranking}")
+                
+            except Exception as e:
+                logger.log(f"解析特征排序时出错: {str(e)}")
+                continue
+    
+    # 如果无法获取有效的排序，返回默认顺序
+    default_order = list(range(meta.feature_count()))
+    logger.log(f"无法获取有效的特征排序，使用默认顺序: {default_order}")
+    return default_order
