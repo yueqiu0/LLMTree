@@ -29,9 +29,11 @@ from tree_prompt.common_args import (
     OpenAIAPIArgs,
     HuggingChatArgs,
     TogetherAPIArgs,
+    UnknownClassStrategyArgs,
+    KnownClassStrategyArgs,
+    FeatureBaggingStrategyArgs,
 )
 from tree_prompt.dataset import load_dataset, sample_balanced
-from tree_prompt.model.loss import MyLossFunction
 
 
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
@@ -64,9 +66,7 @@ class Repr:
 class UnknownClassStrategyArgs(Repr):
     def __init__(self) -> None:
         self.max_depth: int = None
-        self.lambda_: float = None
-        self.mu: float = None
-        self.hist_nbins: int = None
+        self.hist_nbins: int = 10
 
     def __repr__(self) -> str:
         return self.__dict__.__repr__()
@@ -75,14 +75,7 @@ class UnknownClassStrategyArgs(Repr):
 class KnownClassStrategyArgs(Repr):
     def __init__(self) -> None:
         self.max_depth: int = None
-        self.lambda_: float = None
-        self.hist_nbins: int = None
-
-
-class FeatureBaggingStrategyArgs(UnknownClassStrategyArgs):
-    def __init__(self) -> None:
-        super().__init__()
-        self.num_trees: int = None
+        self.hist_nbins: int = 10
 
 
 class TrainArgs(Repr):
@@ -217,10 +210,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-depth", type=int, help="max depth of the tree")
     parser.add_argument("--num-trees", type=int, help="number of trees in the forest")
     parser.add_argument("--train-batch", type=int, help="train batch size")
-    parser.add_argument(
-        "--loss-lambda", type=float, help="lambda for the loss function"
-    )
-    parser.add_argument("--loss-mu", type=float, help="mu for the loss function")
     parser.add_argument("--hist-nbins", type=int, help="number of bins of histogram")
 
     # runner
@@ -361,10 +350,6 @@ def parse_args() -> TrainArgs:
         strategy_args_dict["num_trees"] = cml_args.num_trees
     if cml_args.train_batch is not None:
         args.train_batch = cml_args.train_batch
-    if cml_args.loss_lambda is not None:
-        strategy_args_dict["lambda_"] = cml_args.loss_lambda
-    if cml_args.loss_mu is not None:
-        strategy_args_dict["mu"] = cml_args.loss_mu
     if cml_args.hist_nbins is not None:
         strategy_args_dict["hist_nbins"] = cml_args.hist_nbins
 
@@ -434,7 +419,7 @@ def evaluate(
     test_batch: int,
 ):
     start = time.time()
-    final_loss = model.fit(x_train, y_train)
+    model.fit(x_train, y_train)
     elapsed = time.time() - start
 
     if len(x_test) == 0:
@@ -484,7 +469,7 @@ def evaluate(
         llm_with_tree_auc,
         tree_auc,
         llm_with_sub_tree_aucs,
-        final_loss,
+        None,
         llm_with_tree_results,
         tree_results,
         tree_raw_results,
@@ -542,12 +527,6 @@ def load_args(
     )
     master_template = env.get_template(master_template_path.name)
 
-    loss_f = MyLossFunction(
-        meta.label_count(),
-        args.strategy_args.lambda_,
-        args.strategy_args.mu if args.strategy != "known_class" else 0,
-    )
-
     if args.strategy == "unknown_class" or args.strategy == "known_class":
         StrategyClass = (
             UnknownClassStrategy
@@ -558,7 +537,6 @@ def load_args(
             runner,
             master_template,
             serializer,
-            loss_f,
             args.strategy_args.max_depth,
             args.train_batch,
             args.strategy_args.hist_nbins,
@@ -569,7 +547,6 @@ def load_args(
             runner,
             master_template,
             args.serializer_type,
-            loss_f,
             args.strategy_args.num_trees,
             args.strategy_args.max_depth,
             args.train_batch,
@@ -596,10 +573,28 @@ def main():
     log_path.parent.mkdir(parents=True, exist_ok=True)
     train_logger = logger.Logger(open(log_path, "w"))
     logger.add_logger(train_logger)
+    
+    # 增加调试信息
+    logger.log("=== 训练开始 ===")
+    logger.log("日志输出路径: " + str(log_path))
 
     logger.log("Arguments:")
     for k, v in args.__dict__.items():
         logger.log(" - {}: {}".format(k, v))
+
+    # 检查配置文件中的strategy_args是否存在
+    if args.strategy_args is None:
+        # 根据strategy类型设置默认值
+        if args.strategy == "unknown_class":
+            args.strategy_args = UnknownClassStrategyArgs()
+        elif args.strategy == "known_class":
+            args.strategy_args = KnownClassStrategyArgs()
+        elif args.strategy == "feature_bagging":
+            args.strategy_args = FeatureBaggingStrategyArgs()
+    
+    # 确保必要的参数存在
+    if args.strategy_args.max_depth is None:
+        args.strategy_args.max_depth = 3  # 设置默认值
 
     x, y, strategy = load_args(args)
 
@@ -666,7 +661,6 @@ def main():
                     "llm_tree": llm_with_tree_auc,
                     "tree": tree_auc,
                     "sub_trees": llm_with_sub_tree_aucs,
-                    "loss": final_loss,
                     "llm_tree_results": llm_with_tree_results,
                     "tree_results": tree_results,
                     "tree_raw_results": tree_raw_results,
