@@ -10,7 +10,6 @@ from ..runner import Runner
 from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializer
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
-from .loss import LossFunction
 from .feature_selection import calculate_chi_square_scores, select_best_feature, calculate_weight_factor
 
 
@@ -43,152 +42,96 @@ def _get_feature_values(
 
 
 class TrainStrategy:
-    def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
-        raise NotImplementedError
-
-    def step(self) -> tuple[bool, float]:
-        raise NotImplementedError
-
-    def predict_tree(self, x: np.ndarray) -> list[int]:
-        raise NotImplementedError
-
-    def predict_tree_raw(self, x: np.ndarray) -> list[int]:
-        raise NotImplementedError
-
-    def predict_llm_with_tree(
-        self, x: np.ndarray, with_examples: bool = False
-    ) -> list[int]:
-        raise NotImplementedError
-
-    def export(self) -> dict:
-        raise NotImplementedError
-
-    def get_tree(self) -> TreeBase:
-        raise NotImplementedError
-
-    @staticmethod
-    def load(model_dict: dict) -> "TrainStrategy":
-        raise NotImplementedError
-
-    def _get_available_predictions(self, x: np.ndarray) -> list[int]:
-        raise NotImplementedError
-
-
-class UnknownClassStrategy(TrainStrategy):
-    LOSS_THRESHOLD = 1e-3
-
-    def __init__(
-        self,
-        runner: Runner,
-        template: jinja2.Template,
-        serializer: Serializer,
-        loss_f: LossFunction,
-        max_depth: int,
-        train_batch: int,
-        hist_nbins: int,
-    ) -> None:
-        self.runner = runner
-        self.template = template
-        self.serializer = serializer
-        self.max_depth = max_depth
-        self.train_batch = train_batch
-        self.hist_nbins = hist_nbins
-        self.loss_f = loss_f
-
-    @classmethod
-    def get_feature_ranking(cls, meta: DatasetMeta, runner: Runner) -> list[int]:
-        """获取数据集的特征重要性排序（类级别缓存）"""
-        if not hasattr(cls, '_cached_rankings'):
-            cls._cached_rankings = {}
-            
-        # 使用数据集名称作为缓存键
-        cache_key = meta.name
-        if cache_key not in cls._cached_rankings:
-            # 获取LLM对特征的排序
-            ranking = get_feature_importance_ranking(meta, runner)
-            if ranking:
-                cls._cached_rankings[cache_key] = ranking
-                logger.log(f"获取数据集 {cache_key} 的LLM特征重要性排序: {ranking}")
-            else:
-                # 如果获取失败，使用默认顺序
-                ranking = list(range(meta.feature_count()))
-                logger.log(f"无法获取LLM特征排序，使用默认顺序: {ranking}")
-                cls._cached_rankings[cache_key] = ranking
-                
-        return cls._cached_rankings[cache_key]
+    def __init__(self) -> None:
+        self.train_x = None
+        self.train_y = None
+        self.tree = None
+        self.hist_nbins = 10
+        self._meta_instance = None
+        self.llm_feature_ranking = None  # 添加此属性
 
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
         self.train_y = train_y
         
+        # 确保_meta被正确实现
+        if not hasattr(self, '_meta_instance'):
+            try:
+                self._meta_instance = self._meta
+            except NotImplementedError:
+                logger.log("错误: 子类必须实现_meta属性")
+                raise
+                
+        # 获取LLM特征排序（如果适用）
+        if hasattr(self, 'runner') and hasattr(self, 'get_feature_ranking'):
+            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
+            logger.log(f"LLM特征重要性排序: {self.llm_feature_ranking}")
+        else:
+            # 默认排序
+            self.llm_feature_ranking = list(range(self._meta.feature_count()))
+            logger.log(f"使用默认特征排序: {self.llm_feature_ranking}")
+        
         self.split_values = _get_feature_values(self._meta, train_x, self.hist_nbins)
         
         self.tree = DecisionTree(self.max_depth, self._meta.categories_map)
         self.tree.set_train_data(train_x)
-        self.last_loss = None
-        self.lass_loss_components = None
-        
-        # 获取数据集的特征排序（使用缓存）
-        self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
-
-    def _get_available_predictions(self) -> list[int]:
-        """获取可用的预测值列表"""
-        return [-1, *range(self._meta.label_count())]
 
     def step(self) -> tuple[bool, float]:
-        """执行一步训练，返回是否继续训练和当前损失"""
         # 获取下一个要分裂的节点
         next_split = self.tree.next_to_split()
         if next_split is None:
+            logger.log("没有可分裂的节点，训练结束")
             return False, None
+        
+        logger.log(f"正在处理节点，深度: {next_split.depth}")
         
         samples = next_split.get_samples()
         # 确保samples不是None，并且长度检查安全
         if samples is None or len(samples) < 2 or next_split.depth >= self.max_depth:
+            logger.log(f"节点无法继续分裂: 样本数={len(samples) if samples is not None else 0}, 深度={next_split.depth}, 最大深度={self.max_depth}")
             next_split.freeze()
             return True, None
         
-        # 批量处理：根据LLM排序一次性选择特征和分裂点
-        node_samples = samples
+        logger.log(f"节点样本数: {len(samples)}")
         
-        # 使用缓存的特征重要性排序
+        # 特征选择
+        logger.log("开始特征选择...")
         best_feature = self._quick_feature_selection(next_split)
+        
         if best_feature is None:
+            logger.log("找不到合适的特征，节点冻结")
             next_split.freeze()
             return True, None
+        
+        # 增加日志，输出所选特征的名称
+        if hasattr(self, '_meta') and self._meta:
+            feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
+            logger.log(f"选择特征: {best_feature} ({feature_name})")
         
         # 快速确定分裂点（减少LLM调用）
+        logger.log("开始确定分裂点...")
         split_values = self._quick_split_values(best_feature, next_split)
         if len(split_values) == 0:
+            logger.log("找不到合适的分裂点，节点冻结")
             next_split.freeze()
             return True, None
         
+        logger.log(f"分裂点: {split_values[0]}")
+        
         # 简单启发式选择标签
+        logger.log("分配叶节点值...")
         left_class, right_class = self._assign_leaf_values(next_split, best_feature, split_values[0])
+        logger.log(f"左子节点标签: {left_class}, 右子节点标签: {right_class}")
         
         # 执行分裂
         next_split.split(best_feature, split_values[0], 
                         self._meta.features[best_feature].is_categorical,
                         left_class, right_class)
         
+        logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_values[0]}")
+        
         # 无需每次都调用LLM评估
         return True, 0.0
-
-    def prune_tree(self) -> None:
-        """
-        Freeze leaf nodes that is certain & contains only one
-        class (and same as leaf node class) from the training set
-        """
-
-        nodes_map: dict[Node, set[int]] = {}
-        for x, y in zip(self.train_x, self.train_y):
-            node = self.tree.get_leaf(x)
-            if node.leaf_class >= 0:
-                nodes_map.setdefault(node, set()).add(y)
-
-        for node, classes in nodes_map.items():
-            if len(classes) == 1 and node.leaf_class == classes.pop():
-                node.freeze()
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
         results = self.predict_tree_raw(x)
@@ -206,52 +149,6 @@ class UnknownClassStrategy(TrainStrategy):
             ret.append(y)
         return ret
 
-    def _gen_prompt(
-        self, x: np.ndarray, examples: tuple[np.ndarray, np.ndarray] = None
-    ) -> str:
-        rules = self._get_tree_rules()
-        if rules is None:
-            return None
-
-        x_test_str = [self.serializer.serialize(xx, None) for xx in x]
-        if examples is not None:
-            examples_str = [self.serializer.serialize(x, y) for x, y in zip(*examples)]
-        else:
-            examples_str = []
-
-        prompt = self.template.render(
-            meta=self._meta,
-            examples=examples_str,
-            rules=rules,
-            format_desc=self.serializer.format_desc(),
-            prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
-            tests=x_test_str,
-        )
-
-        return prompt
-
-    def _predict_llm_with_tree_batched(
-        self, prompts: list[str], expected_lens: list[int]
-    ) -> list[list[int]]:
-        all_results = []
-        for i, resp_candidates in enumerate(self.runner.run(prompts)):
-            for resp in resp_candidates:
-                results = self.serializer.answer_decoder.decode(resp)
-                results = [self._meta.get_label_value(r) for r in results]
-
-                if None in results or len(results) != expected_lens[i]:
-                    continue
-
-                all_results.append(results)
-                break
-            else:
-                logger.log(
-                    "No valid response found, raw responses: {}".format(resp_candidates)
-                )
-                return None
-
-        return all_results
-
     def predict_llm_with_tree(
         self, x: np.ndarray, with_examples: bool = False
     ) -> list[int]:
@@ -264,133 +161,65 @@ class UnknownClassStrategy(TrainStrategy):
         results = self._predict_llm_with_tree_batched([prompt], [len(x)])
         return results[0] if results is not None else None
 
-    def _get_tree_rules(self) -> list[str]:
-        rules: list[str] = []
-        paths: list[RulePath] = self.tree.export_paths()
-        if paths is None:
-            return None
-        for r in paths:
-            depth = len(r.conditions)
-            r = self._serialize_rule(r)
-            if r is not None:
-                rules.append((r, depth))
+    def export(self) -> dict:
+        raise NotImplementedError
 
-        rules.sort(key=lambda x: x[1])
-        return [x[0] for x in rules]
-
-    def _serialize_rule(self, rule: RulePath):
-        if len(rule.conditions) == 0:
-            return None
-        if rule.value < 0:
-            return None
-
-        label_name = self._meta.labels[rule.value].name
-
-        conds = []
-        for feat_idx, cond in rule.conditions.items():
-            feat_name = self._meta.features[feat_idx].name
-            if cond.is_categorical:
-                desc = (
-                    feat_name
-                    + " is "
-                    + " or ".join(
-                        f'"{self._meta.value_repr(feat_idx, cat)}"'
-                        for cat in cond.categories
-                    )
-                )
-            else:
-                if cond.lower is None:
-                    desc = (
-                        f"{feat_name} < {self._meta.value_repr(feat_idx, cond.upper)}"
-                    )
-                elif cond.upper is None:
-                    desc = (
-                        f"{feat_name} >= {self._meta.value_repr(feat_idx, cond.lower)}"
-                    )
-                else:
-                    desc = (
-                        f"{self._meta.value_repr(feat_idx, cond.lower)} <= "
-                        + f"{feat_name} < "
-                        + f"{self._meta.value_repr(feat_idx, cond.upper)}"
-                    )
-
-            conds.append(desc)
-
-        return label_name + ": " + " and ".join(conds)
-
-    def export(self) -> any:
-        return {
-            "type": "unknown_class",
-            "model": self.tree.export_nodes_dict(),
-            "args": {"max_depth": self.max_depth, "categories": None},  # TODO
-            "prompt": self._gen_prompt(
-                [],
-                (self.train_x, self.train_y),
-            ),
-        }
+    def get_tree(self) -> TreeBase:
+        raise NotImplementedError
 
     @staticmethod
-    def load(
-        model_dict: dict,
-        runner: Runner = None,
-        template: jinja2.Template = None,
-        serializer: Serializer = None,
-        loss_f: LossFunction = None,
-    ) -> "UnknownClassStrategy":
-        categories_map = model_dict["args"]["categories"]
-        # list to dict
-        categories_map = {int(k): set(v) for k, v in categories_map.items()}
-        tree = DecisionTree.load_nodes_dict(
-            model_dict["model"], model_dict["args"]["max_depth"], categories_map
-        )
-        strategy = UnknownClassStrategy(
-            runner=runner,
-            template=template,
-            serializer=serializer,
-            loss_f=loss_f,
-            max_depth=tree.max_depth,
-            train_batch=1024,
-            hist_nbins=1024,
-        )
-        strategy.tree = tree
+    def load(model_dict: dict) -> "TrainStrategy":
+        raise NotImplementedError
 
-        return strategy
-
-    def get_tree(self) -> DecisionTree:
-        return self.tree
+    def _get_available_predictions(self, x: np.ndarray) -> list[int]:
+        raise NotImplementedError
 
     @property
     def _meta(self) -> DatasetMeta:
-        return self.serializer.meta
+        raise NotImplementedError
 
-    def _evaluate_split(self, node: Node) -> float:
-        """评估当前分裂的损失值"""
-        #我们不再使用LLM评估分裂
-        pass
 
     def _quick_feature_selection(self, node):
         """快速特征选择，使用缓存的LLM排序和简单统计"""
         # 获取已使用的特征
         used_features = node.get_used_features()
+        logger.log(f"节点深度: {node.depth}, 已使用特征: {used_features}")
         
         # 获取节点样本
         node_samples = node.get_samples()
+        if len(node_samples) == 0:
+            logger.log("警告: 节点样本数为0，无法选择特征")
+            return None
+            
         node_x = self.train_x[node_samples]
         node_y = self.train_y[node_samples]
+        
+        logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
         
         # 计算特征的卡方检验分数
         chi_square_scores = calculate_chi_square_scores(
             node_x, node_y, self._meta
         )
         
-        # 使用缓存的LLM排序和卡方分数选择最佳特征
-        depth = node.depth
+        # 没有传入LLM排序，让我们使用初始化时设置的排序
+        if not hasattr(self, 'llm_feature_ranking') or self.llm_feature_ranking is None:
+            # 尝试重新获取一次
+            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
+            logger.log(f"重新获取LLM特征排序: {self.llm_feature_ranking}")
+        
+        # 使用特征选择函数
         best_feature = select_best_feature(
             self.llm_feature_ranking,
             chi_square_scores,
-            depth,
+            node.depth,
             used_features
         )
+        
+        logger.log(f"最终选择特征: {best_feature}")
+        
+        if best_feature is not None and hasattr(self, '_meta') and self._meta:
+            feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
+            logger.log(f"选择特征: {best_feature} ({feature_name})")
         
         return best_feature
     
@@ -463,10 +292,262 @@ class UnknownClassStrategy(TrainStrategy):
         return left_class, right_class
 
 
+class UnknownClassStrategy(TrainStrategy):
+    def __init__(
+        self,
+        runner: Runner,
+        master_template: jinja2.Template,
+        serializer: Serializer,
+        max_depth: int,
+        train_batch: int,
+        hist_nbins: int = 10,
+    ) -> None:
+        super().__init__()
+        self.runner = runner
+        self.master_template = master_template
+        self.serializer = serializer
+        self._meta_instance = serializer.meta  # 确保_meta_instance被设置
+        self.max_depth = max_depth
+        self.train_batch = train_batch
+        self.hist_nbins = hist_nbins
+
+    @property
+    def _meta(self) -> DatasetMeta:
+        """返回数据集元数据"""
+        return self.serializer.meta  # 使用serializer中的meta
+
+    @classmethod
+    def get_feature_ranking(cls, meta: DatasetMeta, runner: Runner) -> list[int]:
+        """获取数据集的特征重要性排序（类级别缓存）"""
+        if not hasattr(cls, '_cached_rankings'):
+            cls._cached_rankings = {}
+            
+        # 使用数据集名称作为缓存键
+        cache_key = meta.name
+        if cache_key not in cls._cached_rankings:
+            # 获取LLM对特征的排序
+            ranking = get_feature_importance_ranking(meta, runner)
+            if ranking:
+                cls._cached_rankings[cache_key] = ranking
+                logger.log(f"获取数据集 {cache_key} 的LLM特征重要性排序: {ranking}")
+            else:
+                # 如果获取失败，使用默认顺序
+                ranking = list(range(meta.feature_count()))
+                logger.log(f"无法获取LLM特征排序，使用默认顺序: {ranking}")
+                cls._cached_rankings[cache_key] = ranking
+                
+        return cls._cached_rankings[cache_key]
+
+    def _get_available_predictions(self) -> list[int]:
+        """获取可用的预测值列表"""
+        return [-1, *range(self._meta.label_count())]
+
+    def _gen_prompt(
+        self, x: np.ndarray, examples: tuple[np.ndarray, np.ndarray] = None
+    ) -> str:
+        rules = self._get_tree_rules()
+        if rules is None:
+            return None
+
+        x_test_str = [self.serializer.serialize(xx, None) for xx in x]
+        if examples is not None:
+            examples_str = [self.serializer.serialize(x, y) for x, y in zip(*examples)]
+        else:
+            examples_str = []
+
+        prompt = self.master_template.render(
+            meta=self._meta,
+            examples=examples_str,
+            rules=rules,
+            format_desc=self.serializer.format_desc(),
+            prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
+            tests=x_test_str,
+        )
+
+        return prompt
+
+    def _predict_llm_with_tree_batched(
+        self, prompts: list[str], expected_lens: list[int]
+    ) -> list[list[int]]:
+        all_results = []
+        for i, resp_candidates in enumerate(self.runner.run(prompts)):
+            for resp in resp_candidates:
+                results = self.serializer.answer_decoder.decode(resp)
+                results = [self._meta.get_label_value(r) for r in results]
+
+                if None in results or len(results) != expected_lens[i]:
+                    continue
+
+                all_results.append(results)
+                break
+            else:
+                logger.log(
+                    "No valid response found, raw responses: {}".format(resp_candidates)
+                )
+                return None
+
+        return all_results
+
+    def _get_tree_rules(self) -> list[str]:
+        rules: list[str] = []
+        paths: list[RulePath] = self.tree.export_paths()
+        if paths is None:
+            return None
+        for r in paths:
+            depth = len(r.conditions)
+            r = self._serialize_rule(r)
+            if r is not None:
+                rules.append((r, depth))
+
+        rules.sort(key=lambda x: x[1])
+        return [x[0] for x in rules]
+
+    def _serialize_rule(self, rule: RulePath):
+        if len(rule.conditions) == 0:
+            return None
+        if rule.value < 0:
+            return None
+
+        label_name = self._meta.labels[rule.value].name
+
+        conds = []
+        for feat_idx, cond in rule.conditions.items():
+            feat_name = self._meta.features[feat_idx].name
+            if cond.is_categorical:
+                desc = (
+                    feat_name
+                    + " is "
+                    + " or ".join(
+                        f'"{self._meta.value_repr(feat_idx, cat)}"'
+                        for cat in cond.categories
+                    )
+                )
+            else:
+                if cond.lower is None:
+                    desc = (
+                        f"{feat_name} < {self._meta.value_repr(feat_idx, cond.upper)}"
+                    )
+                elif cond.upper is None:
+                    desc = (
+                        f"{feat_name} >= {self._meta.value_repr(feat_idx, cond.lower)}"
+                    )
+                else:
+                    desc = (
+                        f"{self._meta.value_repr(feat_idx, cond.lower)} <= "
+                        + f"{feat_name} < "
+                        + f"{self._meta.value_repr(feat_idx, cond.upper)}"
+                    )
+
+            conds.append(desc)
+
+        return label_name + ": " + " and ".join(conds)
+
+    def export(self) -> any:
+        return {
+            "type": "unknown_class",
+            "model": self.tree.export_nodes_dict(),
+            "args": {"max_depth": self.max_depth, "categories": None},  # TODO
+            "prompt": self._gen_prompt(
+                [],
+                (self.train_x, self.train_y),
+            ),
+        }
+
+    @staticmethod
+    def load(
+        model_dict: dict,
+        runner: Runner = None,
+        master_template: jinja2.Template = None,
+        serializer: Serializer = None,
+    ) -> "UnknownClassStrategy":
+        categories_map = model_dict["args"]["categories"]
+        # list to dict
+        categories_map = {int(k): set(v) for k, v in categories_map.items()}
+        tree = DecisionTree.load_nodes_dict(
+            model_dict["model"], model_dict["args"]["max_depth"], categories_map
+        )
+        strategy = UnknownClassStrategy(
+            runner=runner,
+            master_template=master_template,
+            serializer=serializer,
+            max_depth=tree.max_depth,
+            train_batch=1024,
+            hist_nbins=1024,
+        )
+        strategy.tree = tree
+
+        return strategy
+
+    def get_tree(self) -> DecisionTree:
+        return self.tree
+
+
 class KnownClassStrategy(UnknownClassStrategy):
+    def __init__(
+        self,
+        runner: Runner,
+        master_template: jinja2.Template,
+        serializer: Serializer,
+        max_depth: int,
+        train_batch: int,
+        hist_nbins: int = 10,
+    ) -> None:
+        super().__init__(
+            runner, 
+            master_template, 
+            serializer, 
+            max_depth, 
+            train_batch, 
+            hist_nbins
+        )
+
     def _get_available_predictions(self) -> list[int]:
         """获取可用的预测值列表（不包含unknown）"""
         return [*range(self._meta.label_count())]
+
+    def _quick_feature_selection(self, node):
+        """快速特征选择，使用缓存的LLM排序和简单统计"""
+        # 获取已使用的特征
+        used_features = node.get_used_features()
+        logger.log(f"节点深度: {node.depth}, 已使用特征: {used_features}")
+        
+        # 获取节点样本
+        node_samples = node.get_samples()
+        if len(node_samples) == 0:
+            logger.log("警告: 节点样本数为0，无法选择特征")
+            return None
+            
+        node_x = self.train_x[node_samples]
+        node_y = self.train_y[node_samples]
+        
+        logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
+        
+        # 计算特征的卡方检验分数
+        chi_square_scores = calculate_chi_square_scores(
+            node_x, node_y, self._meta
+        )
+        
+        # 没有传入LLM排序，让我们使用初始化时设置的排序
+        if not hasattr(self, 'llm_feature_ranking') or self.llm_feature_ranking is None:
+            # 尝试重新获取一次
+            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
+            logger.log(f"重新获取LLM特征排序: {self.llm_feature_ranking}")
+        
+        # 使用特征选择函数
+        best_feature = select_best_feature(
+            self.llm_feature_ranking,
+            chi_square_scores,
+            node.depth,
+            used_features
+        )
+        
+        logger.log(f"最终选择特征: {best_feature}")
+        
+        if best_feature is not None and hasattr(self, '_meta') and self._meta:
+            feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
+            logger.log(f"选择特征: {best_feature} ({feature_name})")
+        
+        return best_feature
 
 
 class FeatureBaggingStrategy(TrainStrategy):
@@ -476,16 +557,14 @@ class FeatureBaggingStrategy(TrainStrategy):
         runner: Runner,
         template: jinja2.Template,
         serializer_type: str,
-        loss_f: LossFunction,
         num_trees: int,
         max_depth: int,
         train_batch: int,
-        hist_nbins: int,
+        hist_nbins: int = 10,
     ) -> None:
         self.runner = runner
         self.template = template
         self.all_meta = all_meta
-        self.loss_f = loss_f
         self.max_depth = max_depth
         self.train_batch = train_batch
         self.hist_nbins = hist_nbins
@@ -535,9 +614,8 @@ class FeatureBaggingStrategy(TrainStrategy):
             self.sub_strategies.append(
                 UnknownClassStrategy(
                     runner=runner,
-                    template=template,
+                    master_template=template,
                     serializer=serializer,
-                    loss_f=loss_f,
                     max_depth=max_depth,
                     train_batch=train_batch,
                     hist_nbins=hist_nbins,

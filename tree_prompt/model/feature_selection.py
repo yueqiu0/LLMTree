@@ -9,7 +9,9 @@ def calculate_weight_factor(depth: int) -> float:
     depth: 节点深度(1,2,3)
     return: LLM排序的权重(统计分析的权重为1-α)
     """
-    return max(0.1, 0.5 - (depth - 1) * 0.2)
+    alpha = max(0.1, 0.5 - (depth - 1) * 0.2)
+    logger.log(f"深度 {depth} 的权重因子计算: α={alpha:.2f}")
+    return alpha
 
 def calculate_chi_square_scores(
     X: np.ndarray, 
@@ -96,41 +98,52 @@ def calculate_chi_square_scores(
     return scores
 
 def select_best_feature(
-    llm_ranking: List[int],
+    llm_ranking: list[int], 
     chi_square_scores: Dict[int, float],
-    depth: int,
-    used_features: Set[int]
+    depth: int, 
+    used_features: set[int] = None
 ) -> int:
-    """选择最佳分裂特征"""
-    # 过滤掉已使用的特征
-    available_features = [f for f in llm_ranking if f not in used_features]
-    if not available_features:
-        return None
-        
+    """
+    根据LLM排名和卡方统计选择最佳特征
+    """
+    if used_features is None:
+        used_features = set()
+    
+    # 计算特征权重因子
     alpha = calculate_weight_factor(depth)
+    logger.log(f"深度 {depth} 的权重因子: α={alpha:.2f} (LLM权重)")
     
-    # 计算综合得分
-    feature_scores = {}
-    max_chi = max(chi_square_scores.values())
+    # 找出最大卡方值用于归一化
+    max_chi = max(chi_square_scores.values()) if chi_square_scores else 0
     
-    # 记录分数
-    logger.log(f"\nNode depth={depth}, α={alpha:.2f}")
-    logger.log("Feature scores (combined = α * llm_score + (1-α) * chi_score):")
+    # 合并LLM排名和卡方分数
+    combined_scores = []
+    for i, feature in enumerate(llm_ranking):
+        if feature in used_features:
+            continue
+            
+        # 归一化LLM排名 (倒排，越靠前分数越高)
+        llm_score = 1.0 - (i / len(llm_ranking)) if len(llm_ranking) > 0 else 0
+        
+        # 获取特征的卡方分数并归一化
+        chi_score = 0
+        if feature in chi_square_scores:
+            chi_score = chi_square_scores[feature] / max_chi if max_chi > 0 else 0
+        
+        # 合并分数
+        combined_score = alpha * llm_score + (1 - alpha) * chi_score
+        combined_scores.append((feature, combined_score, llm_score, chi_score))
     
-    if max_chi == 0:
-        # 如果所有特征的卡方值都为0，只使用LLM得分
-        logger.log("All chi-square scores are 0, using only LLM scores")
-        for feat_idx in available_features:
-            llm_score = 1.0 - llm_ranking.index(feat_idx) / len(llm_ranking)
-            feature_scores[feat_idx] = llm_score
-            logger.log(f"Feature {feat_idx}: {llm_score:.4f} (LLM score only)")
-    else:
-        # 正常计算综合得分
-        for feat_idx in available_features:
-            llm_score = 1.0 - llm_ranking.index(feat_idx) / len(llm_ranking)
-            chi_score = chi_square_scores[feat_idx] / max_chi
-            combined_score = alpha * llm_score + (1 - alpha) * chi_score
-            feature_scores[feat_idx] = combined_score
-            logger.log(f"Feature {feat_idx}: {combined_score:.4f}")
+    if not combined_scores:
+        return None
     
-    return max(feature_scores.items(), key=lambda x: x[1])[0] 
+    # 按合并分数排序
+    combined_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # 输出详细的特征选择信息
+    logger.log("特征选择详情:")
+    for feature, score, llm_score, chi_score in combined_scores[:5]:  # 仅输出前5个特征
+        logger.log(f"  特征 {feature}: 合并分数 {score:.4f} (LLM: {llm_score:.4f}, 卡方: {chi_score:.4f})")
+    
+    # 返回得分最高的特征
+    return combined_scores[0][0] 

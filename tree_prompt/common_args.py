@@ -39,3 +39,22 @@ class TogetherAPIArgs(_Repr):
         self.request_interval: float = 0.2
         self.timeout: int = 30
         self.parallel_batch_size: int = 6
+
+
+class UnknownClassStrategyArgs(_Repr):
+    def __init__(self) -> None:
+        self.max_depth: int = None
+        self.hist_nbins: int = 10
+
+
+class KnownClassStrategyArgs(_Repr):
+    def __init__(self) -> None:
+        self.max_depth: int = None
+        self.hist_nbins: int = 10
+
+
+class FeatureBaggingStrategyArgs(_Repr):
+    def __init__(self) -> None:
+        self.max_depth: int = None
+        self.num_trees: int = 3
+        self.hist_nbins: int = 10
