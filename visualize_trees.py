@@ -5,6 +5,8 @@ import numpy as np
 import yaml
 import graphviz
 from tree_prompt.model.tree import DecisionTree, Node
+import os
+import pydot
 
 def load_tree_from_json(json_file):
     """从JSON文件加载决策树模型，支持单树和森林"""
@@ -395,14 +397,14 @@ def extract_feature_names_from_prompt(prompt):
     
     return feature_names, class_names
 
-def custom_tree_to_graphviz_source(tree, feature_names, class_names, title=None, node_shape="ellipse", tree_prefix=""):
-    """自定义函数，安全地生成树的DOT源代码，支持椭圆形节点"""
+def custom_tree_to_graphviz_source(tree, feature_names, class_names, meta_data=None, title=None, node_shape="ellipse", prefix="", output_file=None):
+    """自定义方法生成决策树的DOT源代码"""
     lines = []
     node_ids = {}
     next_id = 1
     
     # 添加图形声明不需要在这里，由外部处理
-    if not tree_prefix:
+    if not prefix:
         lines.append('digraph Tree {')
         
         # 添加标题
@@ -420,7 +422,7 @@ def custom_tree_to_graphviz_source(tree, feature_names, class_names, title=None,
         
         # 为当前节点分配ID
         nonlocal next_id
-        node_id = f"{tree_prefix}{next_id}"
+        node_id = f"{prefix}{next_id}"
         node_ids[node] = node_id
         next_id = next_id + 1
         
@@ -439,22 +441,26 @@ def custom_tree_to_graphviz_source(tree, feature_names, class_names, title=None,
         
         # 添加叶节点标签
         if node.is_leaf:
-            class_idx = node.leaf_class
-            if class_idx is not None:  # 确保类别值不是None
-                if 0 <= class_idx < len(class_names):
-                    class_name = class_names[class_idx]
-                    label_parts.append(f"类别: {class_name}")
-                else:
-                    label_parts.append(f"类别: {class_idx}")
-                
-                # 调试输出
-                print(f"叶节点: ID={node_id}, 类别={class_idx}, 类别名={class_names[class_idx] if 0 <= class_idx < len(class_names) else '未知'}")
-            else:
-                label_parts.append("类别: 未知")
-                print(f"警告: 叶节点 {node_id} 没有类别值")
+            leaf_val = node.leaf_class
+            # 查找正确的类别名称
+            label_name = "未知"
+            
+            # 打印调试信息
+            print(f"叶节点: ID={node_id}, 类别={leaf_val}, 类别名=", end="")
+            
+            # 尝试通过meta_data查找类别名称
+            if meta_data and 'labels' in meta_data:
+                for l in meta_data.get('labels', []):
+                    if int(l.get('value', -1)) == int(leaf_val):
+                        label_name = l.get('name', f"未知")
+                        break
+            
+            print(f"{label_name}")
+            
+            # 格式化标签文本 - 只在叶节点添加类别信息，深度将在后面统一添加
+            label_parts.append(f"类别: {label_name}")
         
-        # 添加节点深度信息
-        label_parts.append(f"深度: {node.depth}")
+
         
         # 合并所有标签部分
         label = "\\n".join(label_parts)
@@ -491,12 +497,14 @@ def custom_tree_to_graphviz_source(tree, feature_names, class_names, title=None,
         _dfs(tree.root_node)
     
     # 结束图形定义
-    if not tree_prefix:
+    if not prefix:
         lines.append('}')
     
-    return '\n'.join(lines)
+    # 返回源代码而不是尝试渲染
+    dot_source = '\n'.join(lines)
+    return dot_source
 
-def visualize_multiple_trees(trees_data, feature_names, class_names, output_file, title=None):
+def visualize_multiple_trees(trees_data, feature_names, class_names, output_file, title=None, meta_data=None, node_shape="ellipse"):
     """将多棵树绘制在一个图中"""
     # 开始生成DOT源代码
     lines = []
@@ -508,9 +516,8 @@ def visualize_multiple_trees(trees_data, feature_names, class_names, output_file
         lines.append(f'  label="{safe_title}";')
         lines.append('  labelloc="t";')
     
-    # 设置图形属性
-    lines.append('  rankdir=LR;')  # 水平布局
-    lines.append('  node [shape=ellipse, style="filled", color="black", fontname="helvetica"];')
+    lines.append('  rankdir=LR;')  # 左到右布局
+    lines.append(f'  node [shape={node_shape}, style="filled", color="black", fontname="helvetica"];')
     lines.append('  edge [fontname="helvetica"];')
     
     # 为每棵树创建子图
@@ -525,7 +532,7 @@ def visualize_multiple_trees(trees_data, feature_names, class_names, output_file
         # 生成这棵树的DOT代码
         try:
             tree_dot = custom_tree_to_graphviz_source(
-                tree, feature_names, class_names, None, "ellipse", f"tree{i}_"
+                tree, feature_names, class_names, meta_data, None, node_shape, f"tree{i}_"
             )
             
             # 将树的DOT代码添加到子图中
@@ -543,77 +550,98 @@ def visualize_multiple_trees(trees_data, feature_names, class_names, output_file
     
     dot_source = '\n'.join(lines)
     
-    # 添加调试信息 - 打印DOT源代码的前几行
-    print("合并树的DOT源代码前几行:")
-    print('\n'.join(dot_source.split('\n')[:10]))
-    
-    # 创建Graphviz图对象
-    dot = graphviz.Source(dot_source)
-    
+    # 创建并保存图像
     try:
-        # 保存为图像
+        dot = graphviz.Source(dot_source)
         dot.render(output_file, format='png', cleanup=True)
         print(f"多树可视化已保存到 {output_file}.png")
     except Exception as e:
-        # 如果渲染失败
         print(f"渲染失败: {e}")
-        # 将DOT源代码保存到文件
         with open(f"{output_file}.dot", "w") as f:
             f.write(dot_source)
         print(f"DOT源代码已保存到 {output_file}.dot")
-    
-    return dot
 
-def visualize_tree(tree, feature_names, class_names, output_file, title=None, node_shape="ellipse"):
-    """生成决策树的Graphviz可视化"""
-    # 清理标题中可能导致DOT语法错误的字符
-    if title:
-        # 将标题中的特殊字符替换为下划线或其他安全字符
-        safe_title = ''.join(c if c.isalnum() or c.isspace() else '_' for c in title)
-    else:
-        safe_title = None
-    
-    try:
-        # 首先尝试使用自定义函数生成DOT源代码
-        dot_source = custom_tree_to_graphviz_source(tree, feature_names, class_names, safe_title, node_shape)
-    except Exception as e:
-        print(f"使用自定义函数生成DOT源代码时出错: {e}")
-        print("尝试使用原始to_graphviz_source方法...")
-        try:
-            # 回退到原始方法
-            dot_source = tree.to_graphviz_source(feature_names, class_names, safe_title)
-        except Exception as e2:
-            print(f"使用原始方法也失败: {e2}")
-            # 创建一个非常基本的图
-            dot_source = f"""
-digraph Tree {{
-  label="{safe_title if safe_title else '决策树'}";
-  labelloc="t";
-  node [shape={node_shape}];
-  1 [label="根节点\\n(无法正确解析树结构)"];
-}}
-"""
-    
-    # 添加调试信息 - 打印DOT源代码的前几行
-    print("DOT源代码前几行:")
-    print('\n'.join(dot_source.split('\n')[:5]))
-    
-    # 创建Graphviz图对象
-    dot = graphviz.Source(dot_source)
-    
-    try:
-        # 保存为图像
-        dot.render(output_file, format='png', cleanup=True)
-        print(f"决策树可视化已保存到 {output_file}.png")
-    except Exception as e:
-        # 如果渲染失败
-        print(f"渲染失败: {e}")
-        # 将DOT源代码保存到文件
-        with open(f"{output_file}.dot", "w") as f:
-            f.write(dot_source)
-        print(f"DOT源代码已保存到 {output_file}.dot")
-    
-    return dot
+class TreeVisualizer:
+    def __init__(self, model_meta, output_dir="./output/viz"):
+        self.model_meta = model_meta
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        
+    def visualize_tree(self, tree, filename):
+        """可视化单个决策树并保存"""
+        graph = pydot.Dot(graph_type='digraph')
+        self._build_tree_graph(tree, tree.root_node, graph)
+        graph.write_png(os.path.join(self.output_dir, filename))
+        
+    def _build_tree_graph(self, tree, node, graph):
+        """递归构建树图"""
+        if node is None:
+            return
+            
+        # 创建当前节点
+        node_id = str(node._id)
+        if node.is_leaf:
+            # 应用叶节点格式
+            self._apply_class_format(tree, node, graph)
+        else:
+            # 应用内部节点格式
+            self._apply_split_format(tree, node, graph)
+            
+        # 处理子节点
+        if node.left_child:
+            left_id = str(node.left_child._id)
+            if not graph.get_node(left_id):
+                self._build_tree_graph(tree, node.left_child, graph)
+            graph.add_edge(pydot.Edge(node_id, left_id, label="是"))
+            
+        if node.right_child:
+            right_id = str(node.right_child._id)
+            if not graph.get_node(right_id):
+                self._build_tree_graph(tree, node.right_child, graph)
+            graph.add_edge(pydot.Edge(node_id, right_id, label="否"))
+            
+    def _apply_split_format(self, tree, node, graph):
+        """设置内部节点的样式和标签"""
+        if node.split_feature is not None:
+            feature_name = self.model_meta.features[node.split_feature].name
+            if node.is_categorical:
+                label = f"{feature_name} = {node.split_value}"
+            else:
+                label = f"{feature_name} <= {node.split_value}"
+            graph.get_node(str(node._id))[0].set_label(f"{label}\n")
+            
+    def _apply_class_format(self, tree, node, graph):
+        """设置叶节点的样式和标签"""
+        if hasattr(node, 'leaf_class') and node.leaf_class is not None:
+            # 打印调试信息
+            print(f"叶节点标签值: {node.leaf_class}, 可用标签: {[(l.value, l.name) for l in self.model_meta.labels]}")
+            
+            # 查找标签名称
+            label_name = None
+            for label in self.model_meta.labels:
+                print(f"比较: 节点值={node.leaf_class}, 标签定义值={label.value}, 标签名称={label.name}")
+                if int(label.value) == int(node.leaf_class):  # 确保类型一致
+                    label_name = label.name
+                    print(f"找到匹配标签: {label_name}")
+                    break
+            
+            if label_name is None:
+                label_name = f"类别: {node.leaf_class}"
+            else:
+                label_name = f"类别: {label_name}"
+            
+            # 设置叶节点标签和样式
+            graph.get_node(str(node._id))[0].set_label(f"{label_name}\n")
+            
+            # 根据类别设置不同颜色
+            if node.leaf_class == 3:  # good类(值为3)设为灰色
+                fillcolor = "#AAAAAA"
+            else:  # unacceptable类(值为0)设为蓝色
+                fillcolor = "#6699CC"
+            
+            graph.get_node(str(node._id))[0].set_fillcolor(fillcolor)
+            graph.get_node(str(node._id))[0].set_style('filled')
+            graph.get_node(str(node._id))[0].set_shape('ellipse')
 
 def print_tree_info(tree):
     """输出树的基本信息"""
@@ -715,8 +743,56 @@ def main():
     print(f"使用元数据文件: {meta_file}")
     print(f"节点形状: {node_shape}")
     
-    # 尝试从meta.yml文件加载元数据
-    feature_names, class_names = load_metadata_from_yml(meta_file)
+    # 加载特征和类别名称
+    if meta_file and os.path.exists(meta_file):
+        with open(meta_file, 'r', encoding='utf-8') as f:
+            meta_data = yaml.safe_load(f)
+            
+        feature_names = [f['name'] for f in meta_data.get('features', [])]
+        class_names = [l['name'] for l in meta_data.get('labels', [])]
+        
+        # 创建简单的类来存储元数据信息
+        class SimpleFeature:
+            def __init__(self, name, desc="", is_categorical=False, categories=None):
+                self.name = name
+                self.desc = desc
+                self.is_categorical = is_categorical
+                self.categories = categories or []
+                
+        class SimpleLabel:
+            def __init__(self, name, value, desc=""):
+                self.name = name
+                self.value = value
+                self.desc = desc
+        
+        # 创建简化版元数据对象
+        class SimpleMetaData:
+            def __init__(self, name):
+                self.name = name
+                self.features = []
+                self.labels = []
+        
+        # 手动构建元数据对象
+        model_meta = SimpleMetaData(meta_data.get('name', '未知'))
+        
+        # 添加特征
+        for f in meta_data.get('features', []):
+            is_cat = 'categories' in f
+            cats = list(f['categories'].keys()) if is_cat else []
+            feature = SimpleFeature(f['name'], f.get('desc', ''), is_cat, cats)
+            model_meta.features.append(feature)
+        
+        # 添加标签
+        for l in meta_data.get('labels', []):
+            # 确保value是整数类型
+            label_value = int(l.get('value', 0))
+            label = SimpleLabel(l['name'], label_value, l.get('desc', ''))
+            print(f"加载标签: 名称={l['name']}, 值={label_value}")
+            model_meta.labels.append(label)
+    else:
+        feature_names = []
+        class_names = []
+        model_meta = None
     
     # 创建输出目录
     output_dir = Path("output/visualize")
@@ -770,7 +846,9 @@ def main():
                     feature_names, 
                     class_names, 
                     str(output_file),
-                    title=f"合并森林 - {Path(json_file).stem}"
+                    title=f"合并森林 _ {Path(json_file).stem}",
+                    meta_data=meta_data,  # 传递原始YAML数据
+                    node_shape=node_shape
                 )
         except Exception as e:
             print(f"处理文件 {json_file} 时出错: {e}")
@@ -821,15 +899,9 @@ def main():
                     print(f"使用特征名称: {feature_names}")
                     print(f"使用类别名称: {class_names}")
                     
-                    # 可视化树
-                    visualize_tree(
-                        tree, 
-                        feature_names, 
-                        class_names, 
-                        str(output_file),
-                        title=f"{tree_name} - {Path(json_file).stem}",
-                        node_shape=node_shape
-                    )
+                    # 使用正确的model_meta对象初始化TreeVisualizer
+                    visualizer = TreeVisualizer(model_meta)
+                    visualizer.visualize_tree(tree, str(output_file))
                     
                     # 输出树信息
                     print("\n决策树信息:")

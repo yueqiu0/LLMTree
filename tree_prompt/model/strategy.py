@@ -10,7 +10,7 @@ from ..runner import Runner
 from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializer
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
-from .feature_selection import calculate_chi_square_scores, select_best_feature, calculate_weight_factor
+from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor
 
 
 def _get_feature_values(
@@ -142,12 +142,46 @@ class TrainStrategy:
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
-        ret = []
-        for xx in x:
-            idx = self.tree.predict_one(xx)
-            y = self._meta.labels[idx].value if idx >= 0 else idx
-            ret.append(y)
-        return ret
+        """预测单个样本，返回原始标签值"""
+        # 添加调试信息
+        logger.log(f"开始预测，_meta.labels: {[(i, l.name, l.value) for i, l in enumerate(self._meta.labels)]}")
+        
+        if self.tree is None:
+            logger.log("警告: 决策树尚未初始化")
+            return [-1] * len(x)  # 返回未知标签
+        
+        # 获取决策树预测结果
+        raw_predictions = self.tree.predict(x)
+        
+        # 添加调试信息，显示原始预测和转换过程
+        logger.log(f"原始预测结果: {raw_predictions[:10]}...")  # 只显示前10个
+        
+        # 对每个预测结果进行转换
+        results = []
+        for idx in raw_predictions:
+            # 打印更多调试信息
+            logger.log(f"处理预测结果: {idx}")
+            
+            # 安全地获取标签值
+            if idx >= 0:
+                # 查找对应的标签值而不是使用索引直接访问
+                label_value = None
+                for label in self._meta.labels:
+                    if label.value == idx:
+                        label_value = idx
+                        break
+                
+                if label_value is None:
+                    logger.log(f"警告: 未找到标签值为 {idx} 的标签，使用原始值")
+                    label_value = idx
+                
+                y = label_value
+            else:
+                y = idx
+            
+            results.append(y)
+        
+        return results
 
     def predict_llm_with_tree(
         self, x: np.ndarray, with_examples: bool = False
@@ -197,7 +231,7 @@ class TrainStrategy:
         logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
         
         # 计算特征的卡方检验分数
-        chi_square_scores = calculate_chi_square_scores(
+        gini_scores = calculate_gini_scores(
             node_x, node_y, self._meta
         )
         
@@ -210,7 +244,7 @@ class TrainStrategy:
         # 使用特征选择函数
         best_feature = select_best_feature(
             self.llm_feature_ranking,
-            chi_square_scores,
+            gini_scores,
             node.depth,
             used_features
         )
@@ -225,11 +259,25 @@ class TrainStrategy:
     
     def _quick_split_values(self, feature_idx, node):
         """快速确定分裂点，不调用LLM"""
+        # 添加日志：打印当前节点所有样本的标签
+        node_samples = node.get_samples()
+        node_labels = self.train_y[node_samples]
+        unique_labels, label_counts = np.unique(node_labels, return_counts=True)
+        label_dist = {int(label): count for label, count in zip(unique_labels, label_counts)}
+        logger.log(f"节点({id(node)})样本标签分布: {label_dist}, 总样本数: {len(node_samples)}")
+        
         if self._meta.features[feature_idx].is_categorical:
-            return self.split_values[feature_idx]
+            # 使用专门的分类特征处理方法寻找最佳分裂值
+            best_value = self._process_categorical_feature(feature_idx, node)
+            if best_value is not None:
+                logger.log(f"分类特征 {self._meta.features[feature_idx].name} 使用优化的分裂值: {best_value}")
+                return [best_value]
+            else:
+                # 如果专门方法失败，回退到原始方法
+                logger.log(f"分类特征 {self._meta.features[feature_idx].name} 优化方法失败，使用默认分裂值")
+                return self.split_values[feature_idx]
         
         # 获取节点样本数据
-        node_samples = node.get_samples()
         node_data = self.train_x[node_samples, feature_idx]
         
         # 获取唯一值
@@ -256,6 +304,11 @@ class TrainStrategy:
         node_x = self.train_x[node_samples]
         node_y = self.train_y[node_samples]
         
+        # 添加完整的标签分布日志
+        unique_labels, label_counts = np.unique(node_y, return_counts=True)
+        label_dist = {int(label): count for label, count in zip(unique_labels, label_counts)}
+        logger.log(f"分配叶值前节点({id(node)})标签分布: {label_dist}, 总样本数: {len(node_samples)}")
+        
         # 根据分裂值将样本分为左右两组
         if self._meta.features[feature_idx].is_categorical:
             left_mask = node_x[:, feature_idx] == split_value
@@ -268,28 +321,249 @@ class TrainStrategy:
         left_y = node_y[left_mask] if np.any(left_mask) else []
         right_y = node_y[right_mask] if np.any(right_mask) else []
         
-        # 使用多数投票确定叶节点值，确保结果在有效范围内
-        valid_labels = list(range(self._meta.label_count()))
-        
-        # 左子节点标签处理
+        # 添加左右子节点的标签分布日志
         if len(left_y) > 0:
-            # 计算各标签出现次数
-            counts = np.bincount(left_y)
-            # 限制为有效标签范围
-            valid_counts = [counts[i] if i < len(counts) else 0 for i in valid_labels]
-            left_class = valid_labels[np.argmax(valid_counts)]
-        else:
-            left_class = 0  # 默认标签
+            left_unique, left_counts = np.unique(left_y, return_counts=True)
+            left_dist = {int(label): count for label, count in zip(left_unique, left_counts)}
+            logger.log(f"左子节点标签分布: {left_dist}, 总样本数: {len(left_y)}")
         
-        # 右子节点标签处理
         if len(right_y) > 0:
-            counts = np.bincount(right_y)
-            valid_counts = [counts[i] if i < len(counts) else 0 for i in valid_labels]
-            right_class = valid_labels[np.argmax(valid_counts)]
-        else:
-            right_class = 0  # 默认标签
+            right_unique, right_counts = np.unique(right_y, return_counts=True)
+            right_dist = {int(label): count for label, count in zip(right_unique, right_counts)}
+            logger.log(f"右子节点标签分布: {right_dist}, 总样本数: {len(right_y)}")
         
+        # 使用多数投票确定叶节点值，确保结果在有效范围内
+        valid_labels = []
+        for label_info in self._meta.labels:
+            valid_labels.append(label_info.value)
+        logger.log(f"有效标签值列表: {valid_labels}")
+        
+        # 左子节点标签处理 - 修改为详细的计算过程
+        if len(left_y) > 0:
+            # 计算各标签出现次数并详细记录
+            left_label_counts = {}
+            for label in left_y:
+                label_int = int(label)
+                if label_int not in left_label_counts:
+                    left_label_counts[label_int] = 0
+                left_label_counts[label_int] += 1
+            
+            logger.log(f"左子节点标签计数: {left_label_counts}")
+            
+            # 找出多数类
+            if left_label_counts:
+                left_class = max(left_label_counts.items(), key=lambda x: x[1])[0]
+                logger.log(f"左子节点多数类标签: {left_class}")
+            else:
+                left_class = valid_labels[0] if valid_labels else 0  # 默认使用第一个有效标签
+                logger.log(f"左子节点无样本，使用默认标签: {left_class}")
+        else:
+            left_class = valid_labels[0] if valid_labels else 0
+            logger.log(f"左子节点无样本，使用默认标签: {left_class}")
+        
+        # 右子节点标签处理 - 同样修改为详细计算过程
+        if len(right_y) > 0:
+            right_label_counts = {}
+            for label in right_y:
+                label_int = int(label)
+                if label_int not in right_label_counts:
+                    right_label_counts[label_int] = 0
+                right_label_counts[label_int] += 1
+            
+            logger.log(f"右子节点标签计数: {right_label_counts}")
+            
+            if right_label_counts:
+                right_class = max(right_label_counts.items(), key=lambda x: x[1])[0]
+                logger.log(f"右子节点多数类标签: {right_class}")
+            else:
+                right_class = valid_labels[0] if valid_labels else 0
+                logger.log(f"右子节点无样本，使用默认标签: {right_class}")
+        else:
+            right_class = valid_labels[0] if valid_labels else 0
+            logger.log(f"右子节点无样本，使用默认标签: {right_class}")
+        
+        logger.log(f"最终分配标签 - 左: {left_class}, 右: {right_class}")
         return left_class, right_class
+
+    def _process_categorical_feature(self, feature_idx, node):
+        """专门处理分类特征的方法"""
+        # 获取该特征在当前节点的所有数据
+        node_samples = node.get_samples()
+        node_data = self.train_x[node_samples, feature_idx]
+        unique_values = np.unique(node_data)
+        
+        # 增加调试信息 - 显示特征分布
+        logger.log(f"特征 {feature_idx} 的值分布: {unique_values}")
+        
+        # 允许处理只有一个或多个值的特征
+        if len(unique_values) < 1:
+            logger.log(f"特征 {feature_idx} 没有有效值")
+            return None
+        
+        # 获取当前节点的标签
+        node_labels = self.train_y[node_samples]
+        unique_labels = np.unique(node_labels)
+        
+        # 增加调试信息 - 显示标签分布
+        label_counts = {int(label): np.sum(node_labels == label) for label in unique_labels}
+        logger.log(f"当前节点的标签分布: {label_counts}")
+        
+        # 如果只有一个类别，不需要再分裂
+        if len(unique_labels) <= 1:
+            logger.log(f"当前节点已经是纯净的，类别为 {unique_labels[0]}")
+            return None
+        
+        # 计算父节点基尼系数 - 直接在这里实现，避免方法调用问题
+        # 直接计算基尼系数，不调用可能出问题的方法
+        parent_gini = 1.0
+        total = len(node_labels)
+        label_counts = {}
+        for label in node_labels:
+            label = int(label)
+            if label not in label_counts:
+                label_counts[label] = 0
+            label_counts[label] += 1
+        
+        for _, count in label_counts.items():
+            p = count / total
+            parent_gini -= p * p
+        
+        logger.log(f"父节点基尼系数: {parent_gini:.4f}")
+        
+        # 寻找最佳分裂值
+        best_gain = -float('inf')
+        best_value = None
+        min_samples_leaf = max(1, int(0.05 * len(node_labels)))
+        
+        for value in unique_values:
+            # 创建掩码
+            left_mask = node_data == value
+            right_mask = ~left_mask
+            
+            # 获取样本标签
+            left_labels = node_labels[left_mask]
+            right_labels = node_labels[right_mask]
+            
+            # 确保两边都有足够样本
+            if len(left_labels) < min_samples_leaf or len(right_labels) < min_samples_leaf:
+                logger.log(f"  特征值 {value} 导致一侧样本数不足，跳过")
+                continue
+            
+            # 显示分裂后每侧的标签分布
+            left_counts = {int(label): np.sum(left_labels == label) for label in np.unique(left_labels)}
+            right_counts = {int(label): np.sum(right_labels == label) for label in np.unique(right_labels)}
+            logger.log(f"  特征值 {value}: 左侧 {len(left_labels)} 样本 {left_counts}, 右侧 {len(right_labels)} 样本 {right_counts}")
+            
+            try:
+                # 内联计算左右子节点基尼系数，避免方法调用
+                # 左子节点基尼系数
+                left_gini = 1.0
+                left_total = len(left_labels)
+                left_label_counts = {}
+                for label in left_labels:
+                    label = int(label)
+                    if label not in left_label_counts:
+                        left_label_counts[label] = 0
+                    left_label_counts[label] += 1
+                
+                for _, count in left_label_counts.items():
+                    p = count / left_total
+                    left_gini -= p * p
+                    
+                # 右子节点基尼系数
+                right_gini = 1.0
+                right_total = len(right_labels)
+                right_label_counts = {}
+                for label in right_labels:
+                    label = int(label)
+                    if label not in right_label_counts:
+                        right_label_counts[label] = 0
+                    right_label_counts[label] += 1
+                
+                for _, count in right_label_counts.items():
+                    p = count / right_total
+                    right_gini -= p * p
+                    
+                logger.log(f"  左侧基尼: {left_gini:.4f}, 右侧基尼: {right_gini:.4f}")
+                
+                # 计算信息增益
+                n_left = len(left_labels)
+                n_right = len(right_labels)
+                n_total = len(node_labels)
+                
+                weighted_gini = (n_left/n_total)*left_gini + (n_right/n_total)*right_gini
+                gain = parent_gini - weighted_gini
+                logger.log(f"  信息增益: {gain:.4f}")
+                
+                # 选择最佳分裂值
+                if gain > 0.0001 and gain > best_gain:
+                    best_gain = gain
+                    best_value = value
+                    logger.log(f"  ✓ 当前最佳分裂值: {value}, 增益: {gain:.4f}")
+            except Exception as e:
+                logger.log(f"  计算特征值 {value} 的增益时出错: {str(e)}")
+                continue
+        
+        if best_value is not None:
+            logger.log(f"最终选择分裂值: {best_value}, 信息增益: {best_gain:.4f}")
+        else:
+            # 如果没找到最佳分裂值，使用频率最高的值
+            if len(unique_values) > 1:
+                values, counts = np.unique(node_data, return_counts=True)
+                best_value = values[np.argmax(counts)]
+                logger.log(f"未找到有效分裂值，选择频率最高的值: {best_value}")
+            else:
+                logger.log(f"未找到有效分裂值")
+        
+        return best_value
+
+    def _split_node(self, feature_idx, split_value, node):
+        """根据特征和分裂值分割节点"""
+        samples = node.get_samples()
+        node_data = self.train_x[samples, feature_idx]
+        node_labels = self.train_y[samples]
+        
+        # 打印详细的分裂前样本信息
+        label_counts = {}
+        for label in node_labels:
+            label_int = int(label)
+            if label_int not in label_counts:
+                label_counts[label_int] = 0
+            label_counts[label_int] += 1
+        logger.log(f"分裂前节点样本标签分布: {label_counts}")
+        
+        # 根据特征类型进行分裂
+        if self._meta.features[feature_idx].is_categorical:
+            left_mask = node_data == split_value
+        else:
+            left_mask = node_data < split_value
+        right_mask = ~left_mask
+        
+        # 检查分裂结果
+        left_samples = samples[left_mask]
+        right_samples = samples[right_mask]
+        left_labels = node_labels[left_mask]
+        right_labels = node_labels[right_mask]
+        
+        # 打印详细的分裂后样本信息
+        left_counts = {}
+        for label in left_labels:
+            label_int = int(label)
+            if label_int not in left_counts:
+                left_counts[label_int] = 0
+            left_counts[label_int] += 1
+            
+        right_counts = {}
+        for label in right_labels:
+            label_int = int(label)
+            if label_int not in right_counts:
+                right_counts[label_int] = 0
+            right_counts[label_int] += 1
+        
+        logger.log(f"分裂后左子节点样本标签分布: {left_counts}")
+        logger.log(f"分裂后右子节点样本标签分布: {right_counts}")
+        
+        # 返回分裂结果...
 
 
 class UnknownClassStrategy(TrainStrategy):
@@ -402,45 +676,54 @@ class UnknownClassStrategy(TrainStrategy):
         rules.sort(key=lambda x: x[1])
         return [x[0] for x in rules]
 
-    def _serialize_rule(self, rule: RulePath):
-        if len(rule.conditions) == 0:
+    def _serialize_rule(self, rule):
+        """序列化单个规则为字符串"""
+        if rule is None:
             return None
-        if rule.value < 0:
-            return None
-
-        label_name = self._meta.labels[rule.value].name
-
-        conds = []
-        for feat_idx, cond in rule.conditions.items():
-            feat_name = self._meta.features[feat_idx].name
-            if cond.is_categorical:
-                desc = (
-                    feat_name
-                    + " is "
-                    + " or ".join(
-                        f'"{self._meta.value_repr(feat_idx, cat)}"'
-                        for cat in cond.categories
-                    )
-                )
-            else:
-                if cond.lower is None:
-                    desc = (
-                        f"{feat_name} < {self._meta.value_repr(feat_idx, cond.upper)}"
-                    )
-                elif cond.upper is None:
-                    desc = (
-                        f"{feat_name} >= {self._meta.value_repr(feat_idx, cond.lower)}"
-                    )
+        
+        conditions = []
+        for feature_id, condition in rule.conditions.items():
+            feature_name = self._meta.features[feature_id].name
+            if condition.is_categorical:
+                values = list(condition.categories)
+                if len(values) == 1:
+                    conditions.append(f"{feature_name} = {values[0]}")
                 else:
-                    desc = (
-                        f"{self._meta.value_repr(feat_idx, cond.lower)} <= "
-                        + f"{feat_name} < "
-                        + f"{self._meta.value_repr(feat_idx, cond.upper)}"
-                    )
-
-            conds.append(desc)
-
-        return label_name + ": " + " and ".join(conds)
+                    values_str = ", ".join([str(v) for v in values])
+                    conditions.append(f"{feature_name} in [{values_str}]")
+            else:
+                lower_bound = condition.lower
+                upper_bound = condition.upper
+                
+                if lower_bound is not None and upper_bound is not None:
+                    conditions.append(f"{lower_bound} ≤ {feature_name} < {upper_bound}")
+                elif lower_bound is not None:
+                    conditions.append(f"{feature_name} ≥ {lower_bound}")
+                elif upper_bound is not None:
+                    conditions.append(f"{feature_name} < {upper_bound}")
+        
+        # 修复这里：通过值查找标签，而不是使用值作为索引
+        label_name = None
+        rule_value = rule.value
+        
+        # 打印调试信息
+        logger.log(f"规则值: {rule_value}, 标签信息: {[f'值:{l.value},名称:{l.name}' for l in self._meta.labels]}")
+        
+        # 查找匹配的标签
+        for label in self._meta.labels:
+            if label.value == rule_value:
+                label_name = label.name
+                break
+        
+        # 如果没找到匹配的标签，使用默认名称
+        if label_name is None:
+            label_name = f"未知标签({rule_value})"
+            logger.log(f"警告: 未找到值为 {rule_value} 的标签")
+        
+        if conditions:
+            return f"IF {' AND '.join(conditions)} THEN {label_name}"
+        else:
+            return f"{label_name} (无条件)"
 
     def export(self) -> any:
         return {
@@ -523,7 +806,7 @@ class KnownClassStrategy(UnknownClassStrategy):
         logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
         
         # 计算特征的卡方检验分数
-        chi_square_scores = calculate_chi_square_scores(
+        gini_scores = calculate_gini_scores(
             node_x, node_y, self._meta
         )
         
@@ -536,7 +819,7 @@ class KnownClassStrategy(UnknownClassStrategy):
         # 使用特征选择函数
         best_feature = select_best_feature(
             self.llm_feature_ranking,
-            chi_square_scores,
+            gini_scores,
             node.depth,
             used_features
         )
