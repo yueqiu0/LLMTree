@@ -249,12 +249,27 @@ class DecisionTree(TreeBase):
                 return None
                 
             if node.is_leaf:
+                # 打印叶节点样本标签信息
+                if hasattr(self, 'train_y') and self.train_y is not None:
+                    samples = node.get_samples()
+                    if len(samples) > 0:
+                        labels = self.train_y[samples]
+                        unique_labels, counts = np.unique(labels, return_counts=True)
+                        label_dist = {int(label): count for label, count in zip(unique_labels, counts)}
+                        logger.log(f"叶节点({id(node)})样本标签分布: {label_dist}, 预测标签: {node.leaf_class}")
                 return node
-                
+            
             # 如果节点未完成分裂（split_value为None），返回该节点
             if node.split_value is None:
+                if hasattr(self, 'train_y') and self.train_y is not None:
+                    samples = node.get_samples()
+                    if len(samples) > 0:
+                        labels = self.train_y[samples]
+                        unique_labels, counts = np.unique(labels, return_counts=True)
+                        label_dist = {int(label): count for label, count in zip(unique_labels, counts)}
+                        logger.log(f"未分裂节点({id(node)})样本标签分布: {label_dist}")
                 return node
-                
+            
             # 检查左右子树的样本是否正确
             left_samples = []
             right_samples = []
@@ -269,6 +284,20 @@ class DecisionTree(TreeBase):
                     logger.log(f"警告: 分配样本时出错: {e}")
                     continue
             
+            # 打印分裂后的样本标签分布
+            if hasattr(self, 'train_y') and self.train_y is not None:
+                if len(left_samples) > 0:
+                    left_labels = self.train_y[left_samples]
+                    left_unique, left_counts = np.unique(left_labels, return_counts=True)
+                    left_dist = {int(label): count for label, count in zip(left_unique, left_counts)}
+                    logger.log(f"分裂后左子节点({id(node.left_child) if node.left_child else 'None'})样本标签分布: {left_dist}")
+                
+                if len(right_samples) > 0:
+                    right_labels = self.train_y[right_samples]
+                    right_unique, right_counts = np.unique(right_labels, return_counts=True)
+                    right_dist = {int(label): count for label, count in zip(right_unique, right_counts)}
+                    logger.log(f"分裂后右子节点({id(node.right_child) if node.right_child else 'None'})样本标签分布: {right_dist}")
+            
             if len(left_samples) > 0:
                 node.left_child.samples = np.array(left_samples)
             if len(right_samples) > 0:
@@ -278,9 +307,9 @@ class DecisionTree(TreeBase):
             left_result = _dfs(node.left_child)
             if left_result is not None:
                 return left_result
-                
-            return _dfs(node.right_child)
             
+            return _dfs(node.right_child)
+        
         return _dfs(self.root_node)
 
     def predict_one(self, x: np.ndarray) -> int:
@@ -351,8 +380,52 @@ class DecisionTree(TreeBase):
         return paths
 
     def get_rules(self) -> list[RulePath]:
-        """获取所有规则路径（兼容旧代码）"""
-        return self.export_paths()
+        """获取所有决策路径规则"""
+        rules = []
+        
+        def _collect_rules(node, conditions, collect_leaf):
+            if node is None:
+                return
+            
+            if node.is_leaf and collect_leaf:
+                # 确保叶节点有有效的标签
+                if hasattr(node, 'leaf_class') and node.leaf_class is not None:
+                    # 添加调试信息
+                    logger.log(f"收集到叶节点规则，标签值: {node.leaf_class}")
+                    rule = RulePath.from_conditions(conditions.copy(), node.leaf_class)
+                    if rule:
+                        rules.append(rule)
+                return
+            
+            # 非叶节点或不收集叶节点的情况
+            feature = node.split_feature
+            if feature is None:
+                return
+            
+            # 左子树的条件
+            if node.is_categorical:
+                left_cond = Condition.categorical(feature, {node.split_value})
+            else:
+                left_cond = Condition.numerical(feature, None, node.split_value)
+            
+            conditions.append(left_cond)
+            _collect_rules(node.left_child, conditions, collect_leaf)
+            conditions.pop()
+            
+            # 右子树的条件
+            if node.is_categorical:
+                right_cond = Condition.categorical(feature, 
+                    set(self._get_other_categorical_values(feature, node.split_value)))
+            else:
+                right_cond = Condition.numerical(feature, node.split_value, None)
+            
+            conditions.append(right_cond)
+            _collect_rules(node.right_child, conditions, collect_leaf)
+            conditions.pop()
+        
+        _collect_rules(self.root_node, [], True)
+        logger.log(f"总共收集了 {len(rules)} 条规则")
+        return rules
 
     def export_nodes_dict(self) -> dict:
         """导出节点字典，供序列化使用"""
@@ -450,6 +523,32 @@ class DecisionTree(TreeBase):
             + "\n  ".join(lines)
             + "\n}"
         )
+
+    def _assign_node_label(self, node):
+        """分配节点标签（使用多数类）"""
+        # 获取节点样本
+        samples = node.get_samples()
+        if len(samples) == 0:
+            return
+        
+        # 获取样本标签
+        labels = self.train_y[samples]
+        
+        # 使用字典统计每个标签的出现次数，处理不连续标签
+        label_counts = {}
+        for label in labels:
+            label_int = int(label)  # 确保转换为整数
+            if label_int not in label_counts:
+                label_counts[label_int] = 0
+            label_counts[label_int] += 1
+        
+        # 找出出现次数最多的标签
+        if label_counts:
+            majority_label = max(label_counts.items(), key=lambda x: x[1])[0]
+            node.set_prediction(majority_label)
+            logger.log(f"节点分配标签: {majority_label}, 样本标签分布: {label_counts}")
+        else:
+            logger.log("警告: 节点没有样本，无法分配标签")
 
 
 class RandomForest(TreeBase):
