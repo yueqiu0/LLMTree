@@ -52,13 +52,11 @@ We provide a set of experiment configurations to reproduce our results. Since `t
 export OPENAI_API_KEY=sk-xxx
 ```
 
-**Run `train.py` to train and evaluate our model.** You need to specify the provided configuration file (in `config/train`), training sizes and loss parameters. The loss parameters for each experiment are listed below.
+**Run `train.py` to train and evaluate our model.** You need to specify the provided configuration file (in `config/train`) and training sizes.
 
 ```
-python train.py --config config/train/<config-name>.yml --train-sizes <size> --loss-lambda <lambda> --loss-mu <mu>
+python train.py --config config/train/<config-name>.yml --train-sizes <size> 
 ```
-
-As hyperparameters are tuned for each size, you need to run the experiments for each size separately.
 
 **Run `evaluate.py` to evaluate baselines.** You need to specify the provided configuration file (in `config/evaluate`) and whether to incorporate decision rules from the tree (`--use-tree-rules`).
 
@@ -76,41 +74,11 @@ These experiments are to evaluate the performance of our approach with GPT-3.5 o
 - To evaluate baselines (LLM/DT/LLM+DT), use `chatgpt-<dataset>.yml` in `config/evaluate`.
 - To evaluate XGB, use `xgboost-<dataset>.yml` in `config/evaluate`.
 
-The hyperparameters used in these experiments are listed in the following table. The unknown class is not included when $\mu = \infty$, please either set `--loss-mu` to a large value ($\ge 1000$) or use `chatgpt-<dataset>-known.yml` as the configuration file for these cases.
-
-**diabetes**
-
-| Size | 1 | 2 | 4 | 8 | 16 | 32 |
-| --- | --- | --- | --- | --- | --- | --- |
-| $\lambda$ | 2 | 0.1 | 4 | 4 | 4 | 4 |
-| $\mu$ | 0 | 1 | 0.6 | 0.2 | $\infty$ | $\infty$ |
-
-**car**
-
-| Size | 1 | 2 | 4 | 8 | 16 | 32 |
-| --- | --- | --- | --- | --- | --- | --- |
-| $\lambda$ | 0.1 | 1 | 1 | 0.5 | 8 | 8 |
-| $\mu$ | 0.6 | 0 | 0.2 | 0.2 | $\infty$ | $\infty$ |
-
-**blood**
-
-| Size | 1 | 2 | 4 | 8 | 16 | 32 |
-| --- | --- | --- | --- | --- | --- | --- |
-| $\lambda$ | 0.1 | 0.5 | 4 | 0.1 | 0.1 | 1 |
-| $\mu$ | 1 | 2 | 2 | 0.2 | 0.2 | $\infty$ |
-
-**abalone**
-
-| Size | 1 | 2 | 4 | 8 | 16 | 32 |
-| --- | --- | --- | --- | --- | --- | --- |
-| $\lambda$ | 0.1 | 0.1 | 0.1 | 1 | 1 | 1 |
-| $\mu$ | 0 | 0 | 2 | 0.2 | 0.2 | $\infty$ |
-
 **Examples:**
 
 ```bash
 # OT/LLM+OT
-python3 train.py --config config/train/chatgpt-diabetes.yml --train-sizes 8 --loss-lambda 4 --loss-mu 0.2
+python3 train.py --config config/train/chatgpt-diabetes.yml --train-sizes 8
 # LLM
 python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml --use-tree-rules 0
 # DT/LLM+DT
@@ -123,44 +91,29 @@ python3 evaluate.py --config config/evaluate/xgboost-diabetes.yml
 
 These experiments are to evaluate our approach's performance with multiple trees using feature bagging. The training size is fixed to 8.
 
-
 - To train our model (OT/LLM+OT), use `chatgpt-<dataset>-multiple.yml` in `config/train`.
 - To evaluate RF, use `random_forest-<dataset>.yml` in `config/evaluate`.
-
-The hyperparameters used in these experiments are listed in the following table.
-
-| Dataset | $\lambda$ | $\mu$ |
-| ---------- | --- | --- |
-| diabetes | 1 | 0.2 |
-| car | 0.1 | 0.6 |
-| blood | 0.1 | 0.6 |
-| abalone | 1 | 0.2 |
 
 **Examples:**
 
 ```bash
 # OT/LLM+OT
-python3 train.py --config config/train/chatgpt-diabetes-multiple.yml --train-sizes 8 --loss-lambda 1 --loss-mu 0.2
+python3 train.py --config config/train/chatgpt-diabetes-multiple.yml --train-sizes 8
 # RF
 python3 evaluate.py --config config/evaluate/random_forest-diabetes.yml --train-sizes 8
 ```
 
 ### Reproduction of Table 3
 
-These experiments are to study the effect of unknown option and the regularization term. The training size is fixed to 8.
+These experiments are to study the effect of unknown option. The training size is fixed to 8.
 
-- To evaluate our model without the unknown class,
-  - use `chatgpt-<dataset>-known.yml` in `config/evaluate`, or
-  - use `chatgpt-<dataset>.yml` in `config/evaluate`, and set `--loss-mu` to a large value.
-- To evaluate our model without the regularization term, use `chatgpt-<dataset>.yml` in `config/evaluate` and set `--loss-lambda` to 0.
+- To evaluate our model without the unknown class, use `chatgpt-<dataset>-known.yml` in `config/evaluate`.
 
 **Examples:**
 
 ```bash
 # LLM+OT (no unknown class)
-python3 train.py --config config/train/chatgpt-diabetes-known.yml --train-sizes 8 --loss-lambda 4
-# LLM+OT (no regularization)
-python3 train.py --config config/train/chatgpt-diabetes.yml --train-sizes 8 --loss-lambda 0 --loss-mu 0
+python3 train.py --config config/train/chatgpt-diabetes-known.yml --train-sizes 8
 ```
 
 ## Experiment Settings
@@ -194,10 +147,6 @@ config:
     num_trees: 3
     # max depth of tree [--max-depth]
     max_depth: 3
-    # lambda for regularization [--loss-lambda]
-    lambda: 1
-    # mu for unknown class penalty (not applicable for known_class) [--loss-mu]
-    mu: 0.2
     # number of bins of histogram [--hist-nbins]
     hist_nbins: 10
 
@@ -339,8 +288,5 @@ python compare_results.py <no_tree_rules_json> <with_tree_rules_json> <output_fi
 
 #### Examples
 ```bash
-
 python compare_results.py output/eval/car_base.json output/eval/car_with_tree.json car_comparison
-
-
 ```
