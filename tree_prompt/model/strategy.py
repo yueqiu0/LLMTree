@@ -62,6 +62,13 @@ class TrainStrategy:
                 logger.log("错误: 子类必须实现_meta属性")
                 raise
                 
+        # 确保特征映射关系被保存并记录到日志
+        self._feature_shuffle_map = getattr(self._meta, 'feature_shuffle_map', None)
+        if self._feature_shuffle_map:
+            logger.log(f"策略中保存特征映射关系: {self._feature_shuffle_map}")
+        else:
+            logger.log("警告: 未找到特征映射关系")
+        
         # 获取LLM特征排序（如果适用）
         if hasattr(self, 'runner') and hasattr(self, 'get_feature_ranking'):
             self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
@@ -195,8 +202,25 @@ class TrainStrategy:
         results = self._predict_llm_with_tree_batched([prompt], [len(x)])
         return results[0] if results is not None else None
 
-    def export(self) -> dict:
-        raise NotImplementedError
+    def export(self) -> any:
+        """导出模型，确保包含特征映射信息"""
+        # 记录特征映射是否被导出
+        if hasattr(self, '_feature_shuffle_map') and self._feature_shuffle_map:
+            logger.log(f"导出特征映射到JSON: {self._feature_shuffle_map}")
+        else:
+            logger.log("警告: 导出时没有特征映射信息")
+        
+        return {
+            "type": self.strategy_type(),
+            "model": self.tree.export_dict() if hasattr(self, "tree") else None,
+            "args": {
+                "max_depth": self.max_depth,
+                "feature_shuffle_map": self._feature_shuffle_map if hasattr(self, '_feature_shuffle_map') else None
+            },
+            "prompt": self._gen_prompt(
+                self.examples, (self.train_x, self.train_y)
+            ),
+        }
 
     def get_tree(self) -> TreeBase:
         raise NotImplementedError
@@ -1032,10 +1056,19 @@ class FeatureBaggingStrategy(TrainStrategy):
         return self.random_forest
 
     def export(self) -> any:
+        """导出随机森林模型，包含特征映射信息"""
+        # 记录特征映射是否被导出
+        if hasattr(self, '_feature_shuffle_map') and self._feature_shuffle_map:
+            logger.log(f"导出随机森林特征映射到JSON: {self._feature_shuffle_map}")
+        
         return {
             "type": "random_forest",
             "model": self.random_forest.export_dict(),
-            "args": {"max_depth": self.max_depth, "num_trees": self.num_trees},  # TODO
+            "args": {
+                "max_depth": self.max_depth, 
+                "num_trees": self.num_trees,
+                "feature_shuffle_map": self._feature_shuffle_map if hasattr(self, '_feature_shuffle_map') else None
+            },
             "prompt": self._gen_prompt(
                 [], self.sub_strategies, (self.train_x, self.train_y)
             ),

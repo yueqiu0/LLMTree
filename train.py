@@ -670,6 +670,15 @@ def main():
                     "train_elapsed": elapsed,
                 }
 
+            # 在保存结果到JSON文件之前
+            if hasattr(strategy, '_feature_shuffle_map') and strategy._feature_shuffle_map:
+                logger.log(f"将特征映射保存到结果JSON: {strategy._feature_shuffle_map}")
+                
+                # 确保结果中包含特征映射
+                if 'args' not in result_dict:
+                    result_dict['args'] = {}
+                result_dict['args']['feature_shuffle_map'] = strategy._feature_shuffle_map
+
             results.setdefault(train_size, []).append(result_dict)
             bar.update(1)
 

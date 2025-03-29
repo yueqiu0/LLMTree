@@ -39,6 +39,7 @@ class DatasetMeta:
         self.target: str = ""
         self.desc: str = ""
         self.labal_meaning: str = ""
+        self.feature_shuffle_map: dict[int, int] = {}
 
     def get_label(self, id: int) -> Label:
         return self.labels[id]
@@ -160,6 +161,9 @@ def load_dataset(
     else:
         raise ValueError("Unknown dataset format: {}".format(args.format))
 
+    # 在打乱前先收集原始特征名称
+    original_feature_names = [feature.name for feature in meta.features]
+    
     # shuffle
     indices = np.arange(x.shape[0])
     np.random.shuffle(indices)
@@ -167,11 +171,31 @@ def load_dataset(
     y = y[indices]
 
     if args.shuffle_column:
+        # ===== 特征打乱和映射日志 =====
         indices = np.arange(x.shape[1])
         np.random.shuffle(indices)
         x = x[:, indices]
+        
+        # 创建明确的分隔线，使日志更易识别
+        logger.log("\n" + "="*50)
+        logger.log("【特征随机打乱映射】")
+        
+        # 保存并输出详细的映射关系
+        feature_shuffle_map = {new_idx: int(old_idx) for new_idx, old_idx in enumerate(indices)}
+        logger.log(f"特征随机打乱映射字典: {feature_shuffle_map}")
+        
+        # 详细的名称对应表，便于可视化调试
+        logger.log("详细特征映射关系:")
+        for new_idx, old_idx in feature_shuffle_map.items():
+            old_feature_name = original_feature_names[old_idx] if old_idx < len(original_feature_names) else f"未知特征({old_idx})"
+            logger.log(f"  训练特征 {new_idx} ← 原始特征 {old_idx} ({old_feature_name})")
+        
+        logger.log("="*50 + "\n")
+        
+        # 更新元数据中的特征顺序和映射信息
         meta.shuffle_features(indices)
-
+        meta.feature_shuffle_map = feature_shuffle_map
+    
     return meta, x, y
 
 
