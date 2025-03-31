@@ -424,7 +424,18 @@ def evaluate(
 
     if len(x_test) == 0:
         return None
-
+    for test_start in tqdm(range(0, len(x_test), test_batch), desc="Test"):
+        test_end_batch = min(test_start + test_batch, len(x_test))
+        current_batch = x_test[test_start:test_end_batch]
+        
+        # 添加批量预测前的日志（新增代码）
+        logger.log(f"[Predict Batch] Size: {len(current_batch)} | Features: {current_batch[0].shape}")
+        
+        results = model.predict(current_batch)
+        
+        # 添加预测结果日志（新增代码）
+        if results[0] is not None:
+            logger.log(f"[Prediction Results] LLM outputs: {len(results[0])} | Tree outputs: {len(results[1])}")
     llm_with_tree_results, llm_with_tree_subresults = [], None
     tree_results, tree_raw_results = [], []
 
@@ -478,6 +489,7 @@ def evaluate(
     )
 
 
+
 def load_args(
     args: TrainArgs,
 ) -> tuple[np.ndarray, np.ndarray, TrainStrategy]:
@@ -520,7 +532,22 @@ def load_args(
         )
     else:
         raise ValueError("Unknown runner type: {}".format(args.runner))
-
+    # 在创建runner后添加监控装饰器（新增代码开始）
+    def add_monitoring(runner_instance):
+        original_run = runner_instance.__class__.run
+        
+        def monitored_run(self, messages):
+            for prompt in messages:
+                logger.log(f"[LLM Request] {datetime.now().isoformat()}\nPrompt: {prompt}")
+                responses = original_run(self, [prompt])  # 保持单条处理
+                for response in responses:
+                    logger.log(f"[LLM Response] {datetime.now().isoformat()}\nResponse: {response[0]}")
+                    yield response
+                    
+        runner_instance.__class__.run = monitored_run
+        return runner_instance
+    
+    runner = add_monitoring(runner)  # 应用监控装饰器
     master_template_path = Path(args.template)
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(master_template_path.parent),
@@ -559,7 +586,9 @@ def load_args(
     return x, y, strategy
 
 
+
 def main():
+    start_time = time.time()
     args = parse_args()
 
     if args.exp_id:
@@ -687,6 +716,9 @@ def main():
                 output = {"args": args.__dict__, "results": results}
                 json.dump(output, f, indent=2, default=json_default_decode)
 
-
+    logger.log("\n=== Experiment Summary ===")
+    logger.log(f"Total train sizes tested: {len(results)}")
+    logger.log(f"Last train size metrics: LLM AUC={llm_with_tree_auc:.3f}, Tree AUC={tree_auc:.3f}")
+    logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()
