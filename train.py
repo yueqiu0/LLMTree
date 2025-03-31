@@ -730,7 +730,7 @@ def main():
 
     logger.log("\n=== Experiment Summary ===")
     logger.log(f"Total train sizes tested: {len(results)}")
-    logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.3f},average tree AUC={avg_tree_auc:.3f}")  # 平均值
+    logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.6f},average tree AUC={avg_tree_auc:.6f}")  # 平均值
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()
