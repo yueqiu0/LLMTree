@@ -590,7 +590,9 @@ def load_args(
 def main():
     start_time = time.time()
     args = parse_args()
-
+    total_llm_auc = 0.0
+    total_tree_auc = 0.0
+    valid_counts = 0
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
 
@@ -648,7 +650,17 @@ def main():
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
-
+    for train_size in results:
+        for test_result in results[train_size]:
+            llm_auc = test_result.get('llm_tree')
+            tree_auc = test_result.get('tree')
+            
+            if llm_auc is not None and tree_auc is not None:
+                total_llm_auc += llm_auc
+                total_tree_auc += tree_auc
+                valid_counts += 1
+    avg_llm_auc = total_llm_auc / valid_counts if valid_counts > 0 else 0.0
+    avg_tree_auc = total_tree_auc / valid_counts if valid_counts > 0 else 0.0
     def json_default_decode(obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -718,6 +730,7 @@ def main():
 
     logger.log("\n=== Experiment Summary ===")
     logger.log(f"Total train sizes tested: {len(results)}")
+    logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.3f},average tree AUC={avg_tree_auc:.3f}")  # 平均值
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()
