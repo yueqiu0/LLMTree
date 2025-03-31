@@ -718,7 +718,6 @@ def main():
 
     logger.log("\n=== Experiment Summary ===")
     logger.log(f"Total train sizes tested: {len(results)}")
-    logger.log(f"Last train size metrics:average llm+tree AUC={llm_with_tree_auc:.3f},average tree AUC={tree_auc:.3f}")
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()
