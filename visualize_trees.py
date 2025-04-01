@@ -1226,25 +1226,47 @@ def add_tree_to_subgraph(tree, node, subgraph, feature_names, class_map, meta_da
             if feature_names and 0 <= feature_idx < len(feature_names):
                 feature_name = feature_names[feature_idx]
             
-            # 判断特征是否为分类型
+            # 改进的特征类型判断逻辑
             is_categorical = False
             
-            # 1. 从元数据中获取特征信息
-            if meta_data and 'features' in meta_data:
+            # 1. 首先检查节点自身的is_categorical属性
+            if hasattr(node, 'is_categorical') and node.is_categorical:
+                is_categorical = True
+                print(f"节点 {node_id}: 从节点属性判断为分类特征")
+            
+            # 2. 从特征值类型判断 - 如果是非数字字符串，则为分类特征
+            elif isinstance(node.split_value, str):
+                try:
+                    float(node.split_value)  # 尝试转换为数字
+                except ValueError:
+                    is_categorical = True
+                    print(f"节点 {node_id}: 从特征值类型判断为分类特征")
+            
+            # 3. 从元数据中获取特征信息
+            elif meta_data and 'features' in meta_data:
                 for feature in meta_data['features']:
-                    if ('index' in feature and feature['index'] == feature_idx) or \
-                       ('name' in feature and feature['name'] == feature_name):
+                    # 通过特征名称匹配
+                    if 'name' in feature and feature['name'] == feature_name:
                         if feature.get('type') in ['categorical', 'category', 'string', 'enum']:
                             is_categorical = True
+                            print(f"节点 {node_id}: 从元数据名称判断为分类特征")
+                            break
+                    
+                    # 通过特征索引匹配
+                    elif 'index' in feature and feature['index'] == feature_idx:
+                        if feature.get('type') in ['categorical', 'category', 'string', 'enum']:
+                            is_categorical = True
+                            print(f"节点 {node_id}: 从元数据索引判断为分类特征")
                             break
             
-            # 2. 从特征值类型判断
-            if isinstance(node.split_value, str) and not node.split_value.replace('.', '', 1).isdigit():
-                is_categorical = True
-            
-            # 3. 从节点属性判断
-            if hasattr(node, 'is_categorical'):
-                is_categorical = node.is_categorical
+            # 4. 特定特征名称启发式判断
+            if not is_categorical:
+                categorical_keywords = ['sex', 'gender', 'type', 'category', 'class', 'color', 'status']
+                for keyword in categorical_keywords:
+                    if keyword.lower() in feature_name.lower():
+                        is_categorical = True
+                        print(f"节点 {node_id}: 从特征名称启发式判断为分类特征")
+                        break
             
             # 根据特征类型设置操作符
             if is_categorical:
@@ -1256,6 +1278,7 @@ def add_tree_to_subgraph(tree, node, subgraph, feature_names, class_map, meta_da
             subgraph.add_node(pydot.Node(node_id, label=label, 
                                     shape=node_shape, style="filled", 
                                     fillcolor="white", fontsize="14",
+                                    fontname="helvetica",  # 确保字体一致
                                     width="1.5", height="0.8"))
             
             # 输出特征类型判断结果用于调试
@@ -1263,19 +1286,22 @@ def add_tree_to_subgraph(tree, node, subgraph, feature_names, class_map, meta_da
             
         except Exception as e:
             print(f"设置内部节点失败: {e}")
+            import traceback
+            traceback.print_exc()
             subgraph.add_node(pydot.Node(node_id, label="内部节点", 
-                                  shape=node_shape, style="filled", fontsize="14"))
+                                  shape=node_shape, style="filled", fontsize="14",
+                                  fontname="helvetica"))
     
     # 递归处理子节点
     if node.left_child:
         left_id = prefix + str(node.left_child._id)
         add_tree_to_subgraph(tree, node.left_child, subgraph, feature_names, class_map, meta_data, prefix, node_shape)
-        subgraph.add_edge(pydot.Edge(node_id, left_id, label="是", fontsize="12"))
+        subgraph.add_edge(pydot.Edge(node_id, left_id, label="是", fontsize="12", fontname="helvetica"))
         
     if node.right_child:
         right_id = prefix + str(node.right_child._id)
         add_tree_to_subgraph(tree, node.right_child, subgraph, feature_names, class_map, meta_data, prefix, node_shape)
-        subgraph.add_edge(pydot.Edge(node_id, right_id, label="否", fontsize="12"))
+        subgraph.add_edge(pydot.Edge(node_id, right_id, label="否", fontsize="12", fontname="helvetica"))
 
 # 添加通用的特征类型判断函数
 def determine_feature_type(feature_idx, feature_name, split_value, meta_data=None, node=None):
