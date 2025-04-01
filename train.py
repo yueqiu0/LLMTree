@@ -461,24 +461,24 @@ def evaluate(
         )
     else:
         llm_with_tree_auc = None
-    train_node_stats = analyze_node_samples(model, x_train, y_train)
+    train_node_stats= analyze_node_samples(model, x_train, y_train)
     logger.log("\n=== 训练集节点样本分布 ===")
+    logger.log(f"标签类别: {label_names}")
     for node_id, counts in train_node_stats.items():
         logger.log(f"{node_id}: {counts}")
     
-    # 在预测循环中添加测试样本分析
+    # 修改后的测试集分析
     test_node_stats = None
     for test_start in tqdm(range(0, len(x_test), test_batch)):
         test_end = min(test_start + test_batch, len(x_test))
-        batch_stats = analyze_node_samples(model, x_test[test_start:test_end], y_test[test_start:test_end])
+        batch_stats, _ = analyze_node_samples(model, x_test[test_start:test_end], y_test[test_start:test_end])
         
-        # 合并统计结果
         if test_node_stats is None:
             test_node_stats = batch_stats
         else:
             for node_id, counts in batch_stats.items():
-                test_node_stats[node_id]['yes'] += counts['yes']
-                test_node_stats[node_id]['no'] += counts['no']
+                for cls in counts:
+                    test_node_stats[node_id][cls] += counts[cls]
     
     logger.log("\n=== 测试集节点样本分布 ===")
     for node_id, counts in test_node_stats.items():
@@ -508,7 +508,8 @@ def evaluate(
         llm_with_tree_subresults,
         elapsed,
         train_node_stats,  # 新增返回项
-        test_node_stats    # 新增返回项
+        test_node_stats,    # 新增返回项
+        label_names,
     )
 
 
@@ -609,39 +610,40 @@ def load_args(
     return x, y, strategy
 
 def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
-        """动态分析决策树节点样本分布"""
-        if not hasattr(model.strategy, 'root'):
-            return {}
-        
-        from collections import defaultdict
-        node_samples = defaultdict(list)
-        
-        # 追踪每个样本经过的路径
-        for sample, label in zip(X, y):
-            path = []
-            node = model.strategy.root
-            while not node.is_leaf:
-                path.append(node)
-                if sample[node.feature_idx] <= node.threshold:
-                    node = node.left
-                else:
-                    node = node.right
-            path.append(node)  # 添加叶子节点
-            
-            # 记录样本标签到所有经过的节点
-            for node in path:
-                node_samples[node].append(label)
-        
-        # 转换为标签统计
-        node_stats = {}
-        for node, labels in node_samples.items():
-            label_counts = {'yes': 0, 'no': 0}  # 根据实际标签调整
-            for label in labels:
-                label_counts['yes' if label == 1 else 'no'] += 1
-            node_stats[f"node_{id(node)}"] = label_counts
-        
-        return node_stats
+    """动态分析决策树节点样本分布（兼容多标签）"""
+    if not hasattr(model.strategy, 'root'):
+        return {}
 
+    from collections import defaultdict
+    node_samples = defaultdict(list)
+    
+    # 自动检测所有可能的标签类别
+    
+    # 追踪每个样本经过的路径
+    for sample, label in zip(X, y):
+        path = []
+        node = model.strategy.root
+        while not node.is_leaf:
+            path.append(node)
+            if sample[node.feature_idx] <= node.threshold:
+                node = node.left
+            else:
+                node = node.right
+        path.append(node)  # 添加叶子节点
+        
+        # 记录样本标签到所有经过的节点
+        for node in path:
+            node_samples[node].append(label)
+    
+    # 转换为标签统计（自动适应多分类）
+    node_stats = {}
+    for node, labels in node_samples.items():
+        label_counts = {name: 0 for name in label_names.values()}
+        for label in labels:
+            label_counts[label_names[label]] += 1
+        node_stats[f"node_{id(node)}"] = label_counts
+    
+    return node_stats # 返回标签映射关系
 def main():
     start_time = time.time()
     args = parse_args()
@@ -740,7 +742,8 @@ def main():
                     llm_with_tree_subresults,
                     elapsed,
                     train_node_stats,  # 新增返回项
-                    test_node_stats    # 新增返回项
+                    test_node_stats,   # 新增返回项
+                    
                 ) = result
 
                 logger.log("Training time: {}".format(elapsed))
