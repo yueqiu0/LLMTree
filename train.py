@@ -590,9 +590,7 @@ def load_args(
 def main():
     start_time = time.time()
     args = parse_args()
-    total_llm_auc = 0.0
-    total_tree_auc = 0.0
-    valid_counts = 0
+    
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
 
@@ -650,17 +648,7 @@ def main():
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
-    for train_size in results:
-        for test_result in results[train_size]:
-            llm_auc = test_result.get('llm_tree')
-            tree_auc = test_result.get('tree')
-            
-            if llm_auc is not None and tree_auc is not None:
-                total_llm_auc += llm_auc
-                total_tree_auc += tree_auc
-                valid_counts += 1
-    avg_llm_auc = total_llm_auc / valid_counts if valid_counts > 0 else 0.0
-    avg_tree_auc = total_tree_auc / valid_counts if valid_counts > 0 else 0.0
+    
     def json_default_decode(obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -722,9 +710,22 @@ def main():
 
             results.setdefault(train_size, []).append(result_dict)
             bar.update(1)
-
+        total_llm_auc = 0.0
+        total_tree_auc = 0.0
+        valid_counts = 0
+        for train_size in results:
+            for test_result in results[train_size]:
+                llm_auc = test_result.get('llm_tree')
+                tree_auc = test_result.get('tree')
+                
+                if llm_auc is not None and tree_auc is not None:
+                    total_llm_auc += llm_auc
+                    total_tree_auc += tree_auc
+                    valid_counts += 1
+        avg_llm_auc = total_llm_auc / valid_counts if valid_counts > 0 else 0.0
+        avg_tree_auc = total_tree_auc / valid_counts if valid_counts > 0 else 0.0
             # Store results each round to avoid losing data
-            with open(output_file, "w") as f:
+        with open(output_file, "w") as f:
                 output = {"args": args.__dict__, "results": results}
                 json.dump(output, f, indent=2, default=json_default_decode)
 
