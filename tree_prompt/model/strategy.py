@@ -282,7 +282,7 @@ class TrainStrategy:
         return best_feature
     
     def _quick_split_values(self, feature_idx, node):
-        """快速确定分裂点，不调用LLM"""
+        """确定最佳分裂点，使用CART算法的方式"""
         # 添加日志：打印当前节点所有样本的标签
         node_samples = node.get_samples()
         node_labels = self.train_y[node_samples]
@@ -290,6 +290,7 @@ class TrainStrategy:
         label_dist = {int(label): count for label, count in zip(unique_labels, label_counts)}
         logger.log(f"节点({id(node)})样本标签分布: {label_dist}, 总样本数: {len(node_samples)}")
         
+        # 如果是分类特征，使用专门的处理方法
         if self._meta.features[feature_idx].is_categorical:
             # 使用专门的分类特征处理方法寻找最佳分裂值
             best_value = self._process_categorical_feature(feature_idx, node)
@@ -304,7 +305,7 @@ class TrainStrategy:
         # 获取节点样本数据
         node_data = self.train_x[node_samples, feature_idx]
         
-        # 获取唯一值
+        # 获取唯一值并排序
         unique_values = np.unique(node_data)
         if len(unique_values) <= 1:
             logger.log(f"特征 {self._meta.features[feature_idx].name} 的所有值都相同，跳过分裂")
@@ -313,14 +314,76 @@ class TrainStrategy:
         # 如果只有两个不同的值，使用它们的中点
         if len(unique_values) == 2:
             split_point = (unique_values[0] + unique_values[1]) / 2
-            logger.log(f"使用中点 {split_point} 作为分裂点")
+            logger.log(f"只有两个不同值，使用中点 {split_point} 作为分裂点")
             return [split_point]
         
-        # 使用统计分位数作为分裂点
-        split_points = np.percentile(unique_values, [50])  # 只使用中位数，减少分裂数
-        split_points = np.unique(split_points)
-        logger.log(f"使用分位数作为分裂点: {split_points}")
-        return split_points.tolist()
+        # CART算法：尝试所有可能的分裂点，找到最优的
+        best_split = None
+        best_gain = -float('inf')
+        
+        # 计算父节点的基尼系数
+        parent_gini = 1.0
+        for label in unique_labels:
+            p = np.sum(node_labels == label) / len(node_labels)
+            parent_gini -= p * p
+        
+        # 尝试所有可能的分裂点
+        for i in range(len(unique_values) - 1):
+            # 计算可能的分裂点（相邻值的中点）
+            split_value = (unique_values[i] + unique_values[i+1]) / 2
+            
+            # 分割样本
+            left_mask = node_data <= split_value
+            right_mask = ~left_mask
+            
+            # 计算左右子节点的基尼系数
+            left_gini = 0
+            right_gini = 0
+            
+            # 左子节点基尼系数
+            if np.any(left_mask):
+                left_labels = node_labels[left_mask]
+                left_count = len(left_labels)
+                left_gini = 1.0
+                for label in unique_labels:
+                    p = np.sum(left_labels == label) / left_count
+                    left_gini -= p * p
+            
+            # 右子节点基尼系数
+            if np.any(right_mask):
+                right_labels = node_labels[right_mask]
+                right_count = len(right_labels)
+                right_gini = 1.0
+                for label in unique_labels:
+                    p = np.sum(right_labels == label) / right_count
+                    right_gini -= p * p
+            
+            # 计算加权基尼系数
+            left_weight = np.sum(left_mask) / len(node_labels)
+            right_weight = np.sum(right_mask) / len(node_labels)
+            weighted_gini = left_weight * left_gini + right_weight * right_gini
+            
+            # 计算基尼系数增益
+            gain = parent_gini - weighted_gini
+            
+            # 更新最佳分裂点
+            if gain > best_gain:
+                best_gain = gain
+                best_split = split_value
+                
+                # 记录详细信息
+                logger.log(f"新的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
+                logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
+                logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+        
+        if best_split is not None:
+            logger.log(f"最终选择的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
+            return [best_split]
+        else:
+            # 如果没有找到有效的分裂点，使用中位数作为备选
+            median_split = np.median(unique_values)
+            logger.log(f"未找到有效分裂点，使用中位数 {median_split} 作为备选")
+            return [median_split]
     
     def _assign_leaf_values(self, node, feature_idx, split_value):
         """使用多数投票快速确定叶节点值"""
