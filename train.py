@@ -450,7 +450,32 @@ def evaluate(
         )
     else:
         llm_with_tree_auc = None
+<<<<<<< HEAD
 
+=======
+    train_node_stats= analyze_node_samples(model, x_train, y_train)
+    logger.log("\n=== 训练集节点样本分布 ===")
+    
+    for node_id, counts in train_node_stats.items():
+        logger.log(f"{node_id}: {counts}")
+    
+    # 修改后的测试集分析
+    test_node_stats = None
+    for test_start in tqdm(range(0, len(x_test), test_batch)):
+        test_end = min(test_start + test_batch, len(x_test))
+        batch_stats, _ = analyze_node_samples(model, x_test[test_start:test_end], y_test[test_start:test_end])
+        
+        if test_node_stats is None:
+            test_node_stats = batch_stats
+        else:
+            for node_id, counts in batch_stats.items():
+                for cls in counts:
+                    test_node_stats[node_id][cls] += counts[cls]
+    
+    logger.log("\n=== 测试集节点样本分布 ===")
+    for node_id, counts in test_node_stats.items():
+        logger.log(f"{node_id}: {counts}")
+>>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
     llm_with_sub_tree_aucs = []
     if llm_with_tree_subresults is not None:
         for sub_result in llm_with_tree_subresults:
@@ -475,6 +500,12 @@ def evaluate(
         tree_raw_results,
         llm_with_tree_subresults,
         elapsed,
+<<<<<<< HEAD
+=======
+        train_node_stats,  # 新增返回项
+        test_node_stats,    # 新增返回项
+        
+>>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
     )
 
 
@@ -559,6 +590,34 @@ def load_args(
     return x, y, strategy
 
 
+<<<<<<< HEAD
+=======
+    from collections import defaultdict
+    node_samples = defaultdict(list)
+    
+    # 自动检测所有可能的标签类别
+    
+    # 追踪每个样本经过的路径
+    for sample, label in zip(X, y):
+        path = []
+        node = model.strategy.root
+        while not node.is_leaf:
+            path.append(node)
+            if sample[node.feature_idx] <= node.threshold:
+                node = node.left
+            else:
+                node = node.right
+        path.append(node)  # 添加叶子节点
+        
+        # 记录样本标签到所有经过的节点
+        for node in path:
+            node_samples[node].append(label)
+    
+    # 转换为标签统计（自动适应多分类）
+    node_stats = {}
+    
+    return node_stats # 返回标签映射关系
+>>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
 def main():
     args = parse_args()
 
