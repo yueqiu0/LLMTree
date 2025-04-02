@@ -1,0 +1,36 @@
+{#
+Template: Tree Comparison Analysis  
+Version: 1.1
+Description: Compares two decision tree versions
+#}
+Evaluate these decision tree candidates:
+
+## Candidate A (Original)
+- Depth: {{ original.depth }}
+- Accuracy: {{ "%.2f"|format(original.accuracy*100) }}%
+- Features Used: {{ original.features|join(', ') }}
+
+Structure:
+{{ original.tree_structure }}
+
+## Candidate B (LLM-Generated)
+- Depth: {{ llm.depth }} 
+- Accuracy: {{ "%.2f"|format(llm.accuracy*100) }}%
+- Features Used: {{ llm.features|join(', ') }}
+
+Structure:  
+{{ llm.tree_structure }}
+
+Analysis Criteria:
+1. 𝛘² Test for split significance
+2. Class separation purity
+3. Feature selection validity
+4. Depth efficiency
+5. Interpretability score
+
+Final Recommendation:
+[ ] Keep Original
+[ ] Adopt LLM Version
+Rationale: [150-word technical analysis]
+
+Note: Choose only ONE option and provide machine learning justification.
