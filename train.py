@@ -463,7 +463,7 @@ def evaluate(
         llm_with_tree_auc = None
     train_node_stats= analyze_node_samples(model, x_train, y_train)
     logger.log("\n=== 训练集节点样本分布 ===")
-    logger.log(f"标签类别: {label_names}")
+    
     for node_id, counts in train_node_stats.items():
         logger.log(f"{node_id}: {counts}")
     
@@ -509,7 +509,7 @@ def evaluate(
         elapsed,
         train_node_stats,  # 新增返回项
         test_node_stats,    # 新增返回项
-        label_names,
+        
     )
 
 
@@ -637,11 +637,6 @@ def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
     
     # 转换为标签统计（自动适应多分类）
     node_stats = {}
-    for node, labels in node_samples.items():
-        label_counts = {name: 0 for name in label_names.values()}
-        for label in labels:
-            label_counts[label_names[label]] += 1
-        node_stats[f"node_{id(node)}"] = label_counts
     
     return node_stats # 返回标签映射关系
 def main():
