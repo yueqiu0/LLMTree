@@ -462,8 +462,11 @@ def evaluate(
     else:
         llm_with_tree_auc = None
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 =======
+=======
+>>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
     train_node_stats= analyze_node_samples(model, x_train, y_train)
     logger.log("\n=== 训练集节点样本分布 ===")
     
@@ -486,7 +489,10 @@ def evaluate(
     logger.log("\n=== 测试集节点样本分布 ===")
     for node_id, counts in test_node_stats.items():
         logger.log(f"{node_id}: {counts}")
+<<<<<<< HEAD
 >>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
+=======
+>>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
     llm_with_sub_tree_aucs = []
     if llm_with_tree_subresults is not None:
         for sub_result in llm_with_tree_subresults:
@@ -512,11 +518,17 @@ def evaluate(
         llm_with_tree_subresults,
         elapsed,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         train_node_stats,  # 新增返回项
         test_node_stats,    # 新增返回项
         
 >>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
+=======
+        train_node_stats,  # 新增返回项
+        test_node_stats,    # 新增返回项
+        
+>>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
     )
 
 
@@ -616,10 +628,17 @@ def load_args(
 
     return x, y, strategy
 
+def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
+    """动态分析决策树节点样本分布（兼容多标签）"""
+    if not hasattr(model.strategy, 'root'):
+        return {}
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
     from collections import defaultdict
     node_samples = defaultdict(list)
     
@@ -645,12 +664,15 @@ def load_args(
     node_stats = {}
     
     return node_stats # 返回标签映射关系
+<<<<<<< HEAD
 >>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
 def main():
     args = parse_args()
 =======
 >>>>>>> 3d1570386138dd00157ddbc4c3ba7547fe7e9cd2
 
+=======
+>>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
 def main():
     start_time = time.time()
     args = parse_args()
@@ -722,12 +744,14 @@ def main():
             return obj.tolist()
         else:
             return obj.__dict__
-
+    
     for train_size in args.train_sizes:
         train_cases = sample_balanced(
             avail_x, avail_y, args.num_tests_per_set, train_size, args.random_seed
         )
-
+        logger.log(f"实际生成的训练案例数量: {len(train_cases)}")
+        if len(train_cases) > 0:
+            logger.log(f"首例训练集形状: {train_cases[0][0].shape}")
         for train_x, train_y in train_cases:
             model = Classifier(strategy)
             result = evaluate(train_x, train_y, test_x, test_y, model, args.test_batch)
@@ -746,6 +770,9 @@ def main():
                     tree_raw_results,
                     llm_with_tree_subresults,
                     elapsed,
+                    train_node_stats,  # 新增返回项
+                    test_node_stats,   # 新增返回项
+                    
                 ) = result
 
                 logger.log("Training time: {}".format(elapsed))
@@ -761,6 +788,8 @@ def main():
                     "labels": test_y.tolist(),
                     "model": model.export(),
                     "train_elapsed": elapsed,
+                    'train_node_stats': train_node_stats,
+                    'test_node_stats': test_node_stats
                 }
 
             # 在保存结果到JSON文件之前
@@ -773,7 +802,12 @@ def main():
                 result_dict['args']['feature_shuffle_map'] = strategy._feature_shuffle_map
 
             results.setdefault(train_size, []).append(result_dict)
+            current_count = len(results[train_size])
+            logger.log(f"当前train_size={train_size}已保存结果数: {current_count}/{args.num_tests_per_set}")
+            if current_count >= args.num_tests_per_set:
+                logger.log(f"!! 已达到预期测试次数 {args.num_tests_per_set}")
             bar.update(1)
+            
         total_llm_auc = 0.0
         total_tree_auc = 0.0
         valid_counts = 0
@@ -794,7 +828,11 @@ def main():
                 json.dump(output, f, indent=2, default=json_default_decode)
 
     logger.log("\n=== Experiment Summary ===")
-    logger.log(f"Total train sizes tested: {len(results)}")
+    total_tests = 0
+    for size, tests in results.items():
+        logger.log(f"训练集大小 {size}: {len(tests)}次测试")
+        total_tests += len(tests)
+    logger.log(f"总计测试次数: {total_tests}")
     logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.6f},average tree AUC={avg_tree_auc:.6f}")  # 平均值
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
