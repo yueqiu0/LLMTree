@@ -9,7 +9,7 @@ def calculate_weight_factor(depth: int) -> float:
     depth: 节点深度(1,2,3,...)
     return: LLM排序的权重(统计分析的权重为1-α)
     """
-    alpha = max(0.2, 0.7 - (depth - 1) * 0.3)
+    alpha = 1.0
     logger.log(f"深度 {depth} 的权重因子计算: α={alpha:.2f}")
     return alpha
 
@@ -102,7 +102,7 @@ def calculate_gini_scores(
     y: np.ndarray,
     meta: DatasetMeta
 ) -> Dict[int, float]:
-    """计算每个特征的基尼系数增益"""
+    """计算每个特征的基尼系数增益，使用CART算法的方式"""
     scores = {}
     
     logger.log(f"计算基尼系数增益，样本数: {X.shape[0]}, 特征数: {X.shape[1]}")
@@ -127,7 +127,12 @@ def calculate_gini_scores(
         unique_values = np.unique(X[:, feat_idx])
         logger.log(f"  特征值分布: {len(unique_values)} 个不同值")
         
-        weighted_gini = 0.0
+        if len(unique_values) <= 1:
+            logger.log(f"  警告: 特征值都相同，无法进行有效分裂")
+            scores[feat_idx] = 0.0
+            continue
+        
+        best_gain = 0.0
         
         if is_categorical:
             # 类别型特征
@@ -147,97 +152,65 @@ def calculate_gini_scores(
                 
                 # 计算加权基尼系数
                 weight = subset_size / total_samples
-                weighted_gini += weight * subset_gini
+                weighted_gini = weight * subset_gini
                 
-                logger.log(f"  特征值 {val} 的基尼系数: {subset_gini:.4f}, 权重: {weight:.4f}")
+                # 计算基尼系数增益
+                gain = parent_gini - weighted_gini
                 
+                # 更新最佳增益
+                if gain > best_gain:
+                    best_gain = gain
+                    logger.log(f"  特征值 {val} 的基尼增益: {gain:.4f} (新的最佳)")
         else:
-            # 数值型特征使用更安全的分箱策略
-            if len(unique_values) <= 1:
-                logger.log(f"  警告: 特征值都相同，无法进行有效分箱")
-                scores[feat_idx] = 0.0
-                continue
+            # 数值型特征 - 使用CART算法尝试所有可能的分裂点
+            # 对唯一值排序
+            sorted_values = np.sort(unique_values)
             
-            # 避免过度分箱，特别是对于小样本
-            n_bins = min(max(2, min(len(unique_values) // 2, 5)), max(2, len(unique_values) - 1))
-            
-            try:
-                # 使用等宽分箱而非分位数，可靠性更高
-                bins = np.linspace(np.min(X[:, feat_idx]), np.max(X[:, feat_idx]), n_bins+1)
-                logger.log(f"  分箱边界: {bins}")
+            # 尝试所有可能的分裂点
+            for i in range(len(sorted_values) - 1):
+                # 计算可能的分裂点（相邻值的中点）
+                split_value = (sorted_values[i] + sorted_values[i+1]) / 2
                 
-                # 安全检查：确保至少有两个不同的bin边界
-                if len(np.unique(bins)) < 2:
-                    logger.log(f"  警告: 分箱边界不足，跳过此特征")
-                    scores[feat_idx] = 0.0
-                    continue
+                # 分割样本
+                left_mask = X[:, feat_idx] <= split_value
+                right_mask = ~left_mask
                 
-                # 计算每个箱的基尼系数 - 使用更安全的边界检查
-                for i in range(n_bins):
-                    if i == 0:
-                        # 第一个箱 (≤ bins[0])
-                        subset_indices = X[:, feat_idx] <= bins[1]
-                    else:
-                        # 其他箱 (bins[i-1] < x ≤ bins[i])
-                        subset_indices = (X[:, feat_idx] > bins[i]) & (X[:, feat_idx] <= bins[i+1])
-                    
-                    subset_size = np.sum(subset_indices)
-                    
-                    if subset_size == 0:
-                        continue
-                        
-                    subset_labels = y[subset_indices]
-                    subset_gini = 1.0
-                    
+                # 计算左右子节点的基尼系数
+                left_gini = 0
+                right_gini = 0
+                
+                # 左子节点基尼系数
+                if np.any(left_mask):
+                    left_labels = y[left_mask]
+                    left_count = len(left_labels)
+                    left_gini = 1.0
                     for label in unique_labels:
-                        p = np.sum(subset_labels == label) / subset_size if subset_size > 0 else 0
-                        subset_gini -= p * p
-                    
-                    # 计算加权基尼系数
-                    weight = subset_size / total_samples
-                    weighted_gini += weight * subset_gini
-                    
-                    bin_range = f"[{bins[i]:.2f}, {bins[i+1]:.2f}]"
-                    logger.log(f"  特征值区间 {bin_range} 的基尼系数: {subset_gini:.4f}, 权重: {weight:.4f}")
-            
-            except Exception as e:
-                logger.log(f"  分箱计算错误: {str(e)}")
-                logger.log(f"  使用备用计算方法")
+                        p = np.sum(left_labels == label) / left_count
+                        left_gini -= p * p
                 
-                # 备用方法：二分法（仅分为两组）
-                mid_value = np.median(X[:, feat_idx])
-                
-                # 小于等于中位数的组
-                subset_indices = X[:, feat_idx] <= mid_value
-                subset_size = np.sum(subset_indices)
-                if subset_size > 0:
-                    subset_labels = y[subset_indices]
-                    subset_gini = 1.0
+                # 右子节点基尼系数
+                if np.any(right_mask):
+                    right_labels = y[right_mask]
+                    right_count = len(right_labels)
+                    right_gini = 1.0
                     for label in unique_labels:
-                        p = np.sum(subset_labels == label) / subset_size
-                        subset_gini -= p * p
-                    weight = subset_size / total_samples
-                    weighted_gini += weight * subset_gini
-                    logger.log(f"  特征值 ≤ {mid_value:.2f} 的基尼系数: {subset_gini:.4f}, 权重: {weight:.4f}")
+                        p = np.sum(right_labels == label) / right_count
+                        right_gini -= p * p
                 
-                # 大于中位数的组
-                subset_indices = X[:, feat_idx] > mid_value
-                subset_size = np.sum(subset_indices)
-                if subset_size > 0:
-                    subset_labels = y[subset_indices]
-                    subset_gini = 1.0
-                    for label in unique_labels:
-                        p = np.sum(subset_labels == label) / subset_size
-                        subset_gini -= p * p
-                    weight = subset_size / total_samples
-                    weighted_gini += weight * subset_gini
-                    logger.log(f"  特征值 > {mid_value:.2f} 的基尼系数: {subset_gini:.4f}, 权重: {weight:.4f}")
+                # 计算加权基尼系数
+                left_weight = np.sum(left_mask) / total_samples
+                right_weight = np.sum(right_mask) / total_samples
+                weighted_gini = left_weight * left_gini + right_weight * right_gini
+                
+                # 计算基尼系数增益
+                gain = parent_gini - weighted_gini
+                
+                # 更新最佳增益
+                if gain > best_gain:
+                    best_gain = gain
+                    logger.log(f"  分裂点 {split_value:.4f} 的基尼增益: {gain:.4f} (新的最佳)")
         
-        # 计算基尼系数增益（父节点基尼系数 - 加权子节点基尼系数）
-        gini_gain = parent_gini - weighted_gini
-        logger.log(f"  特征 {feature_name} 的基尼系数增益: {gini_gain:.4f}")
-        
-        scores[feat_idx] = gini_gain
+        scores[feat_idx] = best_gain
     
     logger.log(f"所有特征的基尼系数增益: {scores}")
     return scores
