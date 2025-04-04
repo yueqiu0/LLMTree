@@ -461,13 +461,9 @@ def evaluate(
         )
     else:
         llm_with_tree_auc = None
-<<<<<<< HEAD
-<<<<<<< HEAD
 
-=======
-=======
->>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
-    train_node_stats= analyze_node_samples(model, x_train, y_train)
+    # 分析节点样本分布
+    train_node_stats, label_names = analyze_node_samples(model, x_train, y_train)
     logger.log("\n=== 训练集节点样本分布 ===")
     
     for node_id, counts in train_node_stats.items():
@@ -489,10 +485,7 @@ def evaluate(
     logger.log("\n=== 测试集节点样本分布 ===")
     for node_id, counts in test_node_stats.items():
         logger.log(f"{node_id}: {counts}")
-<<<<<<< HEAD
->>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
-=======
->>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
+
     llm_with_sub_tree_aucs = []
     if llm_with_tree_subresults is not None:
         for sub_result in llm_with_tree_subresults:
@@ -517,18 +510,8 @@ def evaluate(
         tree_raw_results,
         llm_with_tree_subresults,
         elapsed,
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
         train_node_stats,  # 新增返回项
-        test_node_stats,    # 新增返回项
-        
->>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
-=======
-        train_node_stats,  # 新增返回项
-        test_node_stats,    # 新增返回项
-        
->>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
+        test_node_stats,   # 新增返回项
     )
 
 
@@ -631,30 +614,40 @@ def load_args(
 def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
     """动态分析决策树节点样本分布（兼容多标签）"""
     if not hasattr(model.strategy, 'root'):
-        return {}
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-=======
->>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
+        return {}, None
+    
     from collections import defaultdict
     node_samples = defaultdict(list)
     
     # 自动检测所有可能的标签类别
+    unique_labels = np.unique(y)
+    label_names = {label: f"class_{label}" for label in unique_labels}
     
     # 追踪每个样本经过的路径
-    for sample, label in zip(X, y):
+    for sample_idx, (sample, label) in enumerate(zip(X, y)):
         path = []
         node = model.strategy.root
-        while not node.is_leaf:
+        while node is not None and not node.is_leaf:
             path.append(node)
-            if sample[node.feature_idx] <= node.threshold:
-                node = node.left
+            # 修复特征索引访问 - 使用split_feature而不是feature_idx
+            if not hasattr(node, 'split_feature') or node.split_feature is None:
+                break
+                
+            # 检查是否是分类特征
+            if hasattr(node, 'is_categorical') and node.is_categorical:
+                if sample[node.split_feature] == node.split_value:
+                    node = node.left_child
+                else:
+                    node = node.right_child
             else:
-                node = node.right
-        path.append(node)  # 添加叶子节点
+                # 数值特征
+                if sample[node.split_feature] < node.split_value:
+                    node = node.left_child
+                else:
+                    node = node.right_child
+                    
+        if node is not None:
+            path.append(node)  # 添加叶子节点
         
         # 记录样本标签到所有经过的节点
         for node in path:
@@ -662,17 +655,31 @@ def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
     
     # 转换为标签统计（自动适应多分类）
     node_stats = {}
+    sample_paths = {}  # 记录每个样本的路径
     
-    return node_stats # 返回标签映射关系
-<<<<<<< HEAD
->>>>>>> b2b0e9e (solve bugs and the code is updated for merghing)
-def main():
-    args = parse_args()
-=======
->>>>>>> 3d1570386138dd00157ddbc4c3ba7547fe7e9cd2
+    for node, labels in node_samples.items():
+        # 创建标签计数字典
+        label_counts = defaultdict(int)
+        for label in labels:
+            label_counts[int(label)] += 1
+        
+        # 使用节点ID作为键
+        node_id = f"node_{id(node)}"
+        node_stats[node_id] = dict(label_counts)
+        
+        # 添加节点类型信息
+        if hasattr(node, 'is_leaf') and node.is_leaf:
+            node_stats[node_id]['_type'] = 'leaf'
+            if hasattr(node, 'leaf_class'):
+                node_stats[node_id]['_prediction'] = node.leaf_class
+        else:
+            node_stats[node_id]['_type'] = 'internal'
+            if hasattr(node, 'split_feature'):
+                node_stats[node_id]['_feature'] = node.split_feature
+                node_stats[node_id]['_value'] = node.split_value
+    
+    return node_stats, label_names
 
-=======
->>>>>>> b2b0e9e76b9315304698e71281f60e57b73cd1f0
 def main():
     start_time = time.time()
     args = parse_args()
