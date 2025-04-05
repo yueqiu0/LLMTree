@@ -94,15 +94,20 @@ class TrainStrategy:
         
         samples = next_split.get_samples()
         
-        # 新增：检查是否所有样本都属于同一类别
+        # 检查是否所有样本都属于同一类别
         if samples is not None and len(samples) > 0:
             node_labels = [self.train_y[i] for i in samples]
             if len(set(node_labels)) == 1:
                 # 如果是，直接将该节点标记为叶子节点
-                logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {node_labels[0]}")
+                original_prediction = node_labels[0]
+                logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {original_prediction}")
+                
+                # 使用LLM验证叶子节点标签
+                verified_prediction = self._llm_verify_leaf_node(next_split, original_prediction)
+                
                 next_split.is_leaf = True
-                next_split.prediction = node_labels[0]
-                # 关键修复：确保节点被正确冻结，不再参与分裂
+                next_split.prediction = verified_prediction
+                # 确保节点被正确冻结，不再参与分裂
                 next_split.freeze()
                 return True, None
         
@@ -145,8 +150,8 @@ class TrainStrategy:
         
         # 执行分裂
         next_split.split(best_feature, split_values[0], 
-                      self._meta.features[best_feature].is_categorical,
-                      left_class, right_class)
+                        self._meta.features[best_feature].is_categorical,
+                        left_class, right_class)
         
         logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_values[0]}")
         
@@ -313,7 +318,7 @@ class TrainStrategy:
             else:
                 # 如果专门方法失败，回退到原始方法
                 logger.log(f"分类特征 {self._meta.features[feature_idx].name} 优化方法失败，使用默认分裂值")
-                return self.split_values[feature_idx]
+            return self.split_values[feature_idx]
         
         # 获取节点样本数据
         node_data = self.train_x[node_samples, feature_idx]
@@ -399,7 +404,7 @@ class TrainStrategy:
             return [median_split]
     
     def _assign_leaf_values(self, node, feature_idx, split_value):
-        """使用多数投票快速确定叶节点值"""
+        """为分裂后的左右子节点分配标签值"""
         node_samples = node.get_samples()
         node_x = self.train_x[node_samples]
         node_y = self.train_y[node_samples]
@@ -454,12 +459,10 @@ class TrainStrategy:
             if left_label_counts:
                 left_class = max(left_label_counts.items(), key=lambda x: x[1])[0]
                 logger.log(f"左子节点多数类标签: {left_class}")
-            else:
+        else:
                 left_class = valid_labels[0] if valid_labels else 0  # 默认使用第一个有效标签
                 logger.log(f"左子节点无样本，使用默认标签: {left_class}")
-        else:
-            left_class = valid_labels[0] if valid_labels else 0
-            logger.log(f"左子节点无样本，使用默认标签: {left_class}")
+
         
         # 右子节点标签处理 - 同样修改为详细计算过程
         if len(right_y) > 0:
@@ -475,15 +478,36 @@ class TrainStrategy:
             if right_label_counts:
                 right_class = max(right_label_counts.items(), key=lambda x: x[1])[0]
                 logger.log(f"右子节点多数类标签: {right_class}")
-            else:
+        else:
                 right_class = valid_labels[0] if valid_labels else 0
                 logger.log(f"右子节点无样本，使用默认标签: {right_class}")
-        else:
-            right_class = valid_labels[0] if valid_labels else 0
-            logger.log(f"右子节点无样本，使用默认标签: {right_class}")
+
         
         logger.log(f"最终分配标签 - 左: {left_class}, 右: {right_class}")
-        return left_class, right_class
+        
+        # 获取当前节点的路径规则
+        current_path_rules = self._get_path_to_node(node)
+        
+        # 获取特征名称
+        feature_name = f"Feature {feature_idx}"
+        if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
+            feature_name = self._meta.features[feature_idx].name
+        
+        # 构建左右子节点的路径规则
+        is_categorical = self._meta.features[feature_idx].is_categorical if hasattr(self._meta, 'features') and feature_idx < len(self._meta.features) else False
+        
+        if is_categorical:
+            left_path_rules = current_path_rules + [f"{feature_name} = {split_value}"]
+            right_path_rules = current_path_rules + [f"{feature_name} != {split_value}"]
+        else:
+            left_path_rules = current_path_rules + [f"{feature_name} < {split_value}"]
+            right_path_rules = current_path_rules + [f"{feature_name} >= {split_value}"]
+        
+        # 使用路径规则直接验证标签
+        verified_left_class = self._llm_verify_leaf_node_with_rules(left_path_rules, left_class)
+        verified_right_class = self._llm_verify_leaf_node_with_rules(right_path_rules, right_class)
+        
+        return verified_left_class, verified_right_class
 
     def _process_categorical_feature(self, feature_idx, node):
         """专门处理分类特征的方法"""
@@ -665,6 +689,253 @@ class TrainStrategy:
         
         # 返回分裂结果...
 
+    def _get_path_to_node(self, node):
+        """获取从根节点到当前节点的路径规则"""
+        path = []
+        current = node
+        
+        while hasattr(current, 'parent') and current.parent is not None:
+            parent = current.parent
+            if not hasattr(parent, 'split_feature') or parent.split_feature is None:
+                break
+            
+            feature_idx = parent.split_feature
+            split_value = parent.split_value
+            
+            # 确定当前节点是左子节点还是右子节点
+            is_left = parent.left_child == current
+            
+            # 获取特征名称
+            feature_name = f"Feature {feature_idx}"
+            if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
+                feature_name = self._meta.features[feature_idx].name
+            
+            # 构建规则描述
+            if hasattr(parent, 'is_categorical') and parent.is_categorical:
+                if is_left:
+                    rule = f"{feature_name} = {split_value}"
+                else:
+                    rule = f"{feature_name} != {split_value}"
+            else:
+                if is_left:
+                    rule = f"{feature_name} < {split_value}"
+                else:
+                    rule = f"{feature_name} >= {split_value}"
+            
+            path.append(rule)
+            current = parent
+        
+        # 反转路径，使其从根节点开始
+        path.reverse()
+        return path
+
+    def _llm_verify_leaf_node(self, node, prediction):
+        """使用LLM验证叶子节点的预测标签"""
+        # 获取路径规则
+        path_rules = self._get_path_to_node(node)
+        if not path_rules:
+            logger.log("无法获取节点路径规则，跳过LLM验证")
+            return prediction
+        
+        # 构建特征描述
+        feature_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for i, feature in enumerate(self._meta.features):
+                feature_type = "Categorical" if feature.is_categorical else "Numerical"
+                desc = feature.desc if hasattr(feature, 'desc') and feature.desc else ""
+                feature_descriptions.append(f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}")
+        
+        # 构建标签描述
+        label_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for label in self._meta.labels:
+                meaning = label.meaning if hasattr(label, 'meaning') and label.meaning else ""
+                label_descriptions.append(f"Label {label.value}: {label.name} - {meaning}")
+        
+        # 构建prompt
+        prompt = f"""
+You are an expert in decision trees and data analysis. I have a decision tree with a leaf node that follows these rules:
+
+Rules from root to leaf:
+{' AND '.join(path_rules)}
+
+
+Feature information:
+{chr(10).join(feature_descriptions)}
+
+Possible labels:
+{chr(10).join(label_descriptions)}
+
+Based on the rules, feature information, and your knowledge about the relationship between these features and the possible outcomes, please analyze if the current prediction is reasonable.
+
+For each possible label, provide ONLY a confidence score between 0 and 1, where 1 means you're completely confident that this should be the prediction for samples that match these rules.
+Format your response exactly as follows (no additional text):
+{chr(10).join([f"Label {label.value}: [score]" for label in self._meta.labels])}
+"""
+        
+        # 调用LLM
+        logger.log(f"发送LLM验证请求，路径规则: {' AND '.join(path_rules)}")
+        
+        # 使用已有的runner进行调用
+        if not hasattr(self, 'llm_runner') or self.llm_runner is None:
+            # 使用与训练相同的runner
+            from ..runner import Runner
+            if hasattr(self, '_runner') and isinstance(self._runner, Runner):
+                self.llm_runner = self._runner
+            else:
+                logger.log("未设置LLM runner，跳过LLM验证")
+                return prediction
+        
+        try:
+            # 调用LLM
+            response_gen = self.llm_runner.run([prompt])
+            response = next(response_gen)[0]
+            
+            # 解析响应
+            logger.log(f"LLM响应: {response}")
+            
+            # 提取每个标签的信心值
+            confidence_scores = {}
+            highest_confidence = 0
+            best_label = prediction
+            
+            for line in response.split('\n'):
+                if line.startswith('Label '):
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        label_str = parts[0].strip().replace('Label ', '')
+                        try:
+                            label = int(label_str)
+                            confidence_str = parts[1].strip()
+                            # 提取数字
+                            import re
+                            confidence_match = re.search(r'(\d+\.\d+|\d+)', confidence_str)
+                            if confidence_match:
+                                confidence = float(confidence_match.group(1))
+                                confidence_scores[label] = confidence
+                                
+                                if confidence > highest_confidence:
+                                    highest_confidence = confidence
+                                    best_label = label
+                        except ValueError:
+                            continue
+            
+            # 检查是否需要替换标签
+            threshold = 0.8  # 可配置的阈值
+            if highest_confidence >= threshold and best_label != prediction:
+                logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
+                return best_label
+            else:
+                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
+                return prediction
+            
+        except Exception as e:
+            logger.log(f"LLM验证过程出错: {str(e)}")
+            return prediction
+
+    def _llm_verify_leaf_node_with_rules(self, path_rules, prediction):
+        """使用路径规则验证叶子节点的预测标签"""
+        if not path_rules:
+            logger.log("无法获取节点路径规则，跳过LLM验证")
+            return prediction
+        
+        # 构建特征描述
+        feature_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for i, feature in enumerate(self._meta.features):
+                feature_type = "Categorical" if feature.is_categorical else "Numerical"
+                desc = feature.desc if hasattr(feature, 'desc') and feature.desc else ""
+                feature_descriptions.append(f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}")
+        
+        # 构建标签描述
+        label_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for label in self._meta.labels:
+                meaning = label.meaning if hasattr(label, 'meaning') and label.meaning else ""
+                label_descriptions.append(f"Label {label.value}: {label.name} - {meaning}")
+        
+        # 构建prompt
+        prompt = f"""
+You are an expert in decision trees and data analysis. I have a decision tree with a leaf node that follows these rules:
+
+Rules from root to leaf:
+{' AND '.join(path_rules)}
+
+
+Feature information:
+{chr(10).join(feature_descriptions)}
+
+Possible labels:
+{chr(10).join(label_descriptions)}
+
+Based on the rules, feature information, and your knowledge about the relationship between these features and the possible outcomes, please analyze if the current prediction is reasonable.
+
+
+For each possible label, provide ONLY a confidence score between 0 and 1, where 1 means you're completely confident that this should be the prediction for samples that match these rules.
+Format your response exactly as follows (no additional text):
+{chr(10).join([f"Label {label.value}: [score]" for label in self._meta.labels])}
+"""
+        
+        # 调用LLM
+        logger.log(f"发送LLM验证请求，路径规则: {' AND '.join(path_rules)}")
+        
+        # 使用已有的runner进行调用
+        if not hasattr(self, 'llm_runner') or self.llm_runner is None:
+            # 使用与训练相同的runner
+            from ..runner import Runner
+            if hasattr(self, '_runner') and isinstance(self._runner, Runner):
+                self.llm_runner = self._runner
+            else:
+                logger.log("未设置LLM runner，跳过LLM验证")
+                return prediction
+        
+        try:
+            # 调用LLM
+            response_gen = self.llm_runner.run([prompt])
+            response = next(response_gen)[0]
+            
+            # 解析响应
+            logger.log(f"LLM响应: {response}")
+            
+            # 提取每个标签的信心值
+            confidence_scores = {}
+            highest_confidence = 0
+            best_label = prediction
+            
+            for line in response.split('\n'):
+                if line.startswith('Label '):
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        label_str = parts[0].strip().replace('Label ', '')
+                        try:
+                            label = int(label_str)
+                            confidence_str = parts[1].strip()
+                            # 提取数字
+                            import re
+                            confidence_match = re.search(r'(\d+\.\d+|\d+)', confidence_str)
+                            if confidence_match:
+                                confidence = float(confidence_match.group(1))
+                                confidence_scores[label] = confidence
+                                
+                                if confidence > highest_confidence:
+                                    highest_confidence = confidence
+                                    best_label = label
+                        except ValueError:
+                            continue
+            
+            # 检查是否需要替换标签
+            threshold = 0.6  # 可配置的阈值
+            if highest_confidence >= threshold and best_label != prediction:
+                logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
+                return best_label
+            else:
+                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
+                return prediction
+            
+        except Exception as e:
+            logger.log(f"LLM验证过程出错: {str(e)}")
+            return prediction
+
 
 class UnknownClassStrategy(TrainStrategy):
     def __init__(
@@ -684,6 +955,7 @@ class UnknownClassStrategy(TrainStrategy):
         self.max_depth = max_depth
         self.train_batch = train_batch
         self.hist_nbins = hist_nbins
+        self.llm_runner = runner  # 使用相同的runner进行LLM验证
 
     @property
     def _meta(self) -> DatasetMeta:
@@ -780,7 +1052,7 @@ class UnknownClassStrategy(TrainStrategy):
         """序列化单个规则为字符串"""
         if rule is None:
             return None
-        
+
         conditions = []
         for feature_id, condition in rule.conditions.items():
             feature_name = self._meta.features[feature_id].name
