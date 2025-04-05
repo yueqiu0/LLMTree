@@ -93,6 +93,19 @@ class TrainStrategy:
         logger.log(f"正在处理节点，深度: {next_split.depth}")
         
         samples = next_split.get_samples()
+        
+        # 新增：检查是否所有样本都属于同一类别
+        if samples is not None and len(samples) > 0:
+            node_labels = [self.train_y[i] for i in samples]
+            if len(set(node_labels)) == 1:
+                # 如果是，直接将该节点标记为叶子节点
+                logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {node_labels[0]}")
+                next_split.is_leaf = True
+                next_split.prediction = node_labels[0]
+                # 关键修复：确保节点被正确冻结，不再参与分裂
+                next_split.freeze()
+                return True, None
+        
         # 确保samples不是None，并且长度检查安全
         if samples is None or len(samples) < 2 or next_split.depth >= self.max_depth:
             logger.log(f"节点无法继续分裂: 样本数={len(samples) if samples is not None else 0}, 深度={next_split.depth}, 最大深度={self.max_depth}")
@@ -132,8 +145,8 @@ class TrainStrategy:
         
         # 执行分裂
         next_split.split(best_feature, split_values[0], 
-                        self._meta.features[best_feature].is_categorical,
-                        left_class, right_class)
+                      self._meta.features[best_feature].is_categorical,
+                      left_class, right_class)
         
         logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_values[0]}")
         

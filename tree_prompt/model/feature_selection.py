@@ -9,7 +9,7 @@ def calculate_weight_factor(depth: int) -> float:
     depth: 节点深度(1,2,3,...)
     return: LLM排序的权重(统计分析的权重为1-α)
     """
-    alpha = 1.0
+    alpha = 0.8
     logger.log(f"深度 {depth} 的权重因子计算: α={alpha:.2f}")
     return alpha
 
