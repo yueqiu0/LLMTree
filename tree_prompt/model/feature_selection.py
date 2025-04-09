@@ -97,6 +97,27 @@ def calculate_weight_factor(depth: int) -> float:
 #     logger.log(f"所有特征的卡方分数: {scores}")
 #     return scores
 
+def calculate_gini_impurity(y):
+    """
+    计算基尼不纯度
+    
+    Args:
+        y: 标签向量
+    
+    Returns:
+        float: 基尼不纯度
+    """
+    if len(y) == 0:
+        return 0.0
+    
+    # 计算每个类别的概率
+    _, counts = np.unique(y, return_counts=True)
+    probabilities = counts / len(y)
+    
+    # 计算基尼不纯度
+    gini = 1.0 - np.sum(probabilities ** 2)
+    return gini
+
 def calculate_gini_scores(
     X: np.ndarray, 
     y: np.ndarray,
@@ -133,6 +154,7 @@ def calculate_gini_scores(
             continue
         
         best_gain = 0.0
+        best_split = None
         
         if is_categorical:
             # 类别型特征
@@ -157,19 +179,35 @@ def calculate_gini_scores(
                 # 计算基尼系数增益
                 gain = parent_gini - weighted_gini
                 
-                # 更新最佳增益
+                # 记录所有尝试的分裂点
                 if gain > best_gain:
                     best_gain = gain
+                    best_split = val
                     logger.log(f"  特征值 {val} 的基尼增益: {gain:.4f} (新的最佳)")
+                else:
+                    logger.log(f"  特征值 {val} 的基尼增益: {gain:.4f}")
         else:
             # 数值型特征 - 使用CART算法尝试所有可能的分裂点
             # 对唯一值排序
             sorted_values = np.sort(unique_values)
             
+            # 确定小数位数 - 检查特征值的小数位数，取最大值加1
+            decimal_places = 1  # 默认至少保留1位小数
+            for val in sorted_values:
+                if isinstance(val, (float, np.float64, np.float32)):
+                    # 将值转换为字符串，然后检查小数点后的位数
+                    str_val = str(val)
+                    if '.' in str_val:
+                        curr_places = len(str_val.split('.')[1])
+                        decimal_places = max(decimal_places, curr_places + 1)
+            
             # 尝试所有可能的分裂点
             for i in range(len(sorted_values) - 1):
                 # 计算可能的分裂点（相邻值的中点）
                 split_value = (sorted_values[i] + sorted_values[i+1]) / 2
+                
+                # 格式化分裂点，控制小数位数
+                split_value = round(split_value, decimal_places)
                 
                 # 分割样本
                 left_mask = X[:, feat_idx] <= split_value
@@ -205,24 +243,55 @@ def calculate_gini_scores(
                 # 计算基尼系数增益
                 gain = parent_gini - weighted_gini
                 
-                # 更新最佳增益
+                # 记录所有尝试的分裂点
                 if gain > best_gain:
                     best_gain = gain
-                    logger.log(f"  分裂点 {split_value:.4f} 的基尼增益: {gain:.4f} (新的最佳)")
+                    best_split = split_value
+                    logger.log(f"  分裂点 {split_value:.{decimal_places}f} 的基尼增益: {gain:.4f} (新的最佳)")
+                else:
+                    logger.log(f"  分裂点 {split_value:.{decimal_places}f} 的基尼增益: {gain:.4f}")
         
-        scores[feat_idx] = best_gain
+        # 保存最佳增益和分裂点
+        scores[feat_idx] = round(best_gain, 4)
+        
+        # 格式化输出最佳分裂点
+        if isinstance(best_split, (float, np.float64, np.float32)):
+            # 确定小数位数
+            decimal_places = 1
+            for val in unique_values:
+                if isinstance(val, (float, np.float64, np.float32)):
+                    str_val = str(val)
+                    if '.' in str_val:
+                        curr_places = len(str_val.split('.')[1])
+                        decimal_places = max(decimal_places, curr_places + 1)
+            
+            logger.log(f"  特征 {feat_idx} 的最佳分裂点: {best_split:.{decimal_places}f}, 最佳基尼增益: {best_gain:.4f}")
+        else:
+            logger.log(f"  特征 {feat_idx} 的最佳分裂点: {best_split}, 最佳基尼增益: {best_gain:.4f}")
     
-    logger.log(f"所有特征的基尼系数增益: {scores}")
+    # 格式化输出所有特征的基尼系数增益
+    formatted_scores = {k: f"{v:.4f}" for k, v in scores.items()}
+    logger.log(f"所有特征的基尼系数增益: {formatted_scores}")
+    
     return scores
 
 def select_best_feature(
     llm_ranking: list[int], 
-    gini_scores: Dict[int, float],  # 这里改为基尼系数增益
+    gini_scores: Dict[int, float],
     depth: int, 
     used_features: set[int] = None
 ) -> int:
     """
     根据LLM排名和基尼系数增益选择最佳特征
+    
+    Args:
+        llm_ranking: LLM给出的特征重要性排序
+        gini_scores: 特征索引到基尼系数增益的映射
+        depth: 当前节点深度
+        used_features: 已使用的特征集合
+    
+    Returns:
+        int: 选择的特征索引
     """
     if used_features is None:
         used_features = set()
