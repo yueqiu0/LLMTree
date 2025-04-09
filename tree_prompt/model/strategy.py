@@ -4,13 +4,14 @@ from itertools import product
 from functools import reduce
 import random
 from tqdm import tqdm
+from collections import Counter
 
 from ..dataset import DatasetMeta, get_feature_importance_ranking
 from ..runner import Runner
 from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializer
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
-from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor
+from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
 
 
 def _get_feature_values(
@@ -136,19 +137,37 @@ class TrainStrategy:
             next_split.freeze()
             return True, None
         
-        logger.log(f"分裂点: {split_values[0]}")
+        # 格式化分裂点输出
+        split_value = split_values[0]
+        if isinstance(split_value, (float, np.float64, np.float32)):
+            # 确定小数位数
+            node_samples = next_split.get_samples()
+            node_data = self.train_x[node_samples, best_feature]
+            unique_values = np.unique(node_data)
+            
+            decimal_places = 1  # 默认至少保留1位小数
+            for val in unique_values:
+                if isinstance(val, (float, np.float64, np.float32)):
+                    str_val = str(val)
+                    if '.' in str_val:
+                        curr_places = len(str_val.split('.')[1])
+                        decimal_places = max(decimal_places, curr_places + 1)
+            
+            logger.log(f"分裂点: {split_value:.{decimal_places}f}")
+        else:
+            logger.log(f"分裂点: {split_value}")
         
         # 简单启发式选择标签
         logger.log("分配叶节点值...")
-        left_class, right_class = self._assign_leaf_values(next_split, best_feature, split_values[0])
+        left_class, right_class = self._assign_leaf_values(next_split, best_feature, split_value)
         logger.log(f"左子节点标签: {left_class}, 右子节点标签: {right_class}")
         
         # 执行分裂
-        next_split.split(best_feature, split_values[0], 
+        next_split.split(best_feature, split_value, 
                       self._meta.features[best_feature].is_categorical,
                       left_class, right_class)
         
-        logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_values[0]}")
+        logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_value}")
         
         # 无需每次都调用LLM评估
         return True, 0.0
@@ -324,10 +343,22 @@ class TrainStrategy:
             logger.log(f"特征 {self._meta.features[feature_idx].name} 的所有值都相同，跳过分裂")
             return []
         
+        # 确定小数位数 - 检查特征值的小数位数，取最大值加1
+        decimal_places = 1  # 默认至少保留1位小数
+        for val in unique_values:
+            if isinstance(val, (float, np.float64, np.float32)):
+                # 将值转换为字符串，然后检查小数点后的位数
+                str_val = str(val)
+                if '.' in str_val:
+                    curr_places = len(str_val.split('.')[1])
+                    decimal_places = max(decimal_places, curr_places + 1)
+        
         # 如果只有两个不同的值，使用它们的中点
         if len(unique_values) == 2:
             split_point = (unique_values[0] + unique_values[1]) / 2
-            logger.log(f"只有两个不同值，使用中点 {split_point} 作为分裂点")
+            # 格式化分裂点，控制小数位数
+            split_point = round(split_point, decimal_places)
+            logger.log(f"只有两个不同值，使用中点 {split_point:.{decimal_places}f} 作为分裂点")
             return [split_point]
         
         # CART算法：尝试所有可能的分裂点，找到最优的
@@ -344,6 +375,9 @@ class TrainStrategy:
         for i in range(len(unique_values) - 1):
             # 计算可能的分裂点（相邻值的中点）
             split_value = (unique_values[i] + unique_values[i+1]) / 2
+            
+            # 格式化分裂点，控制小数位数
+            split_value = round(split_value, decimal_places)
             
             # 分割样本
             left_mask = node_data <= split_value
@@ -385,18 +419,15 @@ class TrainStrategy:
                 best_split = split_value
                 
                 # 记录详细信息
-                logger.log(f"新的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
+                logger.log(f"新的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
                 logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
                 logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
         
         if best_split is not None:
-            logger.log(f"最终选择的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
+            logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
             return [best_split]
-        else:
-            # 如果没有找到有效的分裂点，使用中位数作为备选
-            median_split = np.median(unique_values)
-            logger.log(f"未找到有效分裂点，使用中位数 {median_split} 作为备选")
-            return [median_split]
+        
+        return []
     
     def _assign_leaf_values(self, node, feature_idx, split_value):
         """使用多数投票快速确定叶节点值"""
@@ -1149,3 +1180,112 @@ class FeatureBaggingStrategy(TrainStrategy):
                 [], self.sub_strategies, (self.train_x, self.train_y)
             ),
         }
+
+    def _determine_split_point(self, node, feature_idx):
+        """确定特征的最佳分裂点"""
+        # 获取节点样本
+        node_samples = node.get_samples()
+        node_x = self.train_x[node_samples]
+        node_y = self.train_y[node_samples]
+        
+        logger.log(f"节点({id(node)})样本标签分布: {dict(Counter(node_y))}, 总样本数: {len(node_y)}")
+        
+        # 检查特征是否为类别型
+        is_categorical = self._meta.features[feature_idx].is_categorical if feature_idx < len(self._meta.features) else False
+        
+        if is_categorical:
+            # 类别型特征，找出最佳类别值作为分裂点
+            unique_values = np.unique(node_x[:, feature_idx])
+            best_gain = 0.0
+            best_split = None
+            
+            for val in unique_values:
+                left_mask = node_x[:, feature_idx] == val
+                right_mask = ~left_mask
+                
+                # 确保两边都有样本
+                if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+                    continue
+                
+                # 计算基尼增益
+                parent_gini = calculate_gini_impurity(node_y)
+                left_gini = calculate_gini_impurity(node_y[left_mask])
+                right_gini = calculate_gini_impurity(node_y[right_mask])
+                
+                left_weight = np.sum(left_mask) / len(node_y)
+                right_weight = np.sum(right_mask) / len(node_y)
+                
+                weighted_gini = left_weight * left_gini + right_weight * right_gini
+                gain = parent_gini - weighted_gini
+                
+                if gain > best_gain:
+                    best_gain = gain
+                    best_split = val
+                    logger.log(f"新的最佳分裂点: {val}, 增益: {gain:.4f}")
+                    logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
+                    logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+            
+            logger.log(f"最终选择的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
+            return best_split
+        else:
+            # 数值型特征，找出最佳阈值作为分裂点
+            unique_values = np.unique(node_x[:, feature_idx])
+            
+            # 确定小数位数 - 检查特征值的小数位数，取最大值加1
+            decimal_places = 1  # 默认至少保留1位小数
+            for val in unique_values:
+                if isinstance(val, (float, np.float64, np.float32)):
+                    # 将值转换为字符串，然后检查小数点后的位数
+                    str_val = str(val)
+                    if '.' in str_val:
+                        curr_places = len(str_val.split('.')[1])
+                        decimal_places = max(decimal_places, curr_places + 1)
+            
+            # 对特征值排序
+            sorted_indices = np.argsort(node_x[:, feature_idx])
+            sorted_feature = node_x[sorted_indices, feature_idx]
+            sorted_y = node_y[sorted_indices]
+            
+            best_gain = 0.0
+            best_split = None
+            
+            # 尝试所有可能的分裂点
+            for i in range(1, len(sorted_feature)):
+                # 如果当前值与前一个值相同，跳过
+                if sorted_feature[i] == sorted_feature[i-1]:
+                    continue
+                
+                # 计算分裂点（相邻值的中点）
+                split_value = (sorted_feature[i] + sorted_feature[i-1]) / 2
+                
+                # 格式化分裂点，控制小数位数
+                split_value = round(split_value, decimal_places)
+                
+                # 创建左右子节点的掩码
+                left_mask = node_x[:, feature_idx] <= split_value
+                right_mask = ~left_mask
+                
+                # 确保两边都有样本
+                if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+                    continue
+                
+                # 计算基尼增益
+                parent_gini = calculate_gini_impurity(node_y)
+                left_gini = calculate_gini_impurity(node_y[left_mask])
+                right_gini = calculate_gini_impurity(node_y[right_mask])
+                
+                left_weight = np.sum(left_mask) / len(node_y)
+                right_weight = np.sum(right_mask) / len(node_y)
+                
+                weighted_gini = left_weight * left_gini + right_weight * right_gini
+                gain = parent_gini - weighted_gini
+                
+                if gain > best_gain:
+                    best_gain = gain
+                    best_split = split_value
+                    logger.log(f"新的最佳分裂点: {split_value:.{decimal_places}f}, 增益: {gain:.4f}")
+                    logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
+                    logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+            
+            logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
+            return best_split
