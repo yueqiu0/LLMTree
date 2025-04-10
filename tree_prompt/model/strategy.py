@@ -720,6 +720,91 @@ class TrainStrategy:
         
         # 返回分裂结果...
 
+    def _serialize_rule(self, rule):
+        """序列化单个规则为字符串"""
+        if rule is None:
+            return None
+        
+        conditions = []
+        for feature_id, condition in rule.conditions.items():
+            feature_name = self._meta.features[feature_id].name
+            if condition.is_categorical:
+                values = list(condition.categories)
+                if len(values) == 0:
+                    # 空集合表示"不等于"任何分裂值
+                    # 我们需要找出这个特征在决策树中的分裂值
+                    
+                    # 获取该特征的所有可能值
+                    feature_values = []
+                    if hasattr(self.tree, 'categories_map') and self.tree.categories_map and feature_id in self.tree.categories_map:
+                        # 从决策树的类别映射中获取
+                        feature_values = list(self.tree.categories_map[feature_id])
+                    else:
+                        # 从元数据中获取
+                        for label in self._meta.features[feature_id].labels:
+                            feature_values.append(label.name)
+                    
+                    # 查找该特征的分裂值
+                    split_value = None
+                    # 从决策树根节点开始搜索该特征的分裂节点
+                    def find_split_value(node):
+                        if node is None or node.is_leaf:
+                            return None
+                        if node.split_feature == feature_id:
+                            return node.split_value
+                        left_result = find_split_value(node.left_child)
+                        if left_result is not None:
+                            return left_result
+                        return find_split_value(node.right_child)
+                    
+                    split_value = find_split_value(self.tree.root_node)
+                    
+                    if split_value is not None:
+                        # 如果找到了分裂值，使用"不等于"表达式
+                        conditions.append(f"{feature_name} != {split_value}")
+                    else:
+                        # 如果无法找到分裂值，使用通用表达式
+                        conditions.append(f"{feature_name} 不等于任何分裂值")
+                        logger.log(f"警告: 无法确定特征 {feature_name} 的分裂值")
+                elif len(values) == 1:
+                    conditions.append(f"{feature_name} = {values[0]}")
+                else:
+                    values_str = ", ".join([str(v) for v in values])
+                    conditions.append(f"{feature_name} in [{values_str}]")
+            else:
+                lower_bound = condition.lower
+                upper_bound = condition.upper
+                
+                if lower_bound is not None and upper_bound is not None:
+                    conditions.append(f"{lower_bound} ≤ {feature_name} < {upper_bound}")
+                elif lower_bound is not None:
+                    conditions.append(f"{feature_name} ≥ {lower_bound}")
+                elif upper_bound is not None:
+                    conditions.append(f"{feature_name} < {upper_bound}")
+        
+        # 修复这里：通过值查找标签，而不是使用值作为索引
+        label_name = None
+        rule_value = rule.value
+        
+        # 打印调试信息
+        logger.log(f"规则值: {rule_value}, 标签信息: {[f'值:{l.value},名称:{l.name}' for l in self._meta.labels]}")
+        
+        # 查找匹配的标签
+        for label in self._meta.labels:
+            if label.value == rule_value:
+                label_name = label.name
+                break
+        
+        # 如果没找到匹配的标签，使用默认名称
+        if label_name is None:
+            label_name = f"未知标签({rule_value})"
+            logger.log(f"警告: 未找到值为 {rule_value} 的标签")
+        
+        if conditions:
+            return f"IF {' AND '.join(conditions)} THEN {label_name}"
+        else:
+            return f"{label_name} (无条件)"
+
     def _get_path_to_node(self, node):
         """获取从根节点到当前节点的路径规则"""
         path = []
@@ -1078,55 +1163,6 @@ class UnknownClassStrategy(TrainStrategy):
 
         rules.sort(key=lambda x: x[1])
         return [x[0] for x in rules]
-
-    def _serialize_rule(self, rule):
-        """序列化单个规则为字符串"""
-        if rule is None:
-            return None
-
-        conditions = []
-        for feature_id, condition in rule.conditions.items():
-            feature_name = self._meta.features[feature_id].name
-            if condition.is_categorical:
-                values = list(condition.categories)
-                if len(values) == 1:
-                    conditions.append(f"{feature_name} = {values[0]}")
-                else:
-                    values_str = ", ".join([str(v) for v in values])
-                    conditions.append(f"{feature_name} in [{values_str}]")
-            else:
-                lower_bound = condition.lower
-                upper_bound = condition.upper
-                
-                if lower_bound is not None and upper_bound is not None:
-                    conditions.append(f"{lower_bound} ≤ {feature_name} < {upper_bound}")
-                elif lower_bound is not None:
-                    conditions.append(f"{feature_name} ≥ {lower_bound}")
-                elif upper_bound is not None:
-                    conditions.append(f"{feature_name} < {upper_bound}")
-        
-        # 修复这里：通过值查找标签，而不是使用值作为索引
-        label_name = None
-        rule_value = rule.value
-        
-        # 打印调试信息
-        logger.log(f"规则值: {rule_value}, 标签信息: {[f'值:{l.value},名称:{l.name}' for l in self._meta.labels]}")
-        
-        # 查找匹配的标签
-        for label in self._meta.labels:
-            if label.value == rule_value:
-                label_name = label.name
-                break
-        
-        # 如果没找到匹配的标签，使用默认名称
-        if label_name is None:
-            label_name = f"未知标签({rule_value})"
-            logger.log(f"警告: 未找到值为 {rule_value} 的标签")
-        
-        if conditions:
-            return f"IF {' AND '.join(conditions)} THEN {label_name}"
-        else:
-            return f"{label_name} (无条件)"
 
     def export(self) -> any:
         return {
