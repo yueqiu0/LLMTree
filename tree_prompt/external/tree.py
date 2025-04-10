@@ -2,6 +2,12 @@ from sklearn.preprocessing import OneHotEncoder
 import sklearn.tree
 import sklearn.ensemble
 import numpy as np
+import jinja2
+import tree_prompt.logger as logger
+import re
+from xgboost import XGBClassifier
+from typing import TYPE_CHECKING
+from ..runner import Runner
 
 from .. import dataset
 from ..dataset import DatasetMeta
@@ -59,7 +65,108 @@ class DecisionTree:
         export_rules: bool,
     ) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError()
+    
+class LLMDecisionTree(DecisionTree):
+    def __init__(self, meta: DatasetMeta, model_name: str, temperature: float, max_depth: int, max_retry: int = 3):
+        super().__init__(meta)
+        # 新增特征重要性记录
+        
+        # 新增动态模板上下文
+        self.template_context = {
+            "features": [feat.name for feat in meta.features],  # 获取特征名称
+            "labels": [label.name for label in meta.labels],  # 获取标签名称
+            "max_depth": max_depth,
+            "num_features": len(meta.features),  # 特征数量
+            "num_labels": len(meta.labels),  # 标签数量
+            "feature_descriptions": [feat.desc for feat in meta.features]  # 获取特征描述
+        }
 
+    def build_tree(self, template: jinja2.Template, runner: Runner) -> bool:
+        """使用动态模板生成提示"""
+        prompt = template.render(**self.template_context)
+        # 记录生成的原始提示（调试用）
+        logger.log(f"[LLM Prompt]\n{prompt}")
+        
+        # 原有代码保持不变...
+
+
+    def predict(self, x_train, y_train, x_test, export_rules=False):
+        """动态特征预测"""
+        if self._rules is None:
+            raise RuntimeError("Call build_tree() first")
+
+        predictions = []
+        feature_names = [feat.name for feat in self.meta.features]  # 获取特征名称
+        
+        for sample in x_test:
+            feat_dict = dict(zip(feature_names, sample))
+            pred = self._dynamic_traverse(feat_dict, self._rules.split('\n'))
+            predictions.append(self.meta.get_label_value(pred))
+
+        return np.array(predictions), self._rules if export_rules else None
+
+
+    def _dynamic_traverse(self, features: dict, rules: list) -> str:
+        """动态特征遍历"""
+        stack = [(0, 0)]  # (indent_level, line_index)
+        
+        while stack:
+            indent, idx = stack.pop()
+            if idx >= len(rules):
+                continue
+                
+            line = rules[idx].strip()
+            current_indent = len(rules[idx]) - len(line)
+            
+            if current_indent < indent:
+                continue
+                
+            if "<=" in line:
+                parts = line.split("<=")
+                feat = parts[0].split()[-1].strip()
+                value = float(parts[1].split()[0])
+                
+                if feat in features and features[feat] <= value:
+                    stack.append((current_indent+1, idx+1))
+                else:
+                    # 跳过同级节点
+                    next_idx = idx + 1
+                    while next_idx < len(rules):
+                        next_indent = len(rules[next_idx]) - len(rules[next_idx].lstrip())
+                        if next_indent <= current_indent:
+                            break
+                        next_idx += 1
+                    stack.append((current_indent, next_idx))
+                    
+            elif "class:" in line:
+                return line.split(":")[-1].strip()
+                
+        return self.meta.target_names[0]  # 默认返回
+
+
+    def get_template_context(self):
+        """为模板提供动态上下文"""
+        return {
+            "features": [feat.name for feat in self.meta.features],  # 获取特征名称
+            "labels": [label.name for label in self.meta.labels],  # 获取标签名称
+            "max_depth": self.max_depth,  # Max depth for the tree
+            "num_features": len(self.meta.features),  # 特征数量
+            "num_labels": len(self.meta.labels)  # 标签数量
+        }
+
+
+    def _get_feature_ranges(self):
+        """获取每个特征的数值范围"""
+        ranges = {}
+        for i, feat in enumerate(self.meta.features):
+            if feat.type == 'numerical':  # 根据特征类型筛选数值型特征
+                values = self.x_train[:, i]
+                ranges[feat.name] = {  # 使用 feat.name 作为特征名称
+                    'min': np.min(values),
+                    'max': np.max(values),
+                    'mean': np.mean(values)
+                }
+        return ranges
 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:

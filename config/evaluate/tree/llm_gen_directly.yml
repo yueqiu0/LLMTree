@@ -1,0 +1,11 @@
+config:
+  tree_type: llm
+  llm_gen_tree: true
+  tree_only: false
+  tree_args:
+    max_depth: 3
+  llm_tree_args:
+    model_name: "togethercomputer/llama-2-70b-chat"
+    temperature: 0
+    max_retry: 3
+  use_tree_rules: true

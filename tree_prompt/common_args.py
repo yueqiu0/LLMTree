@@ -58,3 +58,13 @@ class FeatureBaggingStrategyArgs(_Repr):
         self.max_depth: int = None
         self.num_trees: int = 3
         self.hist_nbins: int = 10
+
+class LLMTreeArgs:
+    def __init__(self):
+        self.max_retry: int = 3
+        self.temperature: float = 0.3
+        self.model_name: str = "gpt-3.5-turbo"
+        self.max_depth: int = 3
+
+    def __repr__(self):
+        return str(self.__dict__)

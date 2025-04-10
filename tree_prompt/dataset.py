@@ -90,6 +90,13 @@ class DatasetMeta:
             if feature.is_categorical:
                 categories_map[i] = set(feature.categories.keys())
         return categories_map
+    
+    def feature_names(self) -> List[str]:
+        return [feature.name for feature in self.features]
+    
+    def feature_descriptions(self) -> List[str]:
+        """返回所有特征的描述"""
+        return [feature.desc for feature in self.features]
 
     def __repr__(self) -> str:
         return str(self.__dict__)
@@ -151,6 +158,7 @@ def load_dataset(
     args: DatasetArgs,
 ) -> tuple[DatasetMeta, np.ndarray, np.ndarray]:
     meta = load_meta(args.meta_file)
+    meta.num_classes = len(meta.labels)  # Add this after loading the dataset
     if args.format == "libsvm":
         x, y = sklearn.datasets.load_svmlight_file(args.data_file)
         x = x.toarray()

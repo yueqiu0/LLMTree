@@ -1,0 +1,54 @@
+{# 新增特征描述部分 #}
+{% block feature_descriptions -%}
+{% if feature_descriptions is defined and feature_descriptions %}
+Feature Details:
+{% for feat in features %}
+    {% if feat is defined %}
+        {{ feat }}: {{ feature_descriptions[feat] | default('No description available') }}
+    {% endif %}
+{% endfor %}
+{% endif %}
+{%- endblock %}
+
+{# 重构决策树生成部分 #}
+{% block tree_generation -%}
+Generate a decision tree with maximum depth of {{ max_depth }} using the MOST DISCRIMINATIVE features.
+
+Key considerations:
+1. Prioritize features with higher predictive power
+2. Balance tree depth and interpretability
+3. Use thresholds that maximize information gain
+
+Available features ({{ num_features }}):
+{% for feat in features %}
+    {% if feat is defined %}
+        {{ loop.index }}. {{ feat }}{% if not loop.last %}, {% endif %}
+    {% endif %}
+{% endfor %}
+
+Possible classes ({{ num_labels }}):
+{% for label in labels %}
+    {% if label is defined %}
+        {{ loop.index }}. {{ label }}{% if not loop.last %}, {% endif %}
+    {% endif %}
+{% endfor %}
+
+{{ self.feature_descriptions() }}
+
+Decision Tree Structure:
+{% for depth in range(max_depth) %}
+    {{ "  " * depth }}if {{ features[loop.index0] }} <= [VALUE]:
+    {{ "  " * (depth+1) }}return {{ labels[loop.index0 % num_labels] }}
+{% endfor %}
+
+Please generate the tree using this format:
+if feature <= value:
+    return class
+if feature > value:
+    if feature <= value:
+        return class
+    else:
+        return class
+
+Decision Tree:
+{% endblock %}

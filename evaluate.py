@@ -11,7 +11,6 @@ from argparse import ArgumentParser
 import yaml
 from pathlib import Path
 import os
-
 import tree_prompt.prompt as prompt
 import tree_prompt.dataset as dataset
 from tree_prompt.external.tree import (
@@ -20,6 +19,7 @@ from tree_prompt.external.tree import (
     XGBoostDecisionTree,
     RandomForestDecisionTree,
     FederatedDecisionTree,
+    LLMDecisionTree,
 )
 from tree_prompt.prompt import (
     Serializer,
@@ -76,7 +76,16 @@ class XGBoostArgs:
     def __repr__(self):
         return str(self.__dict__)
 
-
+class LLMTreeArgs:
+    def __init__(self) -> None:
+        self.model_name: str = "togethercomputer/llama-2-70b-chat"
+        self.temperature: float = 0
+        self.max_retry: int = 3
+        self.max_depth: int = 3
+    
+    def __repr__(self):
+        return str(self.__dict__)
+    
 RandomForestArgs = XGBoostArgs
 FederatedTreeArgs = XGBoostArgs
 
@@ -101,10 +110,13 @@ class EvaluateArgs:
         self.serializer_type: str = None
         self.exp_id: str = ""
         self.print_only: bool = False
+        self.llm_gen_tree: bool = False
+        self.llm_tree_args: LLMTreeArgs = LLMTreeArgs()  
 
     def get_missing_fields(self) -> list[str]:
         missing_fields = _get_missing_fields(self)
 
+        # Runner参数检查（保持不变）
         if (
             (
                 self.runner == "openai_api"
@@ -120,10 +132,10 @@ class EvaluateArgs:
             )
         ):
             missing_fields.append("runner_args")
-
         elif self.runner_args:
             missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
+        # Tree参数检查（添加LLM支持）
         if (
             (
                 self.tree_type == "simple"
@@ -137,11 +149,16 @@ class EvaluateArgs:
                 (self.tree_type == "random_forest" or self.tree_type == "federated")
                 and not isinstance(self.tree_args, RandomForestArgs)
             )
+            or (  # 新增LLM树类型检查
+                self.tree_type == "llm"
+                and not isinstance(self.tree_args, LLMTreeArgs)
+            )
         ):
             missing_fields.append("tree_args")
         elif self.tree_args:
             missing_fields += _get_missing_fields(self.tree_args, "tree_args")
 
+        # Dataset参数检查（保持不变）
         if self.dataset_args:
             missing_fields += _get_missing_fields(self.dataset_args, "dataset")
 
@@ -197,11 +214,13 @@ class EvaluateArgs:
         if self.tree_type == "simple":
             self.tree_args = SimpleTreeArgs()
         elif self.tree_type == "xgboost":
-            self.tree_args = XGBoostArgs()
+                self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
-            self.tree_args = RandomForestArgs()
+                self.tree_args = RandomForestArgs()
+        elif self.tree_type == "llm":  # 新增LLM树类型支持
+                self.tree_args = LLMTreeArgs()
         else:
-            raise ValueError("Unknown tree type: {}".format(self.tree_type))
+                raise ValueError("Unknown tree type: {}".format(self.tree_type))
 
         _load_from_dict(self.tree_args, tree_args_dict)
 
@@ -281,6 +300,10 @@ def parse_args() -> EvaluateArgs:
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
 
+    parser.add_argument("--llm-gen-tree", action="store_true", help="Enable LLM-generated decision tree")
+    parser.add_argument("--llm-max-depth", type=int, help="Max depth for LLM tree")
+    parser.add_argument("--llm-temperature", type=float, help="Temperature for LLM generation")
+    
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -401,6 +424,17 @@ def parse_args() -> EvaluateArgs:
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
 
+    if cml_args.llm_gen_tree:
+        args.llm_gen_tree = True
+        args.tree_type = "llm"
+        args.use_tree_rules = True
+        
+        if cml_args.llm_max_depth:
+            args.llm_tree_args.max_depth = cml_args.llm_max_depth
+        if cml_args.llm_temperature:
+            args.llm_tree_args.temperature = cml_args.llm_temperature
+        if cml_args.model_name:
+            args.llm_tree_args.model_name = cml_args.model_name
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if (
@@ -457,6 +491,8 @@ def gen_prompt(
     for y in y_test:
         test_labels.append(meta.find_label(y).name)
 
+    # Ensure that tree context is included dynamically
+    prompts.append(master_template.render(meta=meta, max_depth=3))  # Dynamically render the template with meta info
     return prompts, test_splits, test_labels
 
 
@@ -599,41 +635,12 @@ def main():
         raise NotImplementedError("Not implemented yet")
 
     results: dict[int, list] = {}
-
-    if args.tree_type == "simple":
-        tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
-    elif args.tree_type == "xgboost":
-        tree_model = XGBoostDecisionTree(
-            meta,
-            args.tree_args.max_depth,
-            args.tree_args.num_trees,
-            args.random_seed,
-        )
-    elif args.tree_type == "random_forest":
-        if not args.tree_only:
-            raise ValueError("Random forest is only supported in tree only mode")
-        tree_model = RandomForestDecisionTree(
-            meta,
-            args.tree_args.num_trees,
-            args.tree_args.max_depth,
-        )
-    elif args.tree_type == "federated":
-        if not args.tree_only:
-            raise ValueError("Federated tree is only supported in tree only mode")
-        tree_model = FederatedDecisionTree(
-            meta,
-            args.tree_args.num_trees,
-            args.tree_args.max_depth,
-        )
-    else:
-        raise ValueError("Unknown tree type: {}".format(args.tree_type))
-
+    
     runner, serializer, master_template = None, None, None
-
+    
     if not args.tree_only:
         if args.runner == "openai_api":
             from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
-
             runner = OpenAIAPIParallelRunner(
                 args.runner_args.api_base,
                 args.runner_args.model_name,
@@ -642,10 +649,8 @@ def main():
                 args.runner_args.timeout,
                 args.runner_args.parallel_batch_size,
             )
-
         elif args.runner == "huggingchat":
             from tree_prompt.runner.huggingchat import HuggingChatParallelRunner
-
             runner = HuggingChatParallelRunner(
                 args.runner_args.hf_username,
                 args.runner_args.hf_password,
@@ -655,7 +660,6 @@ def main():
             )
         elif args.runner == "together_api":
             from tree_prompt.runner.together_api import TogetherAPIParallelRunner
-
             runner = TogetherAPIParallelRunner(
                 args.runner_args.api_base,
                 args.runner_args.model_name,
@@ -667,20 +671,75 @@ def main():
         else:
             raise ValueError("Unknown runner type: {}".format(args.runner))
 
-        if args.serializer_type == "tabular":
-            serializer = TabularSerializer(meta)
-        elif args.serializer_type == "list":
-            serializer = ListSerializer(meta)
-        elif args.serializer_type == "text":
-            serializer = TextSerializer(meta)
-        else:
-            raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
+    # 统一模板加载方式，所有树类型都从这里加载
+    master_template_path = Path(args.template)
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(master_template_path.parent),
+    )
+    master_template = env.get_template(master_template_path.name)
 
-        master_template_path = Path(args.template)
-        env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(master_template_path.parent),
+    if args.serializer_type == "tabular":
+        serializer = TabularSerializer(meta)
+    elif args.serializer_type == "list":
+        serializer = ListSerializer(meta)
+    elif args.serializer_type == "text":
+        serializer = TextSerializer(meta)
+    else:
+        raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
+
+    # 初始化树模型
+    if args.tree_type == "llm":
+        tree_model = LLMDecisionTree(
+            meta,
+            args.llm_tree_args.model_name,
+            args.llm_tree_args.temperature,
+            args.llm_tree_args.max_depth
         )
-        master_template = env.get_template(master_template_path.name)
+        
+        # 使用统一的模板渲染方式
+        prompt = master_template.render(
+            meta=meta,
+            max_depth=args.llm_tree_args.max_depth,
+            features=meta.feature_names(),
+            labels=meta.label_names(),
+            num_features=len(meta.feature_names()),
+            num_labels=len(meta.label_names()),
+            feature_descriptions=meta.feature_descriptions()
+        )
+
+        if runner is None:
+            raise ValueError("Runner must be initialized for LLM tree generation")
+
+        if not tree_model.build_tree(prompt, runner):
+            raise ValueError("Failed to generate valid decision tree from LLM")
+    else:
+        if args.tree_type == "simple":
+            tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
+        elif args.tree_type == "xgboost":
+            tree_model = XGBoostDecisionTree(
+                meta,
+                args.tree_args.max_depth,
+                args.tree_args.num_trees,
+                args.random_seed,
+            )
+        elif args.tree_type == "random_forest":
+            if not args.tree_only:
+                raise ValueError("Random forest is only supported in tree only mode")
+            tree_model = RandomForestDecisionTree(
+                meta,
+                args.tree_args.num_trees,
+                args.tree_args.max_depth,
+            )
+        elif args.tree_type == "federated":
+            if not args.tree_only:
+                raise ValueError("Federated tree is only supported in tree only mode")
+            tree_model = FederatedDecisionTree(
+                meta,
+                args.tree_args.num_trees,
+                args.tree_args.max_depth,
+            )
+        else:
+            raise ValueError("Unknown tree type: {}".format(args.tree_type))
 
     results: dict[int, list[dict]] = {}
 
