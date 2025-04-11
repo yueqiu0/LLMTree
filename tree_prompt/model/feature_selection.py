@@ -329,7 +329,7 @@ def select_best_feature(
     
     # 输出详细的特征选择信息
     logger.log("特征选择详情:")
-    for feature, score, llm_score, gini_score in combined_scores[:5]:  # 仅输出前5个特征
+    for feature, score, llm_score, gini_score in combined_scores: 
         logger.log(f"  特征 {feature}: 合并分数 {score:.4f} (LLM: {llm_score:.4f}, 基尼: {gini_score:.4f})")
     
     # 返回得分最高的特征
