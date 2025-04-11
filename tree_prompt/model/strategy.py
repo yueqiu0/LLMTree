@@ -1040,7 +1040,7 @@ Format your response exactly as follows (no additional text):
                             continue
             
             # 检查是否需要替换标签
-            threshold = 0.6  # 可配置的阈值
+            threshold = 0.8  # 可配置的阈值
             if highest_confidence >= threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
