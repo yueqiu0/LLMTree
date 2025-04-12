@@ -186,46 +186,53 @@ class TrainStrategy:
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
-        """预测单个样本，返回原始标签值"""
-        # 添加调试信息
-        logger.log(f"开始预测，_meta.labels: {[(i, l.name, l.value) for i, l in enumerate(self._meta.labels)]}")
-        
+        """使用决策树直接预测（无LLM）"""
         if self.tree is None:
-            logger.log("警告: 决策树尚未初始化")
             return [-1] * len(x)  # 返回未知标签
         
-        # 获取决策树预测结果
-        raw_predictions = self.tree.predict(x)
-        
-        # 添加调试信息，显示原始预测和转换过程
-        logger.log(f"原始预测结果: {raw_predictions[:10]}...")  # 只显示前10个
-        
-        # 对每个预测结果进行转换
+        # 直接使用树进行预测
         results = []
-        for idx in raw_predictions:
-            # 打印更多调试信息
-            logger.log(f"处理预测结果: {idx}")
-            
-            # 安全地获取标签值
-            if idx >= 0:
-                # 查找对应的标签值而不是使用索引直接访问
-                label_value = None
-                for label in self._meta.labels:
-                    if label.value == idx:
-                        label_value = idx
-                        break
+        for sample in x:
+            # 使用树预测 - 通过root节点遍历
+            curr_node = self.tree.root_node
+            while not curr_node.is_leaf:
+                if curr_node.split_feature is None:
+                    # 如果节点没有分裂特征，表示它应该是叶节点
+                    curr_node.is_leaf = True
+                    break
+                    
+                # 获取样本在分裂特征上的值
+                feature_value = sample[curr_node.split_feature]
                 
-                if label_value is None:
-                    logger.log(f"警告: 未找到标签值为 {idx} 的标签，使用原始值")
-                    label_value = idx
-                
-                y = label_value
-            else:
-                y = idx
+                # 根据特征类型选择左或右子节点
+                if curr_node.is_categorical:
+                    if feature_value == curr_node.split_value:
+                        curr_node = curr_node.left_child
+                    else:
+                        curr_node = curr_node.right_child
+                else:
+                    if feature_value < curr_node.split_value:
+                        curr_node = curr_node.left_child
+                    else:
+                        curr_node = curr_node.right_child
+                        
+                # 安全检查：如果子节点为None，退出循环
+                if curr_node is None:
+                    logger.log("警告: 遇到None节点，终止遍历")
+                    break
             
-            results.append(y)
-        
-        return results
+            # 获取预测值
+            prediction = None
+            if curr_node is not None:
+                prediction = curr_node.prediction if hasattr(curr_node, 'prediction') else None
+                
+            # 如果没有预测值，使用默认的第一个有效标签或-1
+            if prediction is None:
+                prediction = -1  # 使用-1表示未知，与原始代码一致
+            
+            results.append(prediction)
+            
+        return results  # 返回列表而不是numpy数组，保持原有行为
 
     def predict_llm_with_tree(
         self, x: np.ndarray, with_examples: bool = False
@@ -535,8 +542,8 @@ class TrainStrategy:
             right_path_rules = current_path_rules + [f"{feature_name} >= {split_value}"]
         
         # 使用路径规则直接验证标签
-        verified_left_class = self._llm_verify_leaf_node_with_rules(left_path_rules, left_class)
-        verified_right_class = self._llm_verify_leaf_node_with_rules(right_path_rules, right_class)
+        verified_left_class = self._llm_verify_leaf_node(left_path_rules, left_class)
+        verified_right_class = self._llm_verify_leaf_node(right_path_rules, right_class)
         
         return verified_left_class, verified_right_class
 
@@ -845,10 +852,26 @@ class TrainStrategy:
         path.reverse()
         return path
 
-    def _llm_verify_leaf_node(self, node, prediction):
-        """使用LLM验证叶子节点的预测标签"""
+    def _llm_verify_leaf_node(self, node_or_rules, prediction):
+        """
+        使用LLM验证叶子节点的预测标签
+        
+        参数:
+            node_or_rules: 节点对象或预先计算的路径规则列表
+            prediction: 当前预测标签
+        
+        返回:
+            验证后的标签
+        """
         # 获取路径规则
-        path_rules = self._get_path_to_node(node)
+        path_rules = None
+        if isinstance(node_or_rules, list):
+            # 如果传入的是规则列表，直接使用
+            path_rules = node_or_rules
+        else:
+            # 如果传入的是节点对象，获取其路径规则
+            path_rules = self._get_path_to_node(node_or_rules)
+        
         if not path_rules:
             logger.log("无法获取节点路径规则，跳过LLM验证")
             return prediction
@@ -883,109 +906,6 @@ Possible labels:
 {chr(10).join(label_descriptions)}
 
 Based on the rules, feature information, and your knowledge about the relationship between these features and the possible outcomes, please analyze if the current prediction is reasonable.
-
-For each possible label, provide ONLY a confidence score between 0 and 1, where 1 means you're completely confident that this should be the prediction for samples that match these rules.
-Format your response exactly as follows (no additional text):
-{chr(10).join([f"Label {label.value}: [score]" for label in self._meta.labels])}
-"""
-        
-        # 调用LLM
-        logger.log(f"发送LLM验证请求，路径规则: {' AND '.join(path_rules)}")
-        
-        # 使用已有的runner进行调用
-        if not hasattr(self, 'llm_runner') or self.llm_runner is None:
-            # 使用与训练相同的runner
-            from ..runner import Runner
-            if hasattr(self, '_runner') and isinstance(self._runner, Runner):
-                self.llm_runner = self._runner
-            else:
-                logger.log("未设置LLM runner，跳过LLM验证")
-                return prediction
-        
-        try:
-            # 调用LLM
-            response_gen = self.llm_runner.run([prompt])
-            response = next(response_gen)[0]
-            
-            # 解析响应
-            logger.log(f"LLM响应: {response}")
-            
-            # 提取每个标签的信心值
-            confidence_scores = {}
-            highest_confidence = 0
-            best_label = prediction
-            
-            for line in response.split('\n'):
-                if line.startswith('Label '):
-                    parts = line.split(':')
-                    if len(parts) >= 2:
-                        label_str = parts[0].strip().replace('Label ', '')
-                        try:
-                            label = int(label_str)
-                            confidence_str = parts[1].strip()
-                            # 提取数字
-                            import re
-                            confidence_match = re.search(r'(\d+\.\d+|\d+)', confidence_str)
-                            if confidence_match:
-                                confidence = float(confidence_match.group(1))
-                                confidence_scores[label] = confidence
-                                
-                                if confidence > highest_confidence:
-                                    highest_confidence = confidence
-                                    best_label = label
-                        except ValueError:
-                            continue
-            
-            # 检查是否需要替换标签
-            threshold = 0.8  # 可配置的阈值
-            if highest_confidence >= threshold and best_label != prediction:
-                logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
-                return best_label
-            else:
-                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
-                return prediction
-            
-        except Exception as e:
-            logger.log(f"LLM验证过程出错: {str(e)}")
-            return prediction
-
-    def _llm_verify_leaf_node_with_rules(self, path_rules, prediction):
-        """使用路径规则验证叶子节点的预测标签"""
-        if not path_rules:
-            logger.log("无法获取节点路径规则，跳过LLM验证")
-            return prediction
-        
-        # 构建特征描述
-        feature_descriptions = []
-        if hasattr(self, '_meta') and self._meta:
-            for i, feature in enumerate(self._meta.features):
-                feature_type = "Categorical" if feature.is_categorical else "Numerical"
-                desc = feature.desc if hasattr(feature, 'desc') and feature.desc else ""
-                feature_descriptions.append(f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}")
-        
-        # 构建标签描述
-        label_descriptions = []
-        if hasattr(self, '_meta') and self._meta:
-            for label in self._meta.labels:
-                meaning = label.meaning if hasattr(label, 'meaning') and label.meaning else ""
-                label_descriptions.append(f"Label {label.value}: {label.name} - {meaning}")
-        
-        # 构建prompt
-        prompt = f"""
-You are an expert in decision trees and data analysis. I have a decision tree with a leaf node that follows these rules:
-
-Rules from root to leaf:
-{' AND '.join(path_rules)}
-
-
-Feature information:
-{chr(10).join(feature_descriptions)}
-
-Possible labels:
-{chr(10).join(label_descriptions)}
-
-Based on the rules, feature information, and your knowledge about the relationship between these features and the possible outcomes, please analyze if the current prediction is reasonable.
-
 
 For each possible label, provide ONLY a confidence score between 0 and 1, where 1 means you're completely confident that this should be the prediction for samples that match these rules.
 Format your response exactly as follows (no additional text):
@@ -1393,6 +1313,11 @@ class FeatureBaggingStrategy(TrainStrategy):
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
+        """使用随机森林直接预测（无LLM）"""
+        if not hasattr(self, 'random_forest') or self.random_forest is None:
+            return [-1] * len(x)
+        
+        # 使用随机森林进行预测
         ret = []
         for xx in x:
             idx = self.random_forest.predict_one(xx)
