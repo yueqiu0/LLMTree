@@ -462,6 +462,30 @@ def evaluate(
     else:
         llm_with_tree_auc = None
 
+    # 分析节点样本分布
+    train_node_stats, label_names = analyze_node_samples(model, x_train, y_train)
+    logger.log("\n=== 训练集节点样本分布 ===")
+    
+    for node_id, counts in train_node_stats.items():
+        logger.log(f"{node_id}: {counts}")
+    
+    # 修改后的测试集分析
+    test_node_stats = None
+    for test_start in tqdm(range(0, len(x_test), test_batch)):
+        test_end = min(test_start + test_batch, len(x_test))
+        batch_stats, _ = analyze_node_samples(model, x_test[test_start:test_end], y_test[test_start:test_end])
+        
+        if test_node_stats is None:
+            test_node_stats = batch_stats
+        else:
+            for node_id, counts in batch_stats.items():
+                for cls in counts:
+                    test_node_stats[node_id][cls] += counts[cls]
+    
+    logger.log("\n=== 测试集节点样本分布 ===")
+    for node_id, counts in test_node_stats.items():
+        logger.log(f"{node_id}: {counts}")
+
     llm_with_sub_tree_aucs = []
     if llm_with_tree_subresults is not None:
         for sub_result in llm_with_tree_subresults:
@@ -486,6 +510,8 @@ def evaluate(
         tree_raw_results,
         llm_with_tree_subresults,
         elapsed,
+        train_node_stats,  # 新增返回项
+        test_node_stats,   # 新增返回项
     )
 
 
@@ -585,12 +611,79 @@ def load_args(
 
     return x, y, strategy
 
-
+def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
+    """动态分析决策树节点样本分布（兼容多标签）"""
+    if not hasattr(model.strategy, 'root'):
+        return {}, None
+    
+    from collections import defaultdict
+    node_samples = defaultdict(list)
+    
+    # 自动检测所有可能的标签类别
+    unique_labels = np.unique(y)
+    label_names = {label: f"class_{label}" for label in unique_labels}
+    
+    # 追踪每个样本经过的路径
+    for sample_idx, (sample, label) in enumerate(zip(X, y)):
+        path = []
+        node = model.strategy.root
+        while node is not None and not node.is_leaf:
+            path.append(node)
+            # 修复特征索引访问 - 使用split_feature而不是feature_idx
+            if not hasattr(node, 'split_feature') or node.split_feature is None:
+                break
+                
+            # 检查是否是分类特征
+            if hasattr(node, 'is_categorical') and node.is_categorical:
+                if sample[node.split_feature] == node.split_value:
+                    node = node.left_child
+                else:
+                    node = node.right_child
+            else:
+                # 数值特征
+                if sample[node.split_feature] < node.split_value:
+                    node = node.left_child
+                else:
+                    node = node.right_child
+                    
+        if node is not None:
+            path.append(node)  # 添加叶子节点
+        
+        # 记录样本标签到所有经过的节点
+        for node in path:
+            node_samples[node].append(label)
+    
+    # 转换为标签统计（自动适应多分类）
+    node_stats = {}
+    sample_paths = {}  # 记录每个样本的路径
+    
+    for node, labels in node_samples.items():
+        # 创建标签计数字典
+        label_counts = defaultdict(int)
+        for label in labels:
+            label_counts[int(label)] += 1
+        
+        # 使用节点ID作为键
+        node_id = f"node_{id(node)}"
+        node_stats[node_id] = dict(label_counts)
+        
+        # 添加节点类型信息
+        if hasattr(node, 'is_leaf') and node.is_leaf:
+            node_stats[node_id]['_type'] = 'leaf'
+            if hasattr(node, 'leaf_class'):
+                node_stats[node_id]['_prediction'] = node.leaf_class
+        else:
+            node_stats[node_id]['_type'] = 'internal'
+            if hasattr(node, 'split_feature'):
+                node_stats[node_id]['_feature'] = node.split_feature
+                node_stats[node_id]['_value'] = node.split_value
+    
+    return node_stats, label_names
 
 def main():
     start_time = time.time()
     args = parse_args()
-
+    
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
 
@@ -648,7 +741,7 @@ def main():
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
-
+    
     def json_default_decode(obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -658,12 +751,14 @@ def main():
             return obj.tolist()
         else:
             return obj.__dict__
-
+    
     for train_size in args.train_sizes:
         train_cases = sample_balanced(
             avail_x, avail_y, args.num_tests_per_set, train_size, args.random_seed
         )
-
+        logger.log(f"实际生成的训练案例数量: {len(train_cases)}")
+        if len(train_cases) > 0:
+            logger.log(f"首例训练集形状: {train_cases[0][0].shape}")
         for train_x, train_y in train_cases:
             model = Classifier(strategy)
             result = evaluate(train_x, train_y, test_x, test_y, model, args.test_batch)
@@ -682,6 +777,9 @@ def main():
                     tree_raw_results,
                     llm_with_tree_subresults,
                     elapsed,
+                    train_node_stats,  # 新增返回项
+                    test_node_stats,   # 新增返回项
+                    
                 ) = result
 
                 logger.log("Training time: {}".format(elapsed))
@@ -697,6 +795,8 @@ def main():
                     "labels": test_y.tolist(),
                     "model": model.export(),
                     "train_elapsed": elapsed,
+                    'train_node_stats': train_node_stats,
+                    'test_node_stats': test_node_stats
                 }
 
             # 在保存结果到JSON文件之前
@@ -709,16 +809,38 @@ def main():
                 result_dict['args']['feature_shuffle_map'] = strategy._feature_shuffle_map
 
             results.setdefault(train_size, []).append(result_dict)
+            current_count = len(results[train_size])
+            logger.log(f"当前train_size={train_size}已保存结果数: {current_count}/{args.num_tests_per_set}")
+            if current_count >= args.num_tests_per_set:
+                logger.log(f"!! 已达到预期测试次数 {args.num_tests_per_set}")
             bar.update(1)
-
+            
+        total_llm_auc = 0.0
+        total_tree_auc = 0.0
+        valid_counts = 0
+        for train_size in results:
+            for test_result in results[train_size]:
+                llm_auc = test_result.get('llm_tree')
+                tree_auc = test_result.get('tree')
+                
+                if llm_auc is not None and tree_auc is not None:
+                    total_llm_auc += llm_auc
+                    total_tree_auc += tree_auc
+                    valid_counts += 1
+        avg_llm_auc = total_llm_auc / valid_counts if valid_counts > 0 else 0.0
+        avg_tree_auc = total_tree_auc / valid_counts if valid_counts > 0 else 0.0
             # Store results each round to avoid losing data
-            with open(output_file, "w") as f:
+        with open(output_file, "w") as f:
                 output = {"args": args.__dict__, "results": results}
                 json.dump(output, f, indent=2, default=json_default_decode)
 
     logger.log("\n=== Experiment Summary ===")
-    logger.log(f"Total train sizes tested: {len(results)}")
-    logger.log(f"Last train size metrics: LLM AUC={llm_with_tree_auc:.3f}, Tree AUC={tree_auc:.3f}")
+    total_tests = 0
+    for size, tests in results.items():
+        logger.log(f"训练集大小 {size}: {len(tests)}次测试")
+        total_tests += len(tests)
+    logger.log(f"总计测试次数: {total_tests}")
+    logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.6f},average tree AUC={avg_tree_auc:.6f}")  # 平均值
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()

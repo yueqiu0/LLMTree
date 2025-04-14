@@ -9,10 +9,23 @@ from .. import logger
 
 
 class OpenAIAPIRunner(Runner):
-    def __init__(self, api_base: str, model_name: str, api_key: str) -> None:
+    def __init__(self, api_base: str, model_name: str, api_key: str, 
+                 temperature: float = 0.0,  # 设为0以获得最确定性的输出
+                 top_p: float = 0.0,        # 设为0以只考虑最可能的token
+                 top_k: int = 1,            # 只选择概率最高的token
+                 seed: int = 42,            # 固定随机种子
+                 presence_penalty: float = 0.0,  # 不惩罚重复出现的token
+                 frequency_penalty: float = 0.0, # 不惩罚频繁出现的token
+                 ) -> None:
         self.api_base = api_base
         self.api_key = api_key
         self.model_name = model_name
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.seed = seed
+        self.presence_penalty = presence_penalty
+        self.frequency_penalty = frequency_penalty
 
     def run(self, messages: list[str]) -> Generator[list[str], None, None]:
         if self.api_base:
@@ -28,7 +41,12 @@ class OpenAIAPIRunner(Runner):
                         model=self.model_name,
                         messages=[message],
                         max_tokens=2048,
-                        temperature=0.0,  # for reproducibility
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        top_k=self.top_k,
+                        seed=self.seed,
+                        presence_penalty=self.presence_penalty,
+                        frequency_penalty=self.frequency_penalty,
                     )
                 # TODO: real error handling
                 except BaseException as e:
@@ -65,8 +83,18 @@ class OpenAIAPIParallelRunner(ParallelRunner, OpenAIAPIRunner):
         interval: float,
         timeout: int,
         parallel_batch_size: int,
+        temperature: float = 0.0,
+        top_p: float = 0.0,
+        top_k: int = 1,
+        seed: int = 42,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
     ) -> None:
-        OpenAIAPIRunner.__init__(self, api_base, model_name, api_key)
+        OpenAIAPIRunner.__init__(
+            self, api_base, model_name, api_key, 
+            temperature, top_p, top_k, seed,
+            presence_penalty, frequency_penalty
+        )
         ParallelRunner.__init__(
             self, OpenAIAPIRunner.run, interval, timeout, parallel_batch_size
         )
