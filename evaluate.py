@@ -491,29 +491,7 @@ def gen_prompt(
     y_test,
     tree_rules,
     num_tests_per_round,
-    template_params=None,
 ) -> tuple[list[str], list[tuple[int, int]], list[str]]:
-    # 获取必要的模板参数
-    feature_names = meta.feature_names()
-    if not feature_names:
-        raise ValueError("Dataset feature names are not defined")
-    
-    label_names = meta.label_names()
-    if not label_names:
-        raise ValueError("Dataset label names are not defined")
-
-    # 构建完整的模板上下文
-    base_context = {
-        "meta": meta,
-        "features": feature_names,
-        "num_features": len(feature_names),
-        "labels": label_names,
-        "max_depth": 3  # 或从参数获取实际值
-    }
-    if template_params:
-        base_context.update(template_params)
-
-    # 生成基础提示语
     prompts, test_splits = prompt.gen_prompt(
         master_template,
         serializer,
@@ -522,26 +500,14 @@ def gen_prompt(
         x_test,
         tree_rules,
         num_tests_per_round,
-        template_params=base_context  # 传递完整参数
     )
 
-    # 生成测试标签（添加空值保护）
     test_labels = []
     for y in y_test:
-        label_obj = meta.find_label(y)
-        if label_obj and hasattr(label_obj, 'name'):
-            test_labels.append(label_obj.name)
-        else:
-            test_labels.append(f"unknown_{y}")  # 防止无效标签
+        test_labels.append(meta.find_label(y).name)
 
-    # 动态渲染模板时使用完整上下文
-    try:
-        final_prompt = master_template.render(**base_context)
-        prompts.append(final_prompt)
-    except jinja2.UndefinedError as e:
-        error_msg = f"Template rendering failed: Missing variable '{e.message}'"
-        raise ValueError(error_msg) from e
-
+    # Ensure that tree context is included dynamically
+    prompts.append(master_template.render(meta=meta, max_depth=3))  # Dynamically render the template with meta info
     return prompts, test_splits, test_labels
 
 
@@ -747,8 +713,10 @@ def main():
         raise FileNotFoundError(
             f"Template file not found: {e}"
         ) from e
-    
-
+    except jinja2.TemplateSyntaxError as e:
+        raise SyntaxError(
+            f"Template syntax error at {e.name}:{e.lineno} - {e.message}"
+        ) from e
   
 
     if args.serializer_type == "tabular":
@@ -779,7 +747,7 @@ def main():
         x_train, y_train = train_cases[0]
         
         feature_names = meta.feature_names() or []  # 防止返回None
-        label = meta.find_label(y) or "unknown"     # 无效标签处理
+        labels = meta.find_label(y) or "unknown"     # 无效标签处理
 
         if not tree_model.build_tree(master_template, runner, x_train, y_train,template_params={  # 新增参数
             'num_features': num_features,

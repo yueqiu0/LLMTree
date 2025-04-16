@@ -3,9 +3,13 @@ config:
   llm_gen_tree: true
   tree_only: false
   tree_args:
-    max_depth: 3
+  max_depth: 3
   llm_tree_args:
-    model_name: "togethercomputer/llama-2-70b-chat"
-    temperature: 0
-    max_retry: 3
+  model_name: "togethercomputer/llama-2-70b-chat"
+  temperature: 0
+  max_retry: 3
   use_tree_rules: true
+  random_seed: 0      
+  num_tests_per_set: 1 
+  test_size: 0.2       
+  test_batch: 1        
