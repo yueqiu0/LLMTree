@@ -338,14 +338,29 @@ class DecisionTree(TreeBase):
         
         for i in range(x.shape[0]):
             node = self.root_node
-            while not node.is_leaf:
+            # 检查根节点是否为None
+            if node is None:
+                predictions[i] = -1  # 如果根节点为None，返回未知类别
+                continue
+            
+            while node is not None and not node.is_leaf:
                 if self._go_left(x[i], node):
                     node = node.left_child
                 else:
                     node = node.right_child
                 
-            # 获取叶节点的预测值
-            predictions[i] = node.leaf_class if node is not None else -1
+                # 检查子节点是否为None
+                if node is None:
+                    # 子节点为None，设置为未知类别并跳出循环
+                    predictions[i] = -1
+                    break
+                
+            # 如果节点存在且是叶节点，使用其类别值
+            if node is not None:
+                predictions[i] = node.leaf_class
+            else:
+                # 如果节点是None（例如在上面的break之后），使用未知类别
+                predictions[i] = -1
         
         return predictions
 
