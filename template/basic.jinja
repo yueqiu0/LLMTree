@@ -40,7 +40,10 @@ The rules are as follows:
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
 
-Note: Some rules may indicate "unknown" classification. For such cases, you MUST still provide a specific prediction from the valid labels list. Never return "unknown" as your answer. Instead, use your knowledge to predict the most likely outcome based on the features.
+IMPORTANT REMINDER: 
+1. You MUST ONLY respond with one of these labels: {{"\"" + "\", \"".join([label.name for label in meta.labels]) + "\""}}. 
+2. If a rule indicates "unknown", you MUST make your best prediction between {{"\"" + "\", \"".join([label.name for label in meta.labels]) + "\""}} based on your knowledge and similar examples.
+3. The word "unknown" should NEVER appear in your response.
 {%- endif %}
 {%- endblock %}
 
