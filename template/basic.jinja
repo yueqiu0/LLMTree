@@ -39,6 +39,8 @@ The rules are as follows:
 {% for rule in rules %}
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
+
+Note: Some rules may indicate "unknown" classification. For such cases, you MUST still provide a specific prediction from the valid labels list. Never return "unknown" as your answer. Instead, use your knowledge to predict the most likely outcome based on the features.
 {%- endif %}
 {%- endblock %}
 

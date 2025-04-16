@@ -332,9 +332,22 @@ class DecisionTree(TreeBase):
         # 如果节点存在并且是叶节点，返回其类别
         return node.leaf_class if node is not None else -1
 
-    def predict(self, x: np.ndarray) -> list[int]:
-        """预测多个样本的类别"""
-        return [self.predict_one(sample) for sample in x]
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        """预测样本的类别"""
+        predictions = np.zeros(x.shape[0], dtype=int)
+        
+        for i in range(x.shape[0]):
+            node = self.root_node
+            while not node.is_leaf:
+                if self._go_left(x[i], node):
+                    node = node.left_child
+                else:
+                    node = node.right_child
+                
+            # 获取叶节点的预测值
+            predictions[i] = node.leaf_class if node is not None else -1
+        
+        return predictions
 
     def predict_raw(self, x: np.ndarray) -> list[int]:
         """预测样本的原始类别（包括unknown）"""
@@ -549,6 +562,31 @@ class DecisionTree(TreeBase):
             logger.log(f"节点分配标签: {majority_label}, 样本标签分布: {label_counts}")
         else:
             logger.log("警告: 节点没有样本，无法分配标签")
+
+    def to_dict(self) -> dict:
+        """将决策树转换为字典"""
+        return {
+            "nodes": self._nodes_to_dict(self.root_node),
+            "num_classes": max(self._get_available_predictions()) + 1,  # 考虑-1标签
+        }
+        
+    def _nodes_to_dict(self, node) -> dict:
+        """将节点转换为字典"""
+        result = {"id": id(node)}
+        
+        # 处理叶节点
+        if node.is_leaf:
+            result["value"] = node.leaf_class
+            # 对-1做特殊标记
+            if node.leaf_class == -1:
+                result["unknown"] = True
+            return result
+        
+        # ... 其余节点转换代码 ...
+
+    def _get_available_predictions(self) -> list[int]:
+        """获取可用的预测值列表，包括-1表示未知类别"""
+        return [-1, *range(max(1, np.max(self.train_y) + 1) if hasattr(self, 'train_y') and len(self.train_y) > 0 else 1)]
 
 
 class RandomForest(TreeBase):
