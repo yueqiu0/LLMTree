@@ -103,7 +103,7 @@ class EvaluateArgs:
         self.dataset_args: DatasetArgs = None
         self.train_sizes: list[int] = None
         self.num_tests_per_set: int = None
-        self.test_size: int = None
+        self.test_size: float = None
         self.test_batch: int = None
         self.use_tree_rules: bool = None
         self.template: str = None
@@ -286,7 +286,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument(
         "--num-tests-per-set", type=int, help="number of tests per training set size"
     )
-    parser.add_argument("--test-size", type=int, help="test set size")
+    parser.add_argument("--test-size", type=float, help="test set size")
     parser.add_argument(
         "--test-batch",
         type=int,
@@ -314,7 +314,7 @@ def parse_args() -> EvaluateArgs:
         config = {}
         config_sup = {}
         if sup_config_file_path:
-            with open(sup_config_file_path) as f:
+            with open(sup_config_file_path, encoding='utf-8') as f:
                 config_sup = yaml.safe_load(f)
 
             sup_config_dir_path = Path(sup_config_file_path).parent
@@ -324,7 +324,7 @@ def parse_args() -> EvaluateArgs:
                 ]
 
         for config_file_path in config_file_paths:
-            with open(config_file_path) as f:
+            with open(config_file_path, encoding='utf-8') as f:
                 config_part: dict = yaml.safe_load(f)
                 _merge_dict(config, config_part)
 
@@ -408,7 +408,10 @@ def parse_args() -> EvaluateArgs:
     if cml_args.num_tests_per_set is not None:
         args.num_tests_per_set = cml_args.num_tests_per_set
     if cml_args.test_size is not None:
-        args.test_size = cml_args.test_size
+        try:
+            args.test_size = int(cml_args.test_size)
+        except ValueError:
+            raise ValueError("test_size must be an integer")
     if cml_args.test_batch is not None:
         args.test_batch = cml_args.test_batch
     if cml_args.shuffle_column is not None:
@@ -423,7 +426,19 @@ def parse_args() -> EvaluateArgs:
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
-
+    if args.template is not None:
+        # 处理模板路径，支持绝对路径和相对路径
+        template_path = Path(args.template)
+        if not template_path.exists():
+            # 如果是相对路径，尝试从config文件所在目录查找
+            if sup_config_file_path:
+                config_dir = Path(sup_config_file_path).parent
+                template_path = config_dir / args.template
+                if not template_path.exists():
+                    raise FileNotFoundError(f"Template file not found: {args.template}")
+            else:
+                raise FileNotFoundError(f"Template file not found: {args.template}")
+        args.template = str(template_path)
     if cml_args.llm_gen_tree:
         args.llm_gen_tree = True
         args.tree_type = "llm"
@@ -476,7 +491,29 @@ def gen_prompt(
     y_test,
     tree_rules,
     num_tests_per_round,
+    template_params=None,
 ) -> tuple[list[str], list[tuple[int, int]], list[str]]:
+    # 获取必要的模板参数
+    feature_names = meta.feature_names()
+    if not feature_names:
+        raise ValueError("Dataset feature names are not defined")
+    
+    label_names = meta.label_names()
+    if not label_names:
+        raise ValueError("Dataset label names are not defined")
+
+    # 构建完整的模板上下文
+    base_context = {
+        "meta": meta,
+        "features": feature_names,
+        "num_features": len(feature_names),
+        "labels": label_names,
+        "max_depth": 3  # 或从参数获取实际值
+    }
+    if template_params:
+        base_context.update(template_params)
+
+    # 生成基础提示语
     prompts, test_splits = prompt.gen_prompt(
         master_template,
         serializer,
@@ -485,14 +522,26 @@ def gen_prompt(
         x_test,
         tree_rules,
         num_tests_per_round,
+        template_params=base_context  # 传递完整参数
     )
 
+    # 生成测试标签（添加空值保护）
     test_labels = []
     for y in y_test:
-        test_labels.append(meta.find_label(y).name)
+        label_obj = meta.find_label(y)
+        if label_obj and hasattr(label_obj, 'name'):
+            test_labels.append(label_obj.name)
+        else:
+            test_labels.append(f"unknown_{y}")  # 防止无效标签
 
-    # Ensure that tree context is included dynamically
-    prompts.append(master_template.render(meta=meta, max_depth=3))  # Dynamically render the template with meta info
+    # 动态渲染模板时使用完整上下文
+    try:
+        final_prompt = master_template.render(**base_context)
+        prompts.append(final_prompt)
+    except jinja2.UndefinedError as e:
+        error_msg = f"Template rendering failed: Missing variable '{e.message}'"
+        raise ValueError(error_msg) from e
+
     return prompts, test_splits, test_labels
 
 
@@ -538,7 +587,7 @@ def evaluate(
             tree_accuracy = tree_accuracies
         else:
             tree_predict, rules = tree_model.predict(
-                x_train, y_train, x_test, export_rules=True
+                x_test, export_rules=True
             )
             tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
             tree_accuracy = calc_accuracy(y_test, tree_predict)
@@ -617,6 +666,9 @@ def evaluate(
 
 def main():
     args = parse_args()
+    train_size = 0.8  # 默认值初始化
+    # 后续条件分支可修改该值
+
 
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
@@ -628,13 +680,25 @@ def main():
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
 
-    results = []
+    
+        
+    if args.test_size <= 0:
+        raise ValueError(f"Invalid test_size: {args.test_size} (must be positive)")
+    # 在main函数中修改数据集划分部分：
     meta, x, y = load_dataset(args.dataset_args)
+    print("Feature Names:", meta.feature_names())  # 必须返回非空列表
+    print("Label Names:", meta.label_names())     # 必须返回非空列表
+    total_samples = len(y)
 
+    test_size = int(len(x) * args.test_size)
+    # 确保test_size不超过可用样本量
+    test_size = min(test_size, len(x)-1) if len(x) > 1 else 0
+    test_x, test_y = x[:test_size], y[:test_size]
+    avail_x, avail_y = x[test_size:], y[test_size:]
     if args.print_only:
         raise NotImplementedError("Not implemented yet")
 
-    results: dict[int, list] = {}
+    
     
     runner, serializer, master_template = None, None, None
     
@@ -673,10 +737,19 @@ def main():
 
     # 统一模板加载方式，所有树类型都从这里加载
     master_template_path = Path(args.template)
-    env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(master_template_path.parent),
-    )
-    master_template = env.get_template(master_template_path.name)
+    try:
+        env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(master_template_path.parent),
+            undefined=jinja2.StrictUndefined  # 开启严格模式
+        )
+        master_template = env.get_template(master_template_path.name)
+    except jinja2.TemplateNotFound as e:
+        raise FileNotFoundError(
+            f"Template file not found: {e}"
+        ) from e
+    
+
+  
 
     if args.serializer_type == "tabular":
         serializer = TabularSerializer(meta)
@@ -687,7 +760,6 @@ def main():
     else:
         raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
-    # 初始化树模型
     if args.tree_type == "llm":
         tree_model = LLMDecisionTree(
             meta,
@@ -695,23 +767,45 @@ def main():
             args.llm_tree_args.temperature,
             args.llm_tree_args.max_depth
         )
+        num_features = len(meta.feature_names())  # 从 meta 
+        # 准备训练数据
+        train_cases = sample_balanced(
+    avail_x, 
+    avail_y,
+    num_groups=5,
+    num_samples_per_group=args.num_tests_per_set,
+    random_seed=args.random_seed
+)
+        x_train, y_train = train_cases[0]
         
-        # 使用统一的模板渲染方式
-        prompt = master_template.render(
-            meta=meta,
-            max_depth=args.llm_tree_args.max_depth,
-            features=meta.feature_names(),
-            labels=meta.label_names(),
-            num_features=len(meta.feature_names()),
-            num_labels=len(meta.label_names()),
-            feature_descriptions=meta.feature_descriptions()
-        )
+        feature_names = meta.feature_names() or []  # 防止返回None
+        label = meta.find_label(y) or "unknown"     # 无效标签处理
 
-        if runner is None:
-            raise ValueError("Runner must be initialized for LLM tree generation")
-
-        if not tree_model.build_tree(prompt, runner):
+        if not tree_model.build_tree(master_template, runner, x_train, y_train,template_params={  # 新增参数
+            'num_features': num_features,
+            'features': feature_names,
+            'labels': meta.label_names()
+        }):
             raise ValueError("Failed to generate valid decision tree from LLM")
+        
+        logger.log(f"Template Loaded: {master_template.filename}")
+        logger.log(f"Available Variables: {master_template.environment.globals.keys()}")
+        # # 使用统一的模板渲染方式
+        # prompt = master_template.render(
+        #     meta=meta,
+        #     max_depth=args.llm_tree_args.max_depth,
+        #     features=meta.feature_names(),
+        #     labels=meta.label_names(),
+        #     num_features=len(meta.feature_names()),
+        #     num_labels=len(meta.label_names()),
+        #     feature_descriptions=meta.feature_descriptions()
+        # )
+
+        # if runner is None:
+        #     raise ValueError("Runner must be initialized for LLM tree generation")
+
+        # if not tree_model.build_tree(prompt, runner):
+        #     raise ValueError("Failed to generate valid decision tree from LLM")
     else:
         if args.tree_type == "simple":
             tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
@@ -743,8 +837,7 @@ def main():
 
     results: dict[int, list[dict]] = {}
 
-    test_x, test_y = x[: args.test_size], y[: args.test_size]
-    avail_x, avail_y = x[args.test_size :], y[args.test_size :]
+
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
 
