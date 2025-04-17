@@ -1,0 +1,57 @@
+# Dataset Information
+Dataset: {{ dataset_name }}
+Description: {{ dataset_description }}
+Total samples: {{ num_samples }}
+Number of features: {{ num_features }}
+Label distribution: {% for label, count in label_distribution.items() %}{{ label }}: {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+# Feature Details
+{% for feature in features %}
+Feature {{ loop.index }}: {{ feature.name }}
+- Type: {{ feature.type }}{% if feature.is_categorical %} (categorical){% endif %}
+- Description: {{ feature.description }}
+{% if feature.is_categorical %}
+- Categories: {% for cat, code in feature.categories.items() %}{{ cat }} ({{ code }}){% if not loop.last %}, {% endif %}{% endfor %}
+{% else %}
+- Statistics: min={{ feature.stats.min|round(4) }}, max={{ feature.stats.max|round(4) }}, mean={{ feature.stats.mean|round(4) }}, std={{ feature.stats.std|round(4) }}
+{% endif %}
+{% endfor %}
+
+# Label Information
+{% for label in labels %}
+Label {{ loop.index }}: {{ label.name }} (value={{ label.value }})
+- Description: {{ label.description }}
+{% endfor %}
+
+# Example Data Samples
+{% for example in examples %}
+{{ example }}
+{% endfor %}
+
+# Decision Tree Generation Instructions
+Please generate a decision tree with maximum depth of {{ max_depth }} that effectively classifies the data.
+
+Guidelines:
+1. Feature Selection:
+   - For numerical features, choose meaningful thresholds based on the statistics provided
+   - For categorical features, consider the most discriminative categories
+   - Prefer features with clear separation between classes
+
+2. Tree Structure:
+   - Root node should use the most discriminative feature
+   - Balance the tree depth and interpretability
+   - Maximum depth must not exceed {{ max_depth }}
+
+3. Output Format Requirements:
+   - Each rule must start with "if" and end with "then class"
+   - Conditions must use feature names exactly as provided
+   - For numerical features: "if {{ feature.name }} <= value then class"
+   - For categorical features: "if {{ feature.name }} in [category1, category2] then class"
+
+# Example Rules:
+if {{ features[0].name }} <= {{ features[0].stats.mean|round(4) }} then {{ labels[0].name }}
+if {{ features[0].name }} > {{ features[0].stats.mean|round(4) }} then 
+   if {{ features[1].name }} in [categoryA, categoryB] then {{ labels[1].name }}
+   else {{ labels[0].name }}
+
+# Please generate the complete decision tree:

@@ -2,12 +2,17 @@ from sklearn.preprocessing import OneHotEncoder
 import sklearn.tree
 import sklearn.ensemble
 import numpy as np
-
+import jinja2
+from pathlib import Path
 from .. import dataset
 from ..dataset import DatasetMeta
-
+from jinja2 import Environment, FileSystemLoader
+from sklearn.utils import check_array
+import warnings
+from ..logger import Logger  
 
 def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, list]:
+    
     feat_stack = []
     all_categories = []
     for i in range(x_all.shape[1]):
@@ -61,6 +66,76 @@ class DecisionTree:
         raise NotImplementedError()
 
 
+
+class LLMDecisionTree:
+    def __init__(self, meta, max_depth, runner=None):
+        self.meta = meta
+        self.max_depth = max_depth
+        self.runner = runner
+        self.rules = []
+
+    def fit(self, x_train: np.ndarray, y_train: np.ndarray) -> list[str]:
+        """生成决策树规则主流程"""
+        try:
+            # 数据验证
+            if x_train is None or y_train is None:
+                Logger.log("训练数据为空")
+                return []
+
+            # 生成提示词（从dataset.py导入）
+            from ..dataset import generate_decision_tree_prompt
+            prompt = generate_decision_tree_prompt(self.meta, x_train, y_train, self.max_depth)
+            Logger.log(f"生成的提示词长度: {len(prompt)}字符")
+
+            # 发送请求并处理响应
+            responses = list(self.runner.run([prompt]))
+            self.rules = self._parse_llm_response(responses[0])
+
+            if not self._validate_rules():
+                Logger.log("部分规则未通过验证")
+
+            return self.rules
+
+        except Exception as e:
+            
+            return []
+
+    def _parse_llm_response(self, response: str) -> list[str]:
+        """解析LLM响应（保留核心解析逻辑）"""
+        valid_rules = []
+        feature_names = {f.name for f in self.meta.features}
+
+        for line in response.split('\n'):
+            line = line.strip()
+            if not line.startswith("if ") or " then " not in line:
+                continue
+
+            condition = line.split(" then ")[0][3:]
+            if not any(fname in condition for fname in feature_names):
+                Logger.log(f"忽略无效规则: 未使用已知特征 - {line}")
+                continue
+
+            valid_ops = ['<=', '>=', '<', '>', ' in ', ' not in ']
+            if not any(op in condition for op in valid_ops):
+                Logger.log(f"忽略无效规则: 无效操作符 - {line}")
+                continue
+
+            valid_rules.append(line)
+
+        return list(dict.fromkeys(valid_rules))
+
+    def _validate_rules(self) -> bool:
+        """规则验证（保留基础验证逻辑）"""
+        if not self.rules:
+            return False
+
+        predicted_labels = {r.split(" then ")[1].strip() for r in self.rules}
+        required_labels = {l.name for l in self.meta.labels}
+        return predicted_labels.issuperset(required_labels)
+
+    def get_rules(self):
+        """获取生成的决策规则"""
+        return self.rules 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
         super().__init__(meta)

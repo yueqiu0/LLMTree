@@ -1,0 +1,10 @@
+base_configs:
+  - ../base/dataset/abalone.yml
+  - ../base/runner/chatgpt.yml
+  - ./direct_llm_tree.yml  
+  - tree/llm_gen_directly.yml
+  - ./common.yml
+
+config:
+  exp_name: llm_gen_tree-abalone-baseline
+  template: template/basic.jinja

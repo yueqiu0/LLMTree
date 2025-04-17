@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 import yaml
 from pathlib import Path
 import os
-
+from jinja2 import Environment, FileSystemLoader
 import tree_prompt.prompt as prompt
 import tree_prompt.dataset as dataset
 from tree_prompt.external.tree import (
@@ -20,6 +20,7 @@ from tree_prompt.external.tree import (
     XGBoostDecisionTree,
     RandomForestDecisionTree,
     FederatedDecisionTree,
+    LLMDecisionTree,
 )
 from tree_prompt.prompt import (
     Serializer,
@@ -67,7 +68,14 @@ class SimpleTreeArgs:
     def __repr__(self):
         return str(self.__dict__)
 
-
+class LLMTreeArgs:
+    def __init__(self):
+        self.max_depth = 3  # 默认最大深度
+        
+        self.temperature = 0.7
+        #      self.num_rules = 10
+    def __repr__(self):
+        return str(self.__dict__)
 class XGBoostArgs:
     def __init__(self) -> None:
         self.max_depth: int = None
@@ -101,7 +109,7 @@ class EvaluateArgs:
         self.serializer_type: str = None
         self.exp_id: str = ""
         self.print_only: bool = False
-
+    
     def get_missing_fields(self) -> list[str]:
         missing_fields = _get_missing_fields(self)
 
@@ -200,6 +208,8 @@ class EvaluateArgs:
             self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
+        elif self.tree_type == "llm_gen_tree":  
+            self.tree_args = LLMTreeArgs()  
         else:
             raise ValueError("Unknown tree type: {}".format(self.tree_type))
 
@@ -233,9 +243,10 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument(
-        "--tree-type", type=str, help="tree model type (simple, xgboost)"
-    )
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree'], 
+                       default='simple')
+    parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
+                       help='Use LLM for final prediction (1) or use rules directly (0)')
     parser.add_argument("--tree-only", type=int, help="only evaluate the tree")
     parser.add_argument("--max-depth", type=int, help="max depth of the tree")
     parser.add_argument("--num-trees", type=int, help="number of trees")
@@ -487,10 +498,11 @@ def evaluate(
     use_tree_rules: bool,
     tree_only: bool,
     num_tests_per_round: int,
+    with_llm: bool = True,  # 新增参数，控制是否使用LLM进行预测
 ):
     # get tree's prediction rules & results
     if use_tree_rules or tree_only:
-        if type(tree_model) == FederatedDecisionTree:
+        if isinstance(tree_model, FederatedDecisionTree):
             all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
             tree_aucs, tree_accuracies = [], []
             for tree_predict in all_tree_predict:
@@ -500,7 +512,64 @@ def evaluate(
                 tree_accuracies.append(tree_accuracy)
             tree_auc = tree_aucs
             tree_accuracy = tree_accuracies
+        elif isinstance(tree_model, LLMDecisionTree):
+            # LLM决策树的特殊处理逻辑
+            tree_model.fit(x_train, y_train)
+            rules = tree_model.get_rules()
+            
+            if with_llm:
+                # 使用LLM进行预测
+                prompts, test_splits, labels = gen_prompt(
+                    meta,
+                    master_template,
+                    serializer,
+                    x_train,
+                    y_train,
+                    x_test,
+                    y_test,
+                    rules,
+                    num_tests_per_round,
+                )
+                
+                raw_results = []
+                results = []
+                for idx, responses in enumerate(runner.run(prompts)):
+                    expected_len = test_splits[idx][1] - test_splits[idx][0]
+                    found = False
+                    for response in responses:
+                        results_batch = serializer.answer_decoder.decode(response)
+                        if len(results_batch) == expected_len:
+                            found = True
+                            results += results_batch
+                            raw_results.append(response)
+                            break
+                        else:
+                            logger.log(
+                                "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                    expected_len, len(results_batch), response
+                                )
+                            )
+                    if not found:
+                        logger.log("Failed to find any valid response, skipping...")
+                        result_dict = {
+                            "record": prompts[0],
+                            "failed_raw_output": responses,
+                        }
+                        return result_dict
+                
+                tree_accuracy = calc_accuracy(labels, results)
+                tree_auc = sklearn.metrics.roc_auc_score(
+                    y_test,
+                    [meta.get_label_value(r) for r in results],
+                )
+                tree_predict = results
+            else:
+                # 直接应用规则进行预测
+                tree_predict = tree_model.predict(x_test)
+                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+                tree_accuracy = calc_accuracy(y_test, tree_predict)
         else:
+            # 其他类型的决策树
             tree_predict, rules = tree_model.predict(
                 x_train, y_train, x_test, export_rules=True
             )
@@ -512,72 +581,75 @@ def evaluate(
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
             "tree_results": tree_predict,
+            "rules": rules if isinstance(tree_model, LLMDecisionTree) else None
         }
 
-    prompts, test_splits, labels = gen_prompt(
-        meta,
-        master_template,
-        serializer,
-        x_train,
-        y_train,
-        x_test,
-        y_test,
-        rules if use_tree_rules else [],
-        num_tests_per_round,
-    )
+    # 如果不是tree_only模式且不是LLMDecisionTree的with_llm模式
+    if not (isinstance(tree_model, LLMDecisionTree) and with_llm):
+        prompts, test_splits, labels = gen_prompt(
+            meta,
+            master_template,
+            serializer,
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            rules if use_tree_rules else [],
+            num_tests_per_round,
+        )
 
-    raw_results = []
-    results = []
+        raw_results = []
+        results = []
 
-    for idx, responses in enumerate(runner.run(prompts)):
-        expected_len = test_splits[idx][1] - test_splits[idx][0]
-        found = False
-        for response in responses:
-            results_batch = serializer.answer_decoder.decode(response)
-            if len(results_batch) == expected_len:
-                found = True
-                results += results_batch
-                raw_results.append(response)
-                break
-            else:
-                logger.log(
-                    "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                        expected_len, len(results_batch), response
+        for idx, responses in enumerate(runner.run(prompts)):
+            expected_len = test_splits[idx][1] - test_splits[idx][0]
+            found = False
+            for response in responses:
+                results_batch = serializer.answer_decoder.decode(response)
+                if len(results_batch) == expected_len:
+                    found = True
+                    results += results_batch
+                    raw_results.append(response)
+                    break
+                else:
+                    logger.log(
+                        "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                            expected_len, len(results_batch), response
+                        )
                     )
-                )
-        if not found:
-            logger.log("Failed to find any valid response, skipping...")
-            result_dict = {
-                "record": prompts[0],
-                "failed_raw_output": responses,
-            }
-            return result_dict
+            if not found:
+                logger.log("Failed to find any valid response, skipping...")
+                result_dict = {
+                    "record": prompts[0],
+                    "failed_raw_output": responses,
+                }
+                return result_dict
 
-    acc = calc_accuracy(labels, results)
-    auc = sklearn.metrics.roc_auc_score(
-        y_test,
-        [meta.get_label_value(r) for r in results],
-    )
+        acc = calc_accuracy(labels, results)
+        auc = sklearn.metrics.roc_auc_score(
+            y_test,
+            [meta.get_label_value(r) for r in results],
+        )
 
-    logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
+        logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
 
-    if use_tree_rules:
-        logger.log("Tree accuracy/AUC: {}/{}".format(tree_accuracy, tree_auc))
+    result_dict = {
+        "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
+        "labels": [int(y) for y in y_test],
+        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
+        "auc": auc if 'auc' in locals() else tree_auc,
+        "accuracy": acc if 'acc' in locals() else tree_accuracy,
+    }
 
-    result_dict = {}
-    result_dict["record"] = {"prompt": prompts[0]}
-    result_dict["labels"] = [int(y) for y in y_test]
-    result_dict["results"] = [meta.get_label_value(r) for r in results]
-    result_dict["auc"] = auc
-    result_dict["accuracy"] = acc
-
-    if use_tree_rules:
-        result_dict["tree_auc"] = tree_auc
-        result_dict["tree_accuracy"] = tree_accuracy
-        result_dict["tree_results"] = tree_predict
+    if use_tree_rules or isinstance(tree_model, LLMDecisionTree):
+        result_dict.update({
+            "tree_auc": tree_auc,
+            "tree_accuracy": tree_accuracy,
+            "tree_results": tree_predict,
+            "rules": rules if isinstance(tree_model, LLMDecisionTree) else None
+        })
 
     return result_dict
-
 
 def main():
     args = parse_args()
@@ -599,37 +671,12 @@ def main():
         raise NotImplementedError("Not implemented yet")
 
     results: dict[int, list] = {}
+    runner,serializer, master_template = None, None,None
+    
 
-    if args.tree_type == "simple":
-        tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
-    elif args.tree_type == "xgboost":
-        tree_model = XGBoostDecisionTree(
-            meta,
-            args.tree_args.max_depth,
-            args.tree_args.num_trees,
-            args.random_seed,
-        )
-    elif args.tree_type == "random_forest":
-        if not args.tree_only:
-            raise ValueError("Random forest is only supported in tree only mode")
-        tree_model = RandomForestDecisionTree(
-            meta,
-            args.tree_args.num_trees,
-            args.tree_args.max_depth,
-        )
-    elif args.tree_type == "federated":
-        if not args.tree_only:
-            raise ValueError("Federated tree is only supported in tree only mode")
-        tree_model = FederatedDecisionTree(
-            meta,
-            args.tree_args.num_trees,
-            args.tree_args.max_depth,
-        )
-    else:
-        raise ValueError("Unknown tree type: {}".format(args.tree_type))
+   
 
-    runner, serializer, master_template = None, None, None
-
+    
     if not args.tree_only:
         if args.runner == "openai_api":
             from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
@@ -676,11 +723,56 @@ def main():
         else:
             raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
+        
         master_template_path = Path(args.template)
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
         )
         master_template = env.get_template(master_template_path.name)
+
+    if args.tree_type == "simple":
+        tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
+    elif args.tree_type == "xgboost":
+        tree_model = XGBoostDecisionTree(
+            meta,
+            args.tree_args.max_depth,
+            args.tree_args.num_trees,
+            args.random_seed,
+        )
+    elif args.tree_type == "random_forest":
+        if not args.tree_only:
+            raise ValueError("Random forest is only supported in tree only mode")
+        tree_model = RandomForestDecisionTree(
+            meta,
+            args.tree_args.num_trees,
+            args.tree_args.max_depth,
+        )
+    elif args.tree_type == "federated":
+        if not args.tree_only:
+            raise ValueError("Federated tree is only supported in tree only mode")
+        tree_model = FederatedDecisionTree(
+            meta,
+            args.tree_args.num_trees,
+            args.tree_args.max_depth,
+        )
+    elif args.tree_type == "llm_gen_tree":
+        template_dir = Path("C:/Users/chenx/git/tree/template")
+        tree_template_path = template_dir / "basic.jinja" 
+
+       
+        
+
+       
+        tree_model = LLMDecisionTree(
+            meta=meta,
+            max_depth=args.tree_args.max_depth,
+            runner=runner,
+            
+        )
+        
+       
+    else:
+        raise ValueError("Unknown tree type: {}".format(args.tree_type))
 
     results: dict[int, list[dict]] = {}
 
@@ -748,4 +840,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

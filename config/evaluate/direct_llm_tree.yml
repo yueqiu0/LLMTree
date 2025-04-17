@@ -1,0 +1,5 @@
+config:
+  serializer: tabular
+  template: template/evaluate/llm_decision_tree.jinja
+  train_sizes: [1, 2, 4, 8, 16, 32]
+  output_dir: ./output/evaluate
