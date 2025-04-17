@@ -33,13 +33,27 @@ These are some known data points:
 {%- endfor -%}
 {%- endif %}
 {%- endblock %}
+
 {% block tree_rules -%}
 {% if rules -%}
 The rules are as follows:
 {% for rule in rules %}
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
-{%- endif %}
+{%- endif -%}
+{%- endblock %}
+
+{% block label_reminder -%}
+IMPORTANT REMINDER: 
+1. Select only one label from the list below as your response.  
+   Even if a rule mentions the result as "unknown", you must still make the best prediction based on your understanding and similar examples.
+
+   Available labels:  
+   {% for label in meta.labels %}
+   ({{ loop.index }}) {{ label.name }}{{ " " }}
+   {%- endfor %}
+
+2. The word "unknown" should NEVER appear in your response.
 {%- endblock %}
 
 For data points that are not covered by any rule, you should predict the result based on your observation.
