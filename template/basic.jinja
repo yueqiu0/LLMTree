@@ -15,11 +15,13 @@ The data consists of the following features:
 {%- endblock %}
 
 {% block labels_intro -%}
-For each data, the result can be one of the following:
+For each data, the result can ONLY be one of the following:
 {% for label in meta.labels %}
 ({{ loop.index }}) {{ label.name }}{%if label.desc %}: {{ label.desc }}{% endif %}{{" "}}
 {%- endfor -%}
 {%- endblock %}
+
+NOTE: “unknown” is NOT a valid label.
 
 {% block format_descriptions -%}
 {%- if format_desc -%}{{ format_desc }}{%- endif -%}
@@ -43,26 +45,21 @@ The rules are as follows:
 {%- endif -%}
 {%- endblock %}
 
-{% block label_reminder -%}
-IMPORTANT REMINDER: 
-1. Select only one label from the list below as your response.  
-   Even if a rule mentions the result as "unknown", you must still make the best prediction based on your understanding and similar examples.
+NOTE:
+If a rule says "unknown", it means the given rule CANNOT decide the result. 
+In this situation, the prediction should be COMPLETELY BASED on your knowledge rather than given tree rules.
 
-   Available labels:  
-   {% for label in meta.labels %}
-   ({{ loop.index }}) {{ label.name }}{{ " " }}
-   {%- endfor %}
 
-2. The word "unknown" should NEVER appear in your response.
-{%- endblock %}
-
-For data points that are not covered by any rule, you should predict the result based on your observation.
 
 {% block prediction_intro -%}
 {{ prediction_intro }}
+"<RESULT>" should NEVER be filled with "unknown"!
 {%- endblock %}
 {% block test_cases -%}
 {% for case in tests %}
 ({{ loop.index }}) {{ case }}
 {%- endfor %}
 {%- endblock %}
+
+IMPORTANT REMINDER: 
+NEVER include "unknown" in ANY of your predictions!!!
