@@ -1005,7 +1005,11 @@ for samples matching these rules
             
             # 检查是否在模糊区域（0.5±β）
             beta = 0.00  # 硬编码beta值
-            threshold = 0.70  # 原有可配置的阈值
+            threshold = 0.70  # 默认值
+
+            def set_threshold(value: float):
+                global threshold
+                threshold = value
             
             # 当置信度在0.5±β区间内时，将标签设为未知(-1)
             if highest_confidence >= 0.5 - beta and highest_confidence <= 0.5 + beta:
