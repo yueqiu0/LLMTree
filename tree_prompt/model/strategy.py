@@ -522,8 +522,26 @@ class TrainStrategy:
         # 获取特征名称
         feature_name = f"Feature {feature_idx}"
         if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
-            feature_name = self._meta.features[feature_idx].name
-        
+            feature = self._meta.features[feature_idx]
+            feature_name = feature.name
+            
+            # 从描述中提取单位信息
+            if hasattr(feature, 'desc') and feature.desc:
+                import re
+                # 查找描述末尾的括号内容作为单位
+                unit_match = re.search(r'\((.*?)\)$', feature.desc.strip())
+                if unit_match:
+                    unit = unit_match.group(1)
+                    unit_info = f" ({unit})"
+                else:
+                    # 如果末尾没有括号，查找描述中的最后一对括号
+                    unit_match = re.search(r'\((.*?)\)', feature.desc)
+                    if unit_match:
+                        unit = unit_match.group(1)
+                        unit_info = f" ({unit})"
+                    else:
+                        unit_info = ""
+            
         # 构建左右子节点的路径规则
         is_categorical = self._meta.features[feature_idx].is_categorical if hasattr(self._meta, 'features') and feature_idx < len(self._meta.features) else False
         
@@ -531,8 +549,8 @@ class TrainStrategy:
             left_path_rules = current_path_rules + [f"{feature_name} = {split_value}"]
             right_path_rules = current_path_rules + [f"{feature_name} != {split_value}"]
         else:
-            left_path_rules = current_path_rules + [f"{feature_name} < {split_value}"]
-            right_path_rules = current_path_rules + [f"{feature_name} >= {split_value}"]
+            left_path_rules = current_path_rules + [f"{feature_name} < {split_value}{unit_info}"]
+            right_path_rules = current_path_rules + [f"{feature_name} >= {split_value}{unit_info}"]
         
         # 使用路径规则直接验证标签
         verified_left_class = self._llm_verify_leaf_node(left_path_rules, left_class)
@@ -821,10 +839,30 @@ class TrainStrategy:
             # 确定当前节点是左子节点还是右子节点
             is_left = parent.left_child == current
             
-            # 获取特征名称
+            # 获取特征名称和单位信息
             feature_name = f"Feature {feature_idx}"
+            unit_info = ""
+            
             if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
-                feature_name = self._meta.features[feature_idx].name
+                feature = self._meta.features[feature_idx]
+                feature_name = feature.name
+                
+                # 从描述中提取单位信息
+                if hasattr(feature, 'desc') and feature.desc:
+                    import re
+                    # 查找描述末尾的括号内容作为单位
+                    unit_match = re.search(r'\((.*?)\)$', feature.desc.strip())
+                    if unit_match:
+                        unit = unit_match.group(1)
+                        unit_info = f" ({unit})"
+                    else:
+                        # 如果末尾没有括号，查找描述中的最后一对括号
+                        unit_match = re.search(r'\((.*?)\)', feature.desc)
+                        if unit_match:
+                            unit = unit_match.group(1)
+                            unit_info = f" ({unit})"
+                        else:
+                            unit_info = ""
             
             # 构建规则描述
             if hasattr(parent, 'is_categorical') and parent.is_categorical:
@@ -834,9 +872,9 @@ class TrainStrategy:
                     rule = f"{feature_name} != {split_value}"
             else:
                 if is_left:
-                    rule = f"{feature_name} < {split_value}"
+                    rule = f"{feature_name} < {split_value}{unit_info}"
                 else:
-                    rule = f"{feature_name} >= {split_value}"
+                    rule = f"{feature_name} >= {split_value}{unit_info}"
             
             path.append(rule)
             current = parent
