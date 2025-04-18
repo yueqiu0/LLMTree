@@ -241,14 +241,25 @@ def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
     prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.labal_meaning or "the target variable"}.
 
 Dataset Information:
-The dataset consists of the following features:
 """
+    # 添加数据集目标描述
+    if meta.target:
+        prompt += f"Task: {meta.target}\n\n"
+    
+    prompt += "The dataset consists of the following features:\n"
     for i, feat in enumerate(meta.features):
         prompt += f"{i+1}. {feat.name}: {feat.desc or 'No description available'}\n"
     
     prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
-    prompt += "Possible values: " + ", ".join([f"{label.name}" for label in meta.labels]) + "\n\n"
-    prompt += """Based on common knowledge and intuition about this kind of data, rank the features from most important to least important for predicting the target variable.
+    
+    # 添加标签的详细描述
+    prompt += "Possible values:\n"
+    for label in meta.labels:
+        desc = f" ({label.desc})" if label.desc else ""
+        prompt += f"- {label.name}{desc}\n"
+    
+    prompt += """
+Based on common knowledge and intuition about this kind of data, rank the features from most important to least important for predicting the target variable.
 
 Please return your answer as a comma-separated list of feature indices, ordered from most important to least important. For example: 2,4,1,3
 
