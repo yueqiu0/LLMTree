@@ -1010,7 +1010,11 @@ for samples matching these rules
             def set_threshold(value: float):
                 global threshold
                 threshold = value
-            
+                
+            def set_beta(value: float):
+                global beta
+                beta = value
+
             # 当置信度在0.5±β区间内时，将标签设为未知(-1)
             if highest_confidence >= 0.5 - beta and highest_confidence <= 0.5 + beta:
                 logger.log(f"LLM置信度在模糊区域: {highest_confidence}, 设置为未知类别")

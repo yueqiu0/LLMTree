@@ -268,6 +268,7 @@ def parse_args() -> TrainArgs:
     #alpha&threshold
     parser.add_argument('--alpha', type=float, default=0.8, help='LLM排序的权重因子')
     parser.add_argument('--threshold', type=float, default=0.70, help='过滤阈值')
+    parser.add_argument('--beta', type=float, default=0.0, help='硬编码beta')
     cml_args = parser.parse_args()
 
     args = TrainArgs()
