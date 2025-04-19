@@ -13,6 +13,19 @@ from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
 from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
 
+_threshold = 0.70  # 默认值
+_beta = 0.0  # 默认值
+def set_threshold(value: float):
+    """设置叶子节点标签修改的阈值"""
+    global _threshold
+    _threshold = value
+    logger.log(f"叶子节点标签修改阈值设置为: {value}")
+    
+def set_beta(value: float):
+    """设置不确定性区间"""
+    global _beta
+    _beta = value
+    logger.log(f"不确定性区间设置为: {value}")
 
 def _get_feature_values(
     meta: DatasetMeta, x: np.ndarray, hist_nbins: int
@@ -1011,17 +1024,14 @@ for samples matching these rules
                         except ValueError:
                             continue
             
-            # 检查是否在模糊区域（0.5±β）
-            beta = 0.00  # 硬编码beta值
-            threshold = 0.70  # 原有可配置的阈值
-            
+
             # 当置信度在0.5±β区间内时，将标签设为未知(-1)
-            if highest_confidence >= 0.5 - beta and highest_confidence <= 0.5 + beta:
+            if highest_confidence >= 0.5 - _beta and highest_confidence <= 0.5 + _beta:
                 logger.log(f"LLM置信度在模糊区域: {highest_confidence}, 设置为未知类别")
                 return -1
             
             # 原有逻辑：检查是否需要替换标签    
-            if highest_confidence >= threshold and best_label != prediction:
+            if highest_confidence >= _threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
             else:
