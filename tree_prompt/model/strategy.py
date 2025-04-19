@@ -6,12 +6,13 @@ import random
 from tqdm import tqdm
 from collections import Counter
 
-from ..dataset import DatasetMeta, get_feature_importance_ranking
+from ..dataset import DatasetMeta
 from ..runner import Runner
 from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializer
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
-from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
+from .feature_selection import calculate_gini_impurity, calculate_meta_rule_gini
+from .meta_rule import MetaRule
 
 
 def _get_feature_values(
@@ -49,7 +50,6 @@ class TrainStrategy:
         self.tree = None
         self.hist_nbins = 10
         self._meta_instance = None
-        self.llm_feature_ranking = None  # 添加此属性
 
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
@@ -70,106 +70,94 @@ class TrainStrategy:
         else:
             logger.log("警告: 未找到特征映射关系")
         
-        # 获取LLM特征排序（如果适用）
-        if hasattr(self, 'runner') and hasattr(self, 'get_feature_ranking'):
-            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
-            logger.log(f"LLM特征重要性排序: {self.llm_feature_ranking}")
-        else:
-            # 默认排序
-            self.llm_feature_ranking = list(range(self._meta.feature_count()))
-            logger.log(f"使用默认特征排序: {self.llm_feature_ranking}")
-        
         self.split_values = _get_feature_values(self._meta, train_x, self.hist_nbins)
         
         self.tree = DecisionTree(self.max_depth, self._meta.categories_map)
         self.tree.set_train_data(train_x)
 
     def step(self) -> tuple[bool, float]:
+        """执行一步训练"""
         # 获取下一个要分裂的节点
         next_split = self.tree.next_to_split()
+        
+        # 如果没有需要分裂的节点，返回
         if next_split is None:
             logger.log("没有可分裂的节点，训练结束")
             return False, None
         
-        logger.log(f"正在处理节点，深度: {next_split.depth}")
+        # 获取节点深度和样本
+        depth = next_split.depth
+        node_samples = next_split.get_samples()
         
-        samples = next_split.get_samples()
-        
-        # 新增：检查是否所有样本都属于同一类别
-        if samples is not None and len(samples) > 0:
-            node_labels = [self.train_y[i] for i in samples]
-            if len(set(node_labels)) == 1:
-                # 如果是，直接将该节点标记为叶子节点
-                logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {node_labels[0]}")
-                next_split.is_leaf = True
-                next_split.prediction = node_labels[0]
-                # 关键修复：确保节点被正确冻结，不再参与分裂
-                next_split.freeze()
-                return True, None
-        
-        # 确保samples不是None，并且长度检查安全
-        if samples is None or len(samples) < 2 or next_split.depth >= self.max_depth:
-            logger.log(f"节点无法继续分裂: 样本数={len(samples) if samples is not None else 0}, 深度={next_split.depth}, 最大深度={self.max_depth}")
+        # 检查节点是否已达到最大深度或样本数不足
+        if depth >= self.max_depth or len(node_samples) <= 1:
+            logger.log(f"节点无法继续分裂: 样本数={len(node_samples)}, 深度={depth}, 最大深度={self.max_depth}")
             next_split.freeze()
             return True, None
         
-        logger.log(f"节点样本数: {len(samples)}")
-        
-        # 特征选择
-        logger.log("开始特征选择...")
-        best_feature = self._quick_feature_selection(next_split)
-        
-        if best_feature is None:
-            logger.log("找不到合适的特征，节点冻结")
+        # 检查节点样本的标签是否一致
+        node_y = self.train_y[node_samples]
+        unique_labels = np.unique(node_y)
+        if len(unique_labels) == 1:
+            logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {unique_labels[0]}")
+            next_split.is_leaf = True
+            next_split.prediction = unique_labels[0]
+            # 关键修复：必须调用freeze()确保节点从待分裂队列中移除
             next_split.freeze()
             return True, None
+        
+        # 尝试使用元规则分裂
+        best_meta_rule, best_gain = self._select_meta_rule(next_split, self.meta_rules)
+        
+        # 如果没有找到有效的元规则，冻结节点
+        if best_meta_rule is None or best_gain <= 0:
+            logger.log("找不到有效的元规则，但这不是叶子节点条件")
+            
+            # 为这个节点分配最多数类别的标签
+            most_common_label = np.argmax(np.bincount(node_y))
+            next_split.prediction = most_common_label
+            
+            # 这里不应该调用freeze()，因为这不满足设置叶子节点的条件
+            # 但我们需要确保这个节点不会再被选中进行分裂
+            # 可以通过某种方式将它标记为已处理
+            
+            # 临时解决方案：将节点深度设为最大值，这样下次分裂时会因为深度限制而被识别为叶子
+            next_split.depth = self.max_depth
+            
+            return True, None
+        
+        # 使用选择的元规则设置分裂
+        best_feature = best_meta_rule.feature_idx
+        split_value = best_meta_rule.split_value
+        is_categorical = best_meta_rule.is_categorical
         
         # 增加日志，输出所选特征的名称
         if hasattr(self, '_meta') and self._meta:
             feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
-            logger.log(f"选择特征: {best_feature} ({feature_name})")
+            logger.log(f"选择特征: {best_feature} ({feature_name}), 分裂点: {split_value}, 是否为分类特征: {is_categorical}")
         
-        # 快速确定分裂点（减少LLM调用）
-        logger.log("开始确定分裂点...")
-        split_values = self._quick_split_values(best_feature, next_split)
-        if len(split_values) == 0:
-            logger.log("找不到合适的分裂点，节点冻结")
-            next_split.freeze()
-            return True, None
-        
-        # 格式化分裂点输出
-        split_value = split_values[0]
-        if isinstance(split_value, (float, np.float64, np.float32)):
-            # 确定小数位数
-            node_samples = next_split.get_samples()
-            node_data = self.train_x[node_samples, best_feature]
-            unique_values = np.unique(node_data)
-            
-            decimal_places = 1  # 默认至少保留1位小数
-            for val in unique_values:
-                if isinstance(val, (float, np.float64, np.float32)):
-                    str_val = str(val)
-                    if '.' in str_val:
-                        curr_places = len(str_val.split('.')[1])
-                        decimal_places = max(decimal_places, curr_places + 1)
-            
-            logger.log(f"分裂点: {split_value:.{decimal_places}f}")
+        # 根据规则进行分裂
+        node_X = self.train_x[node_samples]
+        if is_categorical:
+            left_mask = node_X[:, best_feature] == split_value
         else:
-            logger.log(f"分裂点: {split_value}")
+            left_mask = node_X[:, best_feature] < split_value
+        right_mask = ~left_mask
         
         # 简单启发式选择标签
-        logger.log("分配叶节点值...")
-        left_class, right_class = self._assign_leaf_values(next_split, best_feature, split_value)
+        left_y = node_y[left_mask]
+        right_y = node_y[right_mask]
+        
+        left_class = np.argmax(np.bincount(left_y)) if len(left_y) > 0 else -1
+        right_class = np.argmax(np.bincount(right_y)) if len(right_y) > 0 else -1
+        
         logger.log(f"左子节点标签: {left_class}, 右子节点标签: {right_class}")
         
         # 执行分裂
-        next_split.split(best_feature, split_value, 
-                      self._meta.features[best_feature].is_categorical,
-                      left_class, right_class)
+        next_split.split(best_feature, split_value, is_categorical, left_class, right_class)
         
         logger.log(f"节点已分裂，特征: {best_feature}, 分裂点: {split_value}")
         
-        # 无需每次都调用LLM评估
         return True, 0.0
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
@@ -269,165 +257,7 @@ class TrainStrategy:
         raise NotImplementedError
 
 
-    def _quick_feature_selection(self, node):
-        """快速特征选择，使用缓存的LLM排序和简单统计"""
-        # 获取已使用的特征
-        used_features = node.get_used_features()
-        logger.log(f"节点深度: {node.depth}, 已使用特征: {used_features}")
-        
-        # 获取节点样本
-        node_samples = node.get_samples()
-        if len(node_samples) == 0:
-            logger.log("警告: 节点样本数为0，无法选择特征")
-            return None
-            
-        node_x = self.train_x[node_samples]
-        node_y = self.train_y[node_samples]
-        
-        logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
-        
-        # 计算特征的卡方检验分数
-        gini_scores = calculate_gini_scores(
-            node_x, node_y, self._meta
-        )
-        
-        # 没有传入LLM排序，让我们使用初始化时设置的排序
-        if not hasattr(self, 'llm_feature_ranking') or self.llm_feature_ranking is None:
-            # 尝试重新获取一次
-            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
-            logger.log(f"重新获取LLM特征排序: {self.llm_feature_ranking}")
-        
-        # 使用特征选择函数
-        best_feature = select_best_feature(
-            self.llm_feature_ranking,
-            gini_scores,
-            node.depth,
-            used_features
-        )
-        
-        logger.log(f"最终选择特征: {best_feature}")
-        
-        if best_feature is not None and hasattr(self, '_meta') and self._meta:
-            feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
-            logger.log(f"选择特征: {best_feature} ({feature_name})")
-        
-        return best_feature
-    
-    def _quick_split_values(self, feature_idx, node):
-        """确定最佳分裂点，使用CART算法的方式"""
-        # 添加日志：打印当前节点所有样本的标签
-        node_samples = node.get_samples()
-        node_labels = self.train_y[node_samples]
-        unique_labels, label_counts = np.unique(node_labels, return_counts=True)
-        label_dist = {int(label): count for label, count in zip(unique_labels, label_counts)}
-        logger.log(f"节点({id(node)})样本标签分布: {label_dist}, 总样本数: {len(node_samples)}")
-        
-        # 如果是分类特征，使用专门的处理方法
-        if self._meta.features[feature_idx].is_categorical:
-            # 使用专门的分类特征处理方法寻找最佳分裂值
-            best_value = self._process_categorical_feature(feature_idx, node)
-            if best_value is not None:
-                logger.log(f"分类特征 {self._meta.features[feature_idx].name} 使用优化的分裂值: {best_value}")
-                return [best_value]
-            else:
-                # 如果专门方法失败，回退到原始方法
-                logger.log(f"分类特征 {self._meta.features[feature_idx].name} 优化方法失败，使用默认分裂值")
-                return self.split_values[feature_idx]
-        
-        # 获取节点样本数据
-        node_data = self.train_x[node_samples, feature_idx]
-        
-        # 获取唯一值并排序
-        unique_values = np.unique(node_data)
-        if len(unique_values) <= 1:
-            logger.log(f"特征 {self._meta.features[feature_idx].name} 的所有值都相同，跳过分裂")
-            return []
-        
-        # 确定小数位数 - 检查特征值的小数位数，取最大值加1
-        decimal_places = 1  # 默认至少保留1位小数
-        for val in unique_values:
-            if isinstance(val, (float, np.float64, np.float32)):
-                # 将值转换为字符串，然后检查小数点后的位数
-                str_val = str(val)
-                if '.' in str_val:
-                    curr_places = len(str_val.split('.')[1])
-                    decimal_places = max(decimal_places, curr_places + 1)
-        
-        # 如果只有两个不同的值，使用它们的中点
-        if len(unique_values) == 2:
-            split_point = (unique_values[0] + unique_values[1]) / 2
-            # 格式化分裂点，控制小数位数
-            split_point = round(split_point, decimal_places)
-            logger.log(f"只有两个不同值，使用中点 {split_point:.{decimal_places}f} 作为分裂点")
-            return [split_point]
-        
-        # CART算法：尝试所有可能的分裂点，找到最优的
-        best_split = None
-        best_gain = -float('inf')
-        
-        # 计算父节点的基尼系数
-        parent_gini = 1.0
-        for label in unique_labels:
-            p = np.sum(node_labels == label) / len(node_labels)
-            parent_gini -= p * p
-        
-        # 尝试所有可能的分裂点
-        for i in range(len(unique_values) - 1):
-            # 计算可能的分裂点（相邻值的中点）
-            split_value = (unique_values[i] + unique_values[i+1]) / 2
-            
-            # 格式化分裂点，控制小数位数
-            split_value = round(split_value, decimal_places)
-            
-            # 分割样本
-            left_mask = node_data <= split_value
-            right_mask = ~left_mask
-            
-            # 计算左右子节点的基尼系数
-            left_gini = 0
-            right_gini = 0
-            
-            # 左子节点基尼系数
-            if np.any(left_mask):
-                left_labels = node_labels[left_mask]
-                left_count = len(left_labels)
-                left_gini = 1.0
-                for label in unique_labels:
-                    p = np.sum(left_labels == label) / left_count
-                    left_gini -= p * p
-            
-            # 右子节点基尼系数
-            if np.any(right_mask):
-                right_labels = node_labels[right_mask]
-                right_count = len(right_labels)
-                right_gini = 1.0
-                for label in unique_labels:
-                    p = np.sum(right_labels == label) / right_count
-                    right_gini -= p * p
-            
-            # 计算加权基尼系数
-            left_weight = np.sum(left_mask) / len(node_labels)
-            right_weight = np.sum(right_mask) / len(node_labels)
-            weighted_gini = left_weight * left_gini + right_weight * right_gini
-            
-            # 计算基尼系数增益
-            gain = parent_gini - weighted_gini
-            
-            # 更新最佳分裂点
-            if gain > best_gain:
-                best_gain = gain
-                best_split = split_value
-                
-                # 记录详细信息
-                logger.log(f"新的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
-                logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
-                logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
-        
-        if best_split is not None:
-            logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
-            return [best_split]
-        
-        return []
+   
     
     def _assign_leaf_values(self, node, feature_idx, split_value):
         """使用多数投票快速确定叶节点值"""
@@ -806,28 +636,6 @@ class UnknownClassStrategy(TrainStrategy):
         """返回数据集元数据"""
         return self.serializer.meta  # 使用serializer中的meta
 
-    @classmethod
-    def get_feature_ranking(cls, meta: DatasetMeta, runner: Runner) -> list[int]:
-        """获取数据集的特征重要性排序（类级别缓存）"""
-        if not hasattr(cls, '_cached_rankings'):
-            cls._cached_rankings = {}
-            
-        # 使用数据集名称作为缓存键
-        cache_key = meta.name
-        if cache_key not in cls._cached_rankings:
-            # 获取LLM对特征的排序
-            ranking = get_feature_importance_ranking(meta, runner)
-            if ranking:
-                cls._cached_rankings[cache_key] = ranking
-                logger.log(f"获取数据集 {cache_key} 的LLM特征重要性排序: {ranking}")
-            else:
-                # 如果获取失败，使用默认顺序
-                ranking = list(range(meta.feature_count()))
-                logger.log(f"无法获取LLM特征排序，使用默认顺序: {ranking}")
-                cls._cached_rankings[cache_key] = ranking
-                
-        return cls._cached_rankings[cache_key]
-
     def _get_available_predictions(self) -> list[int]:
         """获取可用的预测值列表"""
         return [-1, *range(self._meta.label_count())]
@@ -931,6 +739,193 @@ class UnknownClassStrategy(TrainStrategy):
     def get_tree(self) -> DecisionTree:
         return self.tree
 
+    def _create_meta_rules_prompt(self, max_depth: int) -> str:
+        """创建获取元规则的提示词"""
+        # 计算需要的规则数量
+        num_rules_required = 2**max_depth - 1
+        
+        # 使用提供的模板，确保变量名一致
+        template = jinja2.Template("""You are an expert data analyst specializing in {{ meta.target or "classification tasks" }}. Your goal is to generate a set of high-quality decision rules (meta-rules) that can be used to build a decision tree for predicting the target variable: '{{ meta.label_meaning or "output" }}'.  
+  
+## Dataset Information:  
+{% if meta.target %}  
+Task: {{ meta.target }}  
+{% endif %}  
+  
+Features:  
+{% for feature in meta.features %}  
+{{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }})  
+{% endfor %}  
+
+Target Variable: {{ meta.label_meaning or 'The output' }}  
+Possible values:  
+{% for label in meta.labels %}  
+- {{ label.name }}{% if label.desc %} ({{ label.desc }}){% endif %}  
+{% endfor %}  
+  
+## Task Requirements:  
+Generate exactly {{ num_rules_required }} distinct and important meta-rules for splitting the data.  
+Each rule should aim to create the most homogeneous (pure) subgroups possible with respect to the target variable.  
+  
+## Rule Format:  
+- For **numerical** features (int, float): `feature_name < value`  
+- For **categorical** features: `feature_name = category`  
+  
+Important Constraints & Guidelines:  
+1. Confidence Score: Assign an integer confidence score from 0 (least confident/important) to 10 (most confident/important) to each rule. Similar importance should have similar scores.  
+2. Sorting: Output the rules strictly sorted by confidence score in descending order.  
+3. Numerical Precision: For numerical features of type 'int', the split value MUST be an integer. For 'float', use appropriate precision based on the feature description if possible, otherwise use reasonable precision (e.g., 1-2 decimal places).  
+4. Rule Importance: All {{ num_rules_required }} rules generated should be meaningful and potentially useful splits. More important features might justify more rules, but ensure diversity.  
+5. Avoid Redundancy: While multiple rules for the same important feature are allowed (e.g., `age < 40`, `age < 25`), try to avoid generating rules that are trivially different or rules where one operator (`<` or `=`) is clearly superior for purity gain (e.g., don't generate both `age < 40` and `age >= 40` if one is much better). Focus on the `<` for numerical and `=` for categorical.  
+6. Homogeneity: Prioritize rules that significantly increase the purity (homogeneity) of the resulting subgroups regarding the target labels.  
+  
+## Output Format (Strict):  
+Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
+  
+Example:  
+blood pressure < 130 [ confidence: 9 ]  
+blood pressure < 120 [ confidence: 8 ]  
+age < 40 [ confidence: 7 ]  
+blood pressure < 114 [ confidence: 7 ]  
+weight < 80.5 [ confidence: 6 ]  
+age < 25 [ confidence: 6 ]  
+sex = female [ confidence: 4 ]  
+  
+## Generated Meta-Rules:""")
+        
+        prompt = template.render(meta=self._meta, num_rules_required=num_rules_required)
+        return prompt
+
+    def _get_meta_rules(self, max_depth: int, runner: Runner = None) -> list[MetaRule]:
+        """从LLM获取元规则列表"""
+        # 使用缓存避免重复请求
+        cache_key = f"{self._meta.name}_meta_rules_{max_depth}"
+        if hasattr(self.__class__, '_cached_meta_rules') and cache_key in self.__class__._cached_meta_rules:
+            logger.log(f"使用缓存的元规则列表: {len(self.__class__._cached_meta_rules[cache_key])}条规则")
+            return self.__class__._cached_meta_rules[cache_key]
+        
+        # 如果没有设置runner，使用类成员变量
+        if runner is None:
+            runner = self.runner  # 使用 self.runner 而不是 self._runner
+        
+        # 创建提示词并请求LLM
+        prompt = self._create_meta_rules_prompt(max_depth)
+        logger.log(f"请求元规则生成，提示词:\n{prompt}")
+        
+        meta_rules = []
+        for responses in runner.run([prompt]):
+            for response in responses:
+                logger.log(f"收到LLM响应:\n{response}")
+                
+                # 解析每一行规则
+                for line in response.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    meta_rule = MetaRule.parse_rule(line, self._meta)
+                    if meta_rule:
+                        meta_rules.append(meta_rule)
+        
+        logger.log(f"成功解析 {len(meta_rules)} 条元规则")
+        
+        # 按置信度排序
+        meta_rules.sort(key=lambda x: x.confidence, reverse=True)
+        
+        # 缓存结果
+        if not hasattr(self.__class__, '_cached_meta_rules'):
+            self.__class__._cached_meta_rules = {}
+        self.__class__._cached_meta_rules[cache_key] = meta_rules
+        
+        return meta_rules
+
+    def _select_meta_rule(self, node, meta_rules: list[MetaRule], delta: int = 2) -> tuple[MetaRule, float]:
+        """为当前节点选择最佳元规则
+        
+        Args:
+            node: 当前节点
+            meta_rules: 元规则列表
+            delta: 置信度差值范围
+            
+        Returns:
+            tuple: (最佳元规则, 基尼增益)
+        """
+        node_samples = node.get_samples()
+        
+        # 获取当前节点路径上使用过的特征
+        used_features = set()
+        current = node
+        while hasattr(current, 'parent') and current.parent is not None:
+            parent = current.parent
+            if hasattr(parent, 'split_feature') and parent.split_feature is not None:
+                used_features.add(parent.split_feature)
+            current = parent
+        
+        # 筛选出可用的元规则
+        usable_rules = []
+        
+        # 如果所有元规则都已经被使用过，则返回None
+        if len(meta_rules) == 0:
+            return None, 0.0
+        
+        # 获取最高置信度
+        max_confidence = meta_rules[0].confidence
+        
+        # 筛选出在可选置信度范围内，且特征未被使用的规则
+        for rule in meta_rules:
+            if rule.feature_idx in used_features:
+                continue
+            
+            if rule.confidence >= max_confidence - delta:
+                usable_rules.append(rule)
+        
+        if not usable_rules:
+            return None, 0.0
+        
+        # 计算每个规则的基尼增益
+        best_gain = -1
+        best_rule = None
+        best_confidence = -1
+        
+        for rule in usable_rules:
+            gain, left_gini, right_gini, left_mask, right_mask = calculate_meta_rule_gini(
+                rule, self.train_x, self.train_y, node_samples
+            )
+            
+            # 记录日志
+            logger.log(f"规则 '{rule}' 的基尼增益: {gain:.4f}")
+            logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
+            logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+            
+            # 如果样本无法分裂，跳过
+            if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+                continue
+            
+            # 更新最佳规则
+            # 如果有更高的增益，或者增益相同但置信度更高
+            if gain > best_gain or (gain == best_gain and rule.confidence > best_confidence):
+                best_gain = gain
+                best_rule = rule
+                best_confidence = rule.confidence
+        
+        if best_rule:
+            logger.log(f"最佳元规则: {best_rule}，基尼增益: {best_gain:.4f}")
+        else:
+            logger.log("没有找到有效的元规则")
+        
+        return best_rule, best_gain
+
+    def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
+        """设置训练数据，并获取元规则列表"""
+        # 调用父类方法设置基本数据
+        super().set_train_data(train_x, train_y)
+        
+        # 获取元规则列表，使用 self.runner 变量
+        self.meta_rules = self._get_meta_rules(self.max_depth, self.runner)
+        logger.log(f"获取的元规则数量: {len(self.meta_rules)}")
+        for rule in self.meta_rules[:10]:  # 只显示前10条规则
+            logger.log(f"规则: {rule}")
+
 
 class KnownClassStrategy(UnknownClassStrategy):
     def __init__(
@@ -955,49 +950,7 @@ class KnownClassStrategy(UnknownClassStrategy):
         """获取可用的预测值列表（不包含unknown）"""
         return [*range(self._meta.label_count())]
 
-    def _quick_feature_selection(self, node):
-        """快速特征选择，使用缓存的LLM排序和简单统计"""
-        # 获取已使用的特征
-        used_features = node.get_used_features()
-        logger.log(f"节点深度: {node.depth}, 已使用特征: {used_features}")
-        
-        # 获取节点样本
-        node_samples = node.get_samples()
-        if len(node_samples) == 0:
-            logger.log("警告: 节点样本数为0，无法选择特征")
-            return None
-            
-        node_x = self.train_x[node_samples]
-        node_y = self.train_y[node_samples]
-        
-        logger.log(f"节点样本数: {len(node_samples)}, 特征数: {node_x.shape[1]}")
-        
-        # 计算特征的卡方检验分数
-        gini_scores = calculate_gini_scores(
-            node_x, node_y, self._meta
-        )
-        
-        # 没有传入LLM排序，让我们使用初始化时设置的排序
-        if not hasattr(self, 'llm_feature_ranking') or self.llm_feature_ranking is None:
-            # 尝试重新获取一次
-            self.llm_feature_ranking = self.get_feature_ranking(self._meta, self.runner)
-            logger.log(f"重新获取LLM特征排序: {self.llm_feature_ranking}")
-        
-        # 使用特征选择函数
-        best_feature = select_best_feature(
-            self.llm_feature_ranking,
-            gini_scores,
-            node.depth,
-            used_features
-        )
-        
-        logger.log(f"最终选择特征: {best_feature}")
-        
-        if best_feature is not None and hasattr(self, '_meta') and self._meta:
-            feature_name = self._meta.features[best_feature].name if best_feature < len(self._meta.features) else f"未知特征({best_feature})"
-            logger.log(f"选择特征: {best_feature} ({feature_name})")
-        
-        return best_feature
+    
 
 
 class FeatureBaggingStrategy(TrainStrategy):
@@ -1075,7 +1028,7 @@ class FeatureBaggingStrategy(TrainStrategy):
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
         self.train_y = train_y
-
+        
         feature_values = _get_feature_values(self.all_meta, train_x, self.hist_nbins)
 
         if len(train_x) > 1:

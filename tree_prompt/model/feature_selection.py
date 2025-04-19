@@ -3,6 +3,7 @@ from scipy.stats import chi2_contingency
 from typing import List, Dict, Set
 from ..dataset import DatasetMeta
 from .. import logger
+from .meta_rule import MetaRule
 
 def calculate_weight_factor(depth: int) -> float:
     """计算LLM排序和统计分析的权重因子
@@ -97,26 +98,14 @@ def calculate_weight_factor(depth: int) -> float:
 #     logger.log(f"所有特征的卡方分数: {scores}")
 #     return scores
 
-def calculate_gini_impurity(y):
-    """
-    计算基尼不纯度
+def calculate_gini_impurity(y_values):
+    """计算基尼不纯度"""
+    if len(y_values) == 0:
+        return 0
     
-    Args:
-        y: 标签向量
-    
-    Returns:
-        float: 基尼不纯度
-    """
-    if len(y) == 0:
-        return 0.0
-    
-    # 计算每个类别的概率
-    _, counts = np.unique(y, return_counts=True)
-    probabilities = counts / len(y)
-    
-    # 计算基尼不纯度
-    gini = 1.0 - np.sum(probabilities ** 2)
-    return gini
+    classes, counts = np.unique(y_values, return_counts=True)
+    probabilities = counts / len(y_values)
+    return 1 - np.sum(probabilities ** 2)
 
 def calculate_gini_scores(
     X: np.ndarray, 
@@ -275,62 +264,59 @@ def calculate_gini_scores(
     
     return scores
 
-def select_best_feature(
-    llm_ranking: list[int], 
-    gini_scores: Dict[int, float],
-    depth: int, 
-    used_features: set[int] = None
-) -> int:
-    """
-    根据LLM排名和基尼系数增益选择最佳特征
+def calculate_meta_rule_gini(
+    meta_rule: MetaRule, 
+    X: np.ndarray, 
+    y: np.ndarray, 
+    samples: np.ndarray
+) -> tuple[float, float, float, np.ndarray, np.ndarray]:
+    """计算应用元规则后的基尼不纯度和增益
     
     Args:
-        llm_ranking: LLM给出的特征重要性排序
-        gini_scores: 特征索引到基尼系数增益的映射
-        depth: 当前节点深度
-        used_features: 已使用的特征集合
-    
+        meta_rule: 要评估的元规则
+        X: 所有特征数据
+        y: 标签数据
+        samples: 当前节点的样本索引
+        
     Returns:
-        int: 选择的特征索引
+        tuple: (基尼增益, 左子节点基尼系数, 右子节点基尼系数, 左子节点样本掩码, 右子节点样本掩码)
     """
-    if used_features is None:
-        used_features = set()
+    if len(samples) == 0:
+        return 0.0, 0.0, 0.0, np.array([]), np.array([])
     
-    # 计算特征权重因子
-    alpha = calculate_weight_factor(depth)
-    logger.log(f"深度 {depth} 的权重因子: α={alpha:.2f} (LLM权重)")
+    node_X = X[samples]
+    node_y = y[samples]
     
-    # 找出最大基尼增益用于归一化
-    max_gini = max(gini_scores.values()) if gini_scores else 0
+    feature_idx = meta_rule.feature_idx
+    split_value = meta_rule.split_value
     
-    # 合并LLM排名和基尼系数增益
-    combined_scores = []
-    for i, feature in enumerate(llm_ranking):
-        if feature in used_features:
-            continue
-            
-        # 归一化LLM排名 (倒排，越靠前分数越高)
-        llm_score = 1.0 - (i / len(llm_ranking)) if len(llm_ranking) > 0 else 0
-        
-        # 获取特征的基尼增益并归一化
-        gini_score = 0
-        if feature in gini_scores:
-            gini_score = gini_scores[feature] / max_gini if max_gini > 0 else 0
-        
-        # 合并分数
-        combined_score = alpha * llm_score + (1 - alpha) * gini_score
-        combined_scores.append((feature, combined_score, llm_score, gini_score))
+    # 计算当前节点的基尼不纯度
+    current_gini = calculate_gini_impurity(node_y)
     
-    if not combined_scores:
-        return None
+    # 根据元规则划分样本
+    feature_values = node_X[:, feature_idx]
     
-    # 按合并分数排序
-    combined_scores.sort(key=lambda x: x[1], reverse=True)
+    if meta_rule.is_categorical:
+        left_mask = feature_values == split_value
+    else:
+        left_mask = feature_values < split_value
     
-    # 输出详细的特征选择信息
-    logger.log("特征选择详情:")
-    for feature, score, llm_score, gini_score in combined_scores: 
-        logger.log(f"  特征 {feature}: 合并分数 {score:.4f} (LLM: {llm_score:.4f}, 基尼: {gini_score:.4f})")
+    right_mask = ~left_mask
     
-    # 返回得分最高的特征
-    return combined_scores[0][0] 
+    # 计算左右子节点的基尼不纯度
+    left_y = node_y[left_mask]
+    right_y = node_y[right_mask]
+    
+    # 如果划分后任一子节点为空，返回0增益
+    if len(left_y) == 0 or len(right_y) == 0:
+        return 0.0, 0.0, 0.0, left_mask, right_mask
+    
+    left_gini = calculate_gini_impurity(left_y)
+    right_gini = calculate_gini_impurity(right_y)
+    
+    # 计算加权基尼不纯度和增益
+    n = len(node_y)
+    weighted_gini = (len(left_y) / n) * left_gini + (len(right_y) / n) * right_gini
+    gini_gain = current_gini - weighted_gini
+    
+    return gini_gain, left_gini, right_gini, left_mask, right_mask 

@@ -1,1 +1,1 @@
-from .model.feature_selection import calculate_gini_scores, select_best_feature
+from .model.feature_selection import calculate_gini_impurity, calculate_meta_rule_gini
