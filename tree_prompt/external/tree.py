@@ -65,22 +65,14 @@ class DecisionTree:
     ) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError()
 
-class DecisionNode:
-    def __init__(self, feature=None, op=None, threshold=None, left=None, right=None, value=None):
-        self.feature = feature  # 特征名
-        self.op = op            # 操作符（'<=', 'in', 等）
-        self.threshold = threshold  # 阈值/类别列表
-        self.left = left        # 满足条件的子树
-        self.right = right      # 不满足时的下一规则
-        self.value = value      # 叶节点的预测值
+
 
 class LLMDecisionTree:
     def __init__(self, meta, max_depth, runner=None):
         self.meta = meta
         self.max_depth = max_depth
         self.runner = runner
-        self.rules = []
-        self.decision_tree = None
+        self.rules = self._parse_rules(rules) if rules else []
 
     def fit(self, x_train: np.ndarray, y_train: np.ndarray) -> list[str]:
         """生成决策树规则主流程"""
@@ -98,153 +90,16 @@ class LLMDecisionTree:
             # 发送请求并处理响应
             responses = list(self.runner.run([prompt]))
             self.rules = self._parse_llm_response(responses[0])
-            # 构建决策树
-            self.decision_tree = self._parse_llm_response(responses[0])
-            
-            # 验证规则完备性
-            self._validate_training_coverage(x_train)
 
             if not self._validate_rules():
                 Logger.log("部分规则未通过验证")
-            
+
             return self.rules
 
         except Exception as e:
             
             return []
-    def _parse_llm_response(self, response: str) -> DecisionNode:
-        root = None
-        current_node = None
-        
-        for line in response.split('\n'):
-            line = line.strip()
-            if not line.startswith("if ") or " then " not in line:
-                continue
-            
-            condition, prediction = line[3:].split(" then ", 1)
-            feature, op, value = self._parse_condition(condition.strip())
-            
-            if not feature:
-                continue
-                
-            new_node = DecisionNode(
-                feature=feature,
-                op=op,
-                threshold=self._parse_threshold(op, value),
-                left=DecisionNode(value=prediction.strip()),
-                right=None
-            )
-            
-            if root is None:
-                root = current_node = new_node
-            else:
-                current_node.right = new_node
-                current_node = new_node
-        
-        return root
-    
-    def _validate_training_coverage(self, x_train):
-        """检查训练集是否被完全覆盖"""
-        for i, sample in enumerate(x_train):
-            try:
-                self._predict_single(sample)
-            except ValueError as e:
-                raise ValueError(
-                    f"训练样本#{i} 未被任何规则覆盖:\n"
-                    f"样本: {sample}\n"
-                    "建议解决方案:\n"
-                    "1. 增加 max_depth 参数\n"
-                    "2. 检查特征工程是否合理\n"
-                    "3. 确保LLM生成的规则完整"
-                ) from e
-        
-    def _predict_single(self, sample) -> str:
-        """内部使用的单样本预测方法"""
-        node = self.decision_tree
-        while node:
-            if node.value is not None:
-                return node.value
-                
-            feat_idx = self.meta.features.index(node.feature)
-            sample_value = sample[feat_idx]
-            
-            if self._evaluate_condition(sample_value, node):
-                node = node.left
-            else:
-                node = node.right
-        raise ValueError("No matching rule")
-    
-    def _evaluate_condition(self, sample_value, node: DecisionNode) -> bool:
-            """标准化条件判断逻辑"""
-            try:
-                if node.op in ['<=', '<', '>', '>=']:
-                    sample_val = float(sample_value)
-                    thresh = float(node.threshold)
-                    return {
-                        '<=': lambda: sample_val <= thresh,
-                        '<':  lambda: sample_val < thresh,
-                        '>=': lambda: sample_val >= thresh,
-                        '>':  lambda: sample_val > thresh
-                    }[node.op]()
-                elif node.op == 'in':
-                    return str(sample_value) in node.threshold
-                return False
-            except (ValueError, TypeError):
-                raise ValueError(
-                    f"类型错误: 特征 {node.feature} 的值 {sample_value} "
-                    f"无法与阈值 {node.threshold} 进行比较"
-                )
-    def predict(self, x_test) -> np.ndarray:
-        """强制匹配模式预测"""
-        if self.decision_tree is None:
-            raise ValueError("请先调用 fit() 方法训练模型")
-        
-        predictions = []
-        feature_names = [f.name for f in self.meta.features]
-        
-        for sample in x_test:
-            node = self.decision_tree
-            rule_path = []  # 记录规则路径用于报错
-            
-            while node:
-                rule_path.append(
-                    f"{node.feature} {node.op} {node.threshold}"
-                )
-                
-                # 叶节点处理
-                if node.value is not None:
-                    predictions.append(node.value)
-                    break
-                    
-                # 获取特征值
-                try:
-                    feat_idx = feature_names.index(node.feature)
-                    sample_value = sample[feat_idx]
-                except ValueError:
-                    raise ValueError(f"特征 '{node.feature}' 不在训练特征集中")
-                
-                # 条件判断
-                if self._evaluate_condition(sample_value, node):
-                    node = node.left
-                else:
-                    node = node.right
-            
-            # 未匹配任何规则
-            if node is None:
-                raise ValueError(
-                    "样本不匹配任何规则:\n"
-                    f"样本特征值: {dict(zip(feature_names, sample))}\n"
-                    f"尝试的规则路径: {' -> '.join(rule_path)}"
-                )
-        
-        return np.array(predictions)
-    def _parse_threshold(self, op: str, value: str):
-        """根据操作符解析阈值"""
-        if op in ['<=', '>=', '<', '>']:
-            return float(value)
-        elif op == 'in':
-            return [v.strip(" '\"") for v in value.strip('[]').split(',')]
-        return value
+
     def _parse_llm_response(self, response: str) -> list[str]:
         """解析LLM响应（保留核心解析逻辑）"""
         valid_rules = []
@@ -268,11 +123,105 @@ class LLMDecisionTree:
             valid_rules.append(line)
 
         return list(dict.fromkeys(valid_rules))
-    def _matches_rule(self, sample, rule):
-        """检查样本是否匹配规则"""
-        # 实现规则匹配逻辑
-        pass
+
+    def _parse_rules(self, rule_texts: list[str]) -> list[dict]:
+        """解析预生成的规则文本为结构化格式"""
+        parsed_rules = []
+        feature_names = {f.name for f in self.meta.features}
+        
+        for rule in rule_texts:
+            if not rule.startswith("if ") or " then " not in rule:
+                continue
+            
+            condition, prediction = rule[3:].split(" then ", 1)
+            feature, op, value = self._parse_condition(condition.strip())
+            
+            if feature in feature_names:
+                parsed_rules.append({
+                    "feature": feature,
+                    "op": op,
+                    "value": self._parse_value(op, value),
+                    "prediction": prediction.strip()
+                })
+        
+        return parsed_rules
     
+    def _parse_condition(self, condition: str) -> tuple:
+        """解析条件语句为 (特征名, 操作符, 值)"""
+        for op in ['<=', '>=', '<', '>', '==', '!=', ' in ']:
+            if op in condition:
+                parts = condition.split(op)
+                if len(parts) == 2:
+                    return parts[0].strip(), op, parts[1].strip()
+        return None, None, None
+    
+    def _parse_value(self, op: str, value_str: str):
+        """根据操作符解析阈值"""
+        if op in ['<=', '>=', '<', '>', '==', '!=']:
+            try:
+                return float(value_str)
+            except ValueError:
+                return value_str.strip(" '\"")
+        elif op == ' in ':
+            return [v.strip(" '\"") for v in value_str.strip('[]').split(',')]
+        return value_str.strip(" '\"")
+    
+    def predict(self, x_test) -> np.ndarray:
+        """
+        直接应用预生成规则预测
+        :param x_test: 二维数组，形状 (n_samples, n_features)
+        :return: 预测结果数组
+        """
+        if not self.rules:
+            raise ValueError("未提供决策规则，请通过构造函数传入 rules 参数")
+            
+        feature_names = [f.name for f in self.meta.features]
+        predictions = []
+        
+        for sample in x_test:
+            matched = False
+            for rule in self.rules:
+                try:
+                    feat_idx = feature_names.index(rule["feature"])
+                    sample_value = sample[feat_idx]
+                    
+                    if self._check_condition(sample_value, rule):
+                        predictions.append(rule["prediction"])
+                        matched = True
+                        break
+                except (ValueError, IndexError):
+                    continue
+            
+            if not matched:
+                raise ValueError(
+                    f"样本未匹配任何规则: {sample}\n"
+                    f"可用规则: {self.rules}"
+                )
+        
+        return np.array(predictions)
+    
+    def _check_condition(self, sample_value, rule: dict) -> bool:
+        """检查样本值是否满足规则条件"""
+        op, threshold = rule["op"], rule["value"]
+        
+        try:
+            if op in ['<=', '<', '>', '>=', '==', '!=']:
+                sample_val = float(sample_value)
+                thresh = float(threshold)
+                return {
+                    '<=': sample_val <= thresh,
+                    '<':  sample_val < thresh,
+                    '>=': sample_val >= thresh,
+                    '>':  sample_val > thresh,
+                    '==': sample_val == thresh,
+                    '!=': sample_val != thresh
+                }.get(op, False)
+            elif op == ' in ':
+                return str(sample_value) in threshold
+            return False
+        except (TypeError, ValueError):
+            return str(sample_value) == str(threshold)
+        
     def _validate_rules(self) -> bool:
         """规则验证（保留基础验证逻辑）"""
         if not self.rules:
@@ -285,7 +234,6 @@ class LLMDecisionTree:
     def get_rules(self):
         """获取生成的决策规则"""
         return self.rules 
-
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
         super().__init__(meta)
