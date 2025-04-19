@@ -759,14 +759,13 @@ class UnknownClassStrategy(TrainStrategy):
         num_rules_required = 2**max_depth - 1
         
         # 使用提供的模板，确保变量名一致
-        template = jinja2.Template("""You are an expert data analyst specializing in {{ meta.target or "classification tasks" }}. Your goal is to generate a set of high-quality decision rules (meta-rules) that can be used to build a decision tree for predicting the target variable: '{{ meta.label_meaning or "output" }}'.  
+        template = jinja2.Template("""## Role and Task:
+You are an expert data analyst specializing in {{ meta.target or "classification tasks" }}. 
+Your task is to generate high-quality meta-rules to build a decision tree predicting the target variable '{{ meta.label_meaning or "output" }}' using the features below.
   
 ## Dataset Information:  
-{% if meta.target %}  
-Task: {{ meta.target }}  
-{% endif %}  
   
-Features:  
+### Features:  
 {% for feature in meta.features %}  
 {{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }}) 
 {% if feature.is_categorical and feature.categories %}
@@ -777,27 +776,29 @@ Features:
 {% endif %}   
 {% endfor %}  
 
-Target Variable: {{ meta.label_meaning or 'The output' }}  
+### Target Variable: {{ meta.label_meaning or 'The output' }}  
 Possible values:  
 {% for label in meta.labels %}  
 - {{ label.name }}{% if label.desc %} ({{ label.desc }}){% endif %}  
 {% endfor %}  
   
 ## Task Requirements:  
-Generate exactly {{ num_rules_required }} distinct and important meta-rules for splitting the data.  
-Each rule should aim to create the most homogeneous (pure) subgroups possible with respect to the target variable.  
+Generate exactly {{ num_rules_required }} distinct and important meta-rules for splitting the dataset into subsets with different values of the '{{ meta.label_meaning or "output" }}' label.
+
   
-## Rule Format:  
-- For **numerical** features (int, float): `feature_name < value`  
+## Rule Format( Strict):  
+- For **numerical** features (int, float): `feature_name < value` 
 - For **categorical** features: `feature_name = category`  
+Note: We ONLY allow '<' and '=' as numerical and categorical operators respectively, '>' or '!=' is NOT allowed.
   
 Important Constraints & Guidelines:  
-1. Confidence Score: Assign an integer confidence score from 0 (least confident/important) to 10 (most confident/important) to each rule. Similar importance should have similar scores.  
-2. Sorting: Output the rules strictly sorted by confidence score in descending order.  
-3. Numerical Precision: For numerical features of type 'int', the split value MUST be an integer. For 'float', use appropriate precision based on the feature description if possible, otherwise use reasonable precision (e.g., 1-2 decimal places).  
-4. Rule Importance: All {{ num_rules_required }} rules generated should be meaningful and potentially useful splits. More important features might justify more rules, but ensure diversity.  
-5. Avoid Redundancy: While multiple rules for the same important feature are allowed (e.g., `age < 40`, `age < 25`), try to avoid generating rules that are trivially different or rules where one operator (`<` or `=`) is clearly superior for purity gain (e.g., don't generate both `age < 40` and `age >= 40` if one is much better). Focus on the `<` for numerical and `=` for categorical.  
-6. Homogeneity: Prioritize rules that significantly increase the purity (homogeneity) of the resulting subgroups regarding the target labels.  
+1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.
+2. **Numerical Precision**: Use integers for `int` features; use reasonable decimals for `float`.  
+3. **Rule Quality**: All 7 rules must be useful splits (avoid confidence < 5). Important features can have multiple rules. 
+4. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
+5. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
+6. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
+7. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
   
 ## Output Format (Strict):  
 Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
