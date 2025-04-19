@@ -253,6 +253,7 @@ def parse_args() -> TrainArgs:
         "--num-tests-per-set", type=int, help="number of tests per training set size"
     )
     parser.add_argument("--test-size", type=int, help="test set size")
+    parser.add_argument('--alpha', type=float, default=0.8, help='weight factor of llm ranking')
     parser.add_argument(
         "--test-batch",
         type=int,
@@ -382,7 +383,8 @@ def parse_args() -> TrainArgs:
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
-
+    if cml_args.alpha is not None:
+        args.alpha = cml_args.alpha
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if (
@@ -717,6 +719,12 @@ def main():
     # 确保必要的参数存在
     if args.strategy_args.max_depth is None:
         args.strategy_args.max_depth = 3  # 设置默认值
+        
+    # 设置alpha参数 (LLM排名的权重因子)
+    if args.alpha is not None:
+        from tree_prompt.model.feature_selection import set_alpha
+        set_alpha(args.alpha)
+        logger.log(f"set the llm ranking weight (alpha) as: {args.alpha}")
 
     x, y, strategy = load_args(args)
 
