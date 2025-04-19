@@ -109,6 +109,7 @@ class EvaluateArgs:
         self.serializer_type: str = None
         self.exp_id: str = ""
         self.print_only: bool = False
+        self.with_llm: bool = True
     
     def get_missing_fields(self) -> list[str]:
         missing_fields = _get_missing_fields(self)
@@ -291,7 +292,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-
+  
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -411,7 +412,8 @@ def parse_args() -> EvaluateArgs:
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
-
+    if cml_args.with_llm is not None:
+        args.with_llm = bool(cml_args.with_llm)  # 将参数值赋给args.with_llm
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if (
@@ -804,6 +806,7 @@ def main():
                 args.use_tree_rules,
                 args.tree_only,
                 args.test_batch,
+                with_llm=args.with_llm,
             )
 
             results.setdefault(train_size, []).append(result)
