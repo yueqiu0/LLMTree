@@ -382,6 +382,10 @@ def parse_args() -> TrainArgs:
         args.test_size = cml_args.test_size
     if cml_args.test_batch is not None:
         args.test_batch = cml_args.test_batch
+    if cml_args.alpha is not None:
+        args.alpha = cml_args.alpha
+    if cml_args.threshold is not None:
+        args.threshold = cml_args.threshold
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
@@ -410,9 +414,7 @@ def parse_args() -> TrainArgs:
     if len(missing_fields) > 0:
         raise ValueError("Incomplete arguments: missing {}".format(missing_fields))
 
-    # 将命令行参数传递到TrainArgs对象
-    args.alpha = cml_args.alpha
-    args.threshold = cml_args.threshold
+
     
     return args
 
