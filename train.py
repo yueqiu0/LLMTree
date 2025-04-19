@@ -265,8 +265,9 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-    parser.add_argument('--alpha', type=float, default=0.8, help='LLM排序的权重因子')
-    parser.add_argument('--threshold', type=float, default=0.7, help='LLM排序的阈值')
+    parser.add_argument('--alpha', type=float, default=0.8, help='weight factor of llm ranking')
+    parser.add_argument('--threshold', type=float, default=0.70, help='threshold of modifying labels for leaf supervision')
+   
     cml_args = parser.parse_args()
 
     args = TrainArgs()
