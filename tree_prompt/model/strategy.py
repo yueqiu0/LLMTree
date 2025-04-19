@@ -102,31 +102,41 @@ class TrainStrategy:
             logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {unique_labels[0]}")
             next_split.is_leaf = True
             next_split.prediction = unique_labels[0]
-            # 关键修复：必须调用freeze()确保节点从待分裂队列中移除
             next_split.freeze()
             return True, None
         
         # 尝试使用元规则分裂
         best_meta_rule, best_gain = self._select_meta_rule(next_split, self.meta_rules)
         
-        # 如果没有找到有效的元规则，冻结节点
-        if best_meta_rule is None or best_gain <= 0:
-            logger.log("找不到有效的元规则，但这不是叶子节点条件")
-            
-            # 为这个节点分配最多数类别的标签
+        # 检查深度和增益
+        shallow_depth = depth <= 1  
+        is_small_sample = len(node_samples) <= 5
+
+        # 处理不同情况的决策逻辑
+        if best_meta_rule is None:
+            # 没有可用规则，冻结节点
+            logger.log("没有可用的元规则，节点冻结")
             most_common_label = np.argmax(np.bincount(node_y))
             next_split.prediction = most_common_label
-            
-            # 这里不应该调用freeze()，因为这不满足设置叶子节点的条件
-            # 但我们需要确保这个节点不会再被选中进行分裂
-            # 可以通过某种方式将它标记为已处理
-            
-            # 临时解决方案：将节点深度设为最大值，这样下次分裂时会因为深度限制而被识别为叶子
             next_split.depth = self.max_depth
-            
             return True, None
-        
-        # 使用选择的元规则设置分裂
+        elif best_gain <= 0:
+            # 有规则但增益为0的情况
+            if shallow_depth and is_small_sample:
+                # 浅层节点且样本少时，即使增益为0也使用规则
+                logger.log(f"浅层节点(深度={depth})，小样本情况({len(node_samples)}个样本)，即使增益为0也使用规则: {best_meta_rule}")
+            else:
+                # 深层节点或样本较多时，增益为0就冻结节点
+                logger.log(f"增益为0且非浅层小样本情况(深度={depth}，样本数={len(node_samples)})，节点冻结")
+                most_common_label = np.argmax(np.bincount(node_y))
+                next_split.prediction = most_common_label
+                next_split.is_leaf = True
+                next_split.freeze()
+                logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
+                return True, None
+
+        # 使用选择的元规则设置分裂 (走到这里说明有规则可用且将被使用)
+        logger.log(f"使用规则: {best_meta_rule}, 基尼增益: {best_gain:.4f}")
         best_feature = best_meta_rule.feature_idx
         split_value = best_meta_rule.split_value
         is_categorical = best_meta_rule.is_categorical
@@ -161,11 +171,15 @@ class TrainStrategy:
         return True, 0.0
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
+        """使用决策树进行预测"""
         results = self.predict_tree_raw(x)
         for i, res in enumerate(results):
             if res < 0:
-                idx = random.randint(0, self._meta.label_count() - 1)
-                results[i] = self._meta.labels[idx].value
+                # 随机选择一个有效标签，并记录日志
+                valid_labels = [label.value for label in self._meta.labels]
+                selected_label = random.choice(valid_labels)
+                logger.log(f"遇到预测值为unknown(-1)的节点，随机选择标签: {selected_label}")
+                results[i] = selected_label
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
@@ -603,7 +617,7 @@ class TrainStrategy:
         
         # 如果没找到匹配的标签，使用默认名称
         if label_name is None:
-            label_name = f"未知标签({rule_value})"
+            label_name = f"unknown"
             logger.log(f"警告: 未找到值为 {rule_value} 的标签")
         
         if conditions:
@@ -840,17 +854,9 @@ sex = female [ confidence: 4 ]
         return meta_rules
 
     def _select_meta_rule(self, node, meta_rules: list[MetaRule], delta: int = 2) -> tuple[MetaRule, float]:
-        """为当前节点选择最佳元规则
-        
-        Args:
-            node: 当前节点
-            meta_rules: 元规则列表
-            delta: 置信度差值范围
-            
-        Returns:
-            tuple: (最佳元规则, 基尼增益)
-        """
+        """为当前节点选择最佳元规则"""
         node_samples = node.get_samples()
+        is_small_sample = len(node_samples) <= 5  # 设置小样本阈值
         
         # 获取当前节点路径上使用过的特征
         used_features = set()
@@ -887,6 +893,10 @@ sex = female [ confidence: 4 ]
         best_rule = None
         best_confidence = -1
         
+        # 小样本情况下的备选规则（适用于导致一边为空的情况）
+        best_small_sample_rule = None
+        best_small_sample_confidence = -1
+        
         for rule in usable_rules:
             gain, left_gini, right_gini, left_mask, right_mask = calculate_meta_rule_gini(
                 rule, self.train_x, self.train_y, node_samples
@@ -897,8 +907,14 @@ sex = female [ confidence: 4 ]
             logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
             logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
             
-            # 如果样本无法分裂，跳过
-            if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+            # 如果是小样本情况并且当前规则会导致一边为空，记录下来作为备选
+            if is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
+                if best_small_sample_rule is None or rule.confidence > best_small_sample_confidence:
+                    best_small_sample_rule = rule
+                    best_small_sample_confidence = rule.confidence
+                
+            # 如果样本无法分裂，跳过（对于非小样本情况）
+            if not is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
                 continue
             
             # 更新最佳规则
@@ -907,6 +923,11 @@ sex = female [ confidence: 4 ]
                 best_gain = gain
                 best_rule = rule
                 best_confidence = rule.confidence
+        
+        # 如果是小样本且没找到有效规则但有备选规则，使用备选规则
+        if is_small_sample and best_rule is None and best_small_sample_rule is not None:
+            logger.log(f"小样本情况({len(node_samples)}≤5)，使用最高置信度规则: {best_small_sample_rule}，即使一边为空")
+            return best_small_sample_rule, 0.001  # 使用一个很小的正值表示有效
         
         if best_rule:
             logger.log(f"最佳元规则: {best_rule}，基尼增益: {best_gain:.4f}")
@@ -1066,19 +1087,32 @@ class FeatureBaggingStrategy(TrainStrategy):
         return continue_step, losses
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
+        """使用决策树进行预测"""
         results = self.predict_tree_raw(x)
         for i, res in enumerate(results):
             if res < 0:
-                idx = random.randint(0, self.all_meta.label_count() - 1)
-                results[i] = self.all_meta.labels[idx].value
+                # 随机选择一个有效标签，并记录日志
+                valid_labels = [label.value for label in self.all_meta.labels]
+                selected_label = random.choice(valid_labels)
+                logger.log(f"遇到预测值为unknown(-1)的节点，随机选择标签: {selected_label}")
+                results[i] = selected_label
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
         ret = []
         for xx in x:
-            idx = self.random_forest.predict_one(xx)
-            y = self.all_meta.labels[idx].value if idx >= 0 else idx
-            ret.append(y)
+            predicted_value = self.random_forest.predict_one(xx)
+            # 处理预测值为-1的情况
+            if predicted_value < 0:
+                # 获取所有有效标签值
+                valid_labels = [label.value for label in self.all_meta.labels]
+                # 从有效标签中随机选择
+                selected_label = random.choice(valid_labels)
+                logger.log(f"遇到预测值为unknown(-1)的节点，随机选择标签: {selected_label}")
+                ret.append(selected_label)
+            else:
+                # 直接使用预测值，因为predict_one已经返回了标签值
+                ret.append(predicted_value)
         return ret
 
     def predict_llm_with_tree(
@@ -1278,3 +1312,23 @@ class FeatureBaggingStrategy(TrainStrategy):
             
             logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
             return best_split
+
+    def _get_label_name(self, rule_value):
+        """获取标签名称"""
+        # 处理特殊的-1值
+        if rule_value < 0:
+            return "unknown"
+        
+        # 查找标签信息
+        label_name = None
+        for label in self._meta.labels:
+            if label.value == rule_value:
+                label_name = label.name
+                break
+        
+        # 如果没找到匹配的标签，使用默认名称
+        if label_name is None:
+            label_name = f"unknown"
+            logger.log(f"警告: 未找到值为 {rule_value} 的标签")
+        
+        return label_name

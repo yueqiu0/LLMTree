@@ -678,6 +678,15 @@ def analyze_node_samples(model: Classifier, X: np.ndarray, y: np.ndarray):
                 node_stats[node_id]['_feature'] = node.split_feature
                 node_stats[node_id]['_value'] = node.split_value
     
+    # 处理叶子节点的预测值
+    if hasattr(node, 'prediction') and node.prediction is not None:
+        pred_value = node.prediction
+        # 处理特殊的-1值（unknown）
+        if pred_value < 0:
+            node_stats[node_id]['_prediction'] = "unknown"
+        else:
+            node_stats[node_id]['_prediction'] = pred_value
+    
     return node_stats, label_names
 
 def main():

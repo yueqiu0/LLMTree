@@ -184,6 +184,23 @@ class Node:
         if callback_after_recurse:
             callback_after_recurse(self)
 
+    def predict(self, x: np.ndarray) -> int:
+        """预测单个样本的类别"""
+        if self.is_leaf:
+            return self.leaf_class
+        
+        feature_value = x[self.split_feature]
+        if self.is_categorical:
+            if feature_value == self.split_value:
+                return self.left_child.predict(x) if self.left_child else -1
+            else:
+                return self.right_child.predict(x) if self.right_child else -1
+        else:
+            if feature_value < self.split_value:
+                return self.left_child.predict(x) if self.left_child else -1
+            else:
+                return self.right_child.predict(x) if self.right_child else -1
+
 
 class TreeBase:
     def predict_one(self, x: np.ndarray) -> int:
