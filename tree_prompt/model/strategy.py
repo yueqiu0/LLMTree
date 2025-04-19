@@ -768,7 +768,13 @@ Task: {{ meta.target }}
   
 Features:  
 {% for feature in meta.features %}  
-{{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }})  
+{{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }}) 
+{% if feature.is_categorical and feature.categories %}
+   Possible values:
+{% for cat_value, cat_desc in feature.categories.items() %}
+   - {{ cat_value }}: {{ cat_desc }}
+{% endfor %}
+{% endif %}   
 {% endfor %}  
 
 Target Variable: {{ meta.label_meaning or 'The output' }}  
