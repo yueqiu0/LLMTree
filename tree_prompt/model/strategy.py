@@ -905,7 +905,15 @@ class TrainStrategy:
             for i, feature in enumerate(self._meta.features):
                 feature_type = "Categorical" if feature.is_categorical else "Numerical"
                 desc = feature.desc if hasattr(feature, 'desc') and feature.desc else ""
-                feature_descriptions.append(f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}")
+                feature_desc = f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}"
+                
+                # 添加对类别型特征值的详细描述
+                if feature.is_categorical and hasattr(feature, 'categories') and feature.categories:
+                    feature_desc += "\n    Possible values:"
+                    for cat_value, cat_desc in feature.categories.items():
+                        feature_desc += f"\n    - {cat_value}: {cat_desc}"
+                    
+                feature_descriptions.append(feature_desc)
         
         # 构建标签描述
         label_descriptions = []
