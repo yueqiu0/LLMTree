@@ -10,6 +10,7 @@ from datetime import datetime
 import time
 import json
 import os
+import tree_prompt
 
 import tree_prompt.logger as logger
 from tree_prompt.model.strategy import (
@@ -409,6 +410,10 @@ def parse_args() -> TrainArgs:
     if len(missing_fields) > 0:
         raise ValueError("Incomplete arguments: missing {}".format(missing_fields))
 
+    # 将命令行参数传递到TrainArgs对象
+    args.alpha = cml_args.alpha
+    args.threshold = cml_args.threshold
+    
     return args
 
 
@@ -719,6 +724,21 @@ def main():
     # 确保必要的参数存在
     if args.strategy_args.max_depth is None:
         args.strategy_args.max_depth = 3  # 设置默认值
+
+    # 设置alpha参数 (LLM排名的权重因子)
+    if args.alpha is not None:
+        from tree_prompt.model.feature_selection import set_alpha
+        set_alpha(args.alpha)
+        logger.log(f"set the llm ranking weight (alpha) as: {args.alpha}")
+    
+    # 设置threshold参数 (叶子节点标签修改阈值)
+    if args.threshold is not None:
+        # 导入和设置阈值
+        if hasattr(tree_prompt.model.strategy, 'set_threshold'):
+            tree_prompt.model.strategy.set_threshold(args.threshold)
+            logger.log(f"set the leaf node label modification threshold (threshold) as: {args.threshold}")
+        else:
+            logger.log(f"warning: cannot set threshold, the set_threshold function does not exist in the module")
 
     x, y, strategy = load_args(args)
 

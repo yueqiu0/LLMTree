@@ -13,6 +13,12 @@ from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
 from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
 
+_threshold = 0.70  # 默认值
+
+def set_threshold(value: float):
+    """设置叶子节点标签修改的阈值"""
+    global _threshold
+    _threshold = value
 
 def _get_feature_values(
     meta: DatasetMeta, x: np.ndarray, hist_nbins: int
@@ -1012,15 +1018,7 @@ for samples matching these rules
                             continue
             
             # 检查是否需要替换标签
-
-            threshold = 0.70  # 默认值
-
-            def set_threshold(value: float):
-                global threshold
-                threshold = value
-            
-                
-            if highest_confidence >= threshold and best_label != prediction:
+            if highest_confidence >= _threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
             else:
