@@ -1013,10 +1013,13 @@ for samples matching these rules
             
             # 检查是否需要替换标签
 
-            threshold = 0.70  # 可配置的阈值
+            threshold = 0.70  # 默认值
+
             def set_threshold(value: float):
                 global threshold
                 threshold = value
+            
+                
             if highest_confidence >= threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
