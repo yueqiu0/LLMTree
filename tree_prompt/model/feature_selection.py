@@ -4,14 +4,20 @@ from typing import List, Dict, Set
 from ..dataset import DatasetMeta
 from .. import logger
 
+_alpha = 0.8
+def set_alpha(value: float):
+    global _alpha
+    _alpha = value
+    
 def calculate_weight_factor(depth: int) -> float:
     """计算LLM排序和统计分析的权重因子
     depth: 节点深度(1,2,3,...)
     return: LLM排序的权重(统计分析的权重为1-α)
     """
-    alpha = 0.8
+    alpha = _alpha
     logger.log(f"深度 {depth} 的权重因子计算: α={alpha:.2f}")
     return alpha
+
 
 # def calculate_chi_square_scores(
 #     X: np.ndarray, 
