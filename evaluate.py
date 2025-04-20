@@ -518,7 +518,8 @@ def evaluate(
             # LLM决策树的特殊处理逻辑
             tree_model.fit(x_train, y_train)
             rules = tree_model.get_rules()
-            
+            tree_model.rules = rules
+
             if with_llm:
                 # 使用LLM进行预测
                 prompts, test_splits, labels = gen_prompt(
