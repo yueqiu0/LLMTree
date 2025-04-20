@@ -15,6 +15,11 @@ from .feature_selection import calculate_gini_impurity, calculate_meta_rule_gini
 from .meta_rule import MetaRule
 
 
+_delta = 2
+def set_delta(delta: int):
+    global _delta
+    _delta = delta
+        
 def _get_feature_values(
     meta: DatasetMeta, x: np.ndarray, hist_nbins: int
 ) -> list[list]:
@@ -859,9 +864,12 @@ sex = female [ confidence: 4 ]
         self.__class__._cached_meta_rules[cache_key] = meta_rules
         
         return meta_rules
+    
+
 
     def _select_meta_rule(self, node, meta_rules: list[MetaRule], delta: int = 2) -> tuple[MetaRule, float]:
         """为当前节点选择最佳元规则"""
+        delta = _delta
         node_samples = node.get_samples()
         is_small_sample = len(node_samples) <= 5  # 设置小样本阈值
         

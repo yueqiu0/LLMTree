@@ -10,6 +10,7 @@ from datetime import datetime
 import time
 import json
 import os
+import tree_prompt
 
 import tree_prompt.logger as logger
 from tree_prompt.model.strategy import (
@@ -258,6 +259,7 @@ def parse_args() -> TrainArgs:
         type=int,
         help="number of tests presented to the model per request",
     )
+    parser.add_argument('--delta', type=int, default=2, help='delta for max offset of confidence of meta rule selection')
     parser.add_argument("--timeout", type=int, help="timeout per request, in seconds")
     parser.add_argument(
         "--request-interval", type=float, help="interval between requests, in seconds"
@@ -379,6 +381,9 @@ def parse_args() -> TrainArgs:
         args.test_size = cml_args.test_size
     if cml_args.test_batch is not None:
         args.test_batch = cml_args.test_batch
+        
+    if cml_args.delta is not None:
+        args.delta = cml_args.delta
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
@@ -726,6 +731,12 @@ def main():
     # 确保必要的参数存在
     if args.strategy_args.max_depth is None:
         args.strategy_args.max_depth = 3  # 设置默认值
+    
+    # 设置delta参数
+    if args.delta is not None:
+        from tree_prompt.model.strategy import set_delta
+        set_delta(args.delta)
+        logger.log(f"set the delta as: {args.delta}")
 
     x, y, strategy = load_args(args)
 
