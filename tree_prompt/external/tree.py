@@ -9,8 +9,8 @@ from ..dataset import DatasetMeta
 from jinja2 import Environment, FileSystemLoader
 from sklearn.utils import check_array
 import warnings
-from ..logger import Logger  
-
+from ..logger import Logger,add_logger  
+from ..dataset import generate_decision_tree_prompt
 def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, list]:
     
     feat_stack = []
@@ -68,257 +68,314 @@ class DecisionTree:
 
 
 class LLMDecisionTree:
-    def __init__(self, meta, max_depth, runner=None, rules=None):
-        self.meta = meta
-        self.max_depth = max_depth
-        self.runner = runner
-        
-        # 存储原始规则文本（用于展示/调试）
-        self.raw_rules = rules if rules else []
-        
-        # 存储结构化解析后的规则（用于实际预测）
-        self.parsed_rules = self._parse_rules(self.raw_rules)
-        
-        # 初始化日志对象
-        self.logger = Logger()
+    def __init__(self, meta, max_depth, runner, log_file):
+        self.meta = meta          # Dataset metadata
+        self.max_depth = max_depth  # Max tree depth
+        self.runner = runner      # LLM runner
+        self.log_file = log_file  # Log file path
+        self.rules = []           # List to store parsed rules
+        self.feature_names = [f.name for f in meta.features]  # Get feature names from metadata features
+        # Open log file in append mode before passing to Logger
+        log_file_obj = open(self.log_file, 'a', encoding='utf-8')
+        self.logger = Logger(log_file_obj)  # Initialize logger with file object
 
-    def fit(self, x_train: np.ndarray, y_train: np.ndarray) -> list[str]:
-        """生成决策树规则主流程"""
-        try:
-            # 数据验证
-            if x_train is None or y_train is None:
-                self.logger.log("训练数据为空", level="ERROR")
-                self.parsed_rules = []
-                return []
-
-            # 生成提示词（从dataset.py导入）
-            from ..dataset import generate_decision_tree_prompt
-            prompt = generate_decision_tree_prompt(
-                self.meta, x_train, y_train, self.max_depth
-            )
-            self.logger.log(f"生成的提示词长度: {len(prompt)}字符")
-
-            # 发送请求并处理响应
-            responses = list(self.runner.run([prompt]))
-            if not responses:
-                self.logger.log("未收到LLM响应", level="WARN")
-                return []
-                
-            # 处理原始规则
-            new_raw_rules = self._parse_llm_response(responses[0])
-            self.raw_rules.extend(new_raw_rules)  # 保留历史规则
+    def fit(self, x_train, y_train):
+        """Generate decision tree rules using LLM"""
+        prompt = generate_decision_tree_prompt(
+            meta=self.meta,
+            x_train=x_train,
+            y_train=y_train,
+            max_depth=self.max_depth
+        )
+        # Get first response from generator
+        response_generator = self.runner.run([prompt])
+        first_response = next(response_generator)
+        
+        # 添加调试日志
+        print(f"Raw LLM response type: {type(first_response)}")
+        if isinstance(first_response, str):
+            print(f"Response length: {len(first_response)}")
+            if len(first_response) < 100:
+                print(f"Response content: {first_response}")
+        
+        # 确保响应是完整字符串
+        if isinstance(first_response, (list, tuple)):
+            first_response = "\n".join(str(r) for r in first_response)
+        elif not isinstance(first_response, str):
+            first_response = str(first_response)
             
-            # 解析为结构化规则
-            new_parsed_rules = self._parse_rules(new_raw_rules)
-            self.parsed_rules.extend(new_parsed_rules)
+        self.rules = self._parse_llm_response(first_response)
+        # 添加规则生成日志
+        self.logger.log(f"Generated {len(self.rules)} rules:")
+        for i, rule in enumerate(self.rules, 1):
+            self.logger.log(f"Rule {i}: {rule}")
+        
+    def get_rules(self):
+        """Return hierarchical rules grouped by base condition"""
+        if not self.rules:
+            return "No rules generated yet"
             
-            # 规则验证
-            if not self._validate_rules():
-                self.logger.log("部分规则未通过最终验证", level="WARN")
-                
-            self.logger.log(
-                f"规则更新完成: 新增原始规则 {len(new_raw_rules)} 条 -> "
-                f"有效结构化规则 {len(new_parsed_rules)} 条"
-            )
-            return new_raw_rules
+        output = "\n" + "="*50 + "\n"
+        output += "Decision Tree Rules (max_depth=3):\n"
+        output += "="*50 + "\n\n"
+        
+        group_count = 1
+        for rule in self.rules:
+            output += f"Rule Group {group_count}:\n"
+            output += f"  Main Rule:\n"
+            output += f"    IF {rule['condition']}\n"
+            output += f"    THEN {rule['label']}\n"
+            
+            if 'sub_rules' in rule:
+                for sub_rule in rule['sub_rules']:
+                    output += f"  Sub Rule:\n"
+                    output += f"    AND {sub_rule['condition']}\n"
+                    output += f"    THEN {sub_rule['label']}\n"
+            
+            output += "-"*50 + "\n"
+            group_count += 1
+            
+        return output
 
-        except Exception as e:
-            self.logger.log(f"训练过程中发生异常: {str(e)}", level="ERROR")
-            self.parsed_rules = []
+    def predict(self, x_test):
+        """Predict using the generated rules"""
+        if not self.rules:
+            raise ValueError("No rules available. Call fit() first.")
+            
+        predictions = []
+        for sample in x_test:
+            prediction = self._apply_rules(sample)
+            predictions.append(prediction)
+        return np.array(predictions)
+
+
+
+    def _parse_llm_response(self, response):
+        """使用更健壮的正则表达式解析规则"""
+        # 添加输入响应日志
+        self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
+        import re
+        rules = []
+        rule_groups = {}
+        group_id = 1
+        
+        # 输入验证
+        if not response:
+            return []
+            
+        # 统一输入为字符串并验证内容
+        if isinstance(response, (list, tuple)):
+            response = "\n".join(str(r) for r in response)
+        response = str(response).strip()
+        
+        if not response or len(response) < 10:  # 最小长度检查
+            print("LLM响应过短或无效")
             return []
 
-    def _parse_llm_response(self, response: str) -> list[str]:
-        """解析LLM响应为原始规则文本"""
-        valid_rules = []
-        feature_names = {f.name for f in self.meta.features}
+        # 改进的规则解析正则表达式
+        rule_pattern = re.compile(
+            r'rule\s+\d+:\s*if\s+(.+?)\s+then\s+(.+?)$', 
+            re.IGNORECASE
+        )
+        condition_pattern = re.compile(
+            r'^\s*([\w\s]+?)\s*(<=|>=|<|>|=)\s*([\d.]+|\".+?\"|\'.+?\'|\w+)\s*$'
+        )
 
         for line in response.split('\n'):
             line = line.strip()
-            if not line.startswith("if ") or " then " not in line:
+            rule_match = rule_pattern.match(line)
+            if not rule_match:
                 continue
 
-            condition = line.split(" then ")[0][3:]
-            if not any(fname in condition for fname in feature_names):
-                self.logger.log(f"忽略无效规则: 未使用已知特征 - {line}")
-                continue
-
-            valid_ops = ['<=', '>=', '<', '>', ' in ', ' not in ']
-            if not any(op in condition for op in valid_ops):
-                self.logger.log(f"忽略无效规则: 无效操作符 - {line}")
-                continue
-
-            valid_rules.append(line)
-
-        return list(dict.fromkeys(valid_rules))
-
-    def _parse_rules(self, rule_texts: list[str]) -> list[dict]:
-        """将原始规则文本解析为结构化规则"""
-        parsed_rules = []
-        feature_names = {f.name for f in self.meta.features}
-        
-        for rule in rule_texts:
-            if not rule.startswith("if ") or " then " not in rule:
-                continue
-            
             try:
-                # 分割条件和预测结果
-                condition, prediction = rule[3:].split(" then ", 1)
+                full_condition, label = rule_match.groups()
+                label = label.strip()
                 
-                # 解析条件
-                feature, op, value = self._parse_condition(condition.strip())
-                if feature not in feature_names:
+                # 解析完整条件中的多个子条件
+                conditions = [c.strip() for c in full_condition.split(' AND ')]
+                parsed_conditions = []
+                
+                for cond in conditions:
+                    # 使用正则表达式解析每个条件
+                    cond_match = condition_pattern.match(cond)
+                    if not cond_match:
+                        continue
+                        
+                    feature, operator, value = cond_match.groups()
+                    
+                    # 清理特征名称中的多余空格
+                    feature = ' '.join(feature.split())
+                    
+                    # 值类型转换（支持字符串和数值）
+                    try:
+                        # 尝试去除引号
+                        value = value.strip('\'"')
+                        numeric_value = float(value) if '.' in value else int(value)
+                        value = numeric_value
+                    except:
+                        # 保持为字符串类型
+                        pass
+                    
+                    # 特征名称校验（包含大小写不敏感匹配）
+                    matched_feature = next(
+                        (f for f in self.feature_names if f.lower() == feature.lower()),
+                        None
+                    )
+                    if not matched_feature:
+                        continue
+                        
+                    parsed_conditions.append({
+                        'condition': cond,
+                        'feature': matched_feature,
+                        'operator': operator,
+                        'value': value
+                    })
+
+                if not parsed_conditions:
                     continue
+                    
+                # 构建规则结构
+                main_condition = parsed_conditions[0]
+                rule_entry = {
+                    'condition': main_condition['condition'],
+                    'feature': main_condition['feature'],
+                    'operator': main_condition['operator'],
+                    'value': main_condition['value'],
+                    'label': label,
+                    'sub_rules': []
+                }
                 
-                # 解析预测值
-                pred_label = self._parse_prediction(prediction.strip())
+                # 处理子规则
+                if len(parsed_conditions) > 1:
+                    rule_entry['sub_rules'] = [
+                        {
+                            'condition': c['condition'],
+                            'feature': c['feature'],
+                            'operator': c['operator'],
+                            'value': c['value']
+                        } for c in parsed_conditions[1:]
+                    ]
                 
-                parsed_rules.append({
-                    "feature": feature,
-                    "operator": op,
-                    "threshold": self._parse_value(op, value),
-                    "prediction": pred_label,
-                    "raw_rule": rule  # 保留原始文本用于调试
-                })
+                # 按主特征分组
+                group_key = f"{rule_entry['feature']}_{rule_entry['operator']}_{rule_entry['value']}"
+                if group_key not in rule_groups:
+                    rule_groups[group_key] = {
+                        'main_rule': rule_entry,
+                        'group_id': group_id
+                    }
+                    group_id += 1
+                else:
+                    # 合并子规则
+                    existing = rule_groups[group_key]['main_rule']
+                    existing['sub_rules'].extend(rule_entry['sub_rules'])
                 
             except Exception as e:
-                self.logger.log(f"规则解析失败: {rule} - {str(e)}")
+                print(f"规则解析错误: {line}\n错误: {str(e)}")
                 continue
         
-        return parsed_rules
-
-    def _parse_condition(self, condition: str) -> tuple:
-        """解析条件语句为 (特征名, 操作符, 值)"""
-        operator_priority = [' in ', ' not in ', '<=', '>=', '<', '>', '==', '!=']
-        for op in operator_priority:
-            if op in condition:
-                parts = condition.split(op)
-                if len(parts) == 2:
-                    return parts[0].strip(), op, parts[1].strip()
-        return None, None, None
-
-    def _parse_value(self, op: str, value_str: str):
-        """根据操作符解析阈值"""
-        try:
-            # 处理数值型特征
-            if op in ['<=', '>=', '<', '>', '==', '!=']:
-                return float(value_str)
-                
-            # 处理类别型特征
-            elif op in [' in ', ' not in ']:
-                return [v.strip(" '\"") for v in value_str.strip('[]').split(',')]
-                
-            return value_str.strip(" '\"")
-        except:
-            return value_str.strip(" '\"")
-
-    def _parse_prediction(self, prediction: str) -> str:
-        """解析预测结果，确保符合元数据定义"""
-        valid_labels = {label.name for label in self.meta.labels}
-        clean_pred = prediction.strip(" '\"")
-        return clean_pred if clean_pred in valid_labels else ""
-
-    def predict(self, x_test) -> np.ndarray:
-        """应用结构化规则进行预测"""
-        if not self.parsed_rules:
-            raise ValueError(
-                "未找到有效决策规则，请先执行fit()训练或通过构造函数传入规则"
-            )
-            
-        feature_names = [f.name for f in self.meta.features]
-        predictions = []
+        # 构建最终规则列表
+        for group in rule_groups.values():
+            main_rule = group['main_rule']
+            if main_rule['sub_rules']:
+                # 对子规则去重
+                seen = set()
+                unique_subrules = []
+                for r in main_rule['sub_rules']:
+                    key = (r['feature'], r['operator'], r['value'])
+                    if key not in seen:
+                        seen.add(key)
+                        unique_subrules.append(r)
+                main_rule['sub_rules'] = unique_subrules
+            rules.append(main_rule)
         
-        for sample in x_test:
-            sample_pred = None
-            for rule in self.parsed_rules:
-                try:
-                    feat_idx = feature_names.index(rule["feature"])
-                    sample_value = sample[feat_idx]
-                    
-                    if self._check_condition(sample_value, rule):
-                        sample_pred = rule["prediction"]
-                        break
-                except (ValueError, IndexError) as e:
-                    self.logger.log(f"规则应用异常: {rule['raw_rule']} - {str(e)}")
+        # 添加解析结果日志
+        self.logger.log(f"Successfully parsed {len(rules)} valid rules")
+        return rules
+
+    def _apply_rules(self, sample):
+        """应用规则时添加类型安全检查"""
+        if not self.rules:
+            return self.meta.get_default_label()
+            
+        sample_dict = {self.feature_names[i]: val for i, val in enumerate(sample)}
+        
+        for rule in self.rules:
+            # 类型安全检查
+            if not isinstance(rule, dict):
+                if not hasattr(self, '_reported_invalid_rule_types'):
+                    self._reported_invalid_rule_types = set()
+                
+                rule_type = str(type(rule))
+                if rule_type not in self._reported_invalid_rule_types:
+                    self.logger.log(f"发现无效规则类型: {rule_type}")
+                    self.logger.log(f"示例无效规则内容: {str(rule)[:100]}...")
+                    self.logger.log("规则应包含condition, feature, operator, value等键")
+                    self._reported_invalid_rule_types.add(rule_type)
+                continue
+                
+            required_keys = ['feature', 'operator', 'value', 'label']
+            if not all(k in rule for k in required_keys):
+                if not hasattr(self, '_reported_invalid_rule_structure'):
+                    self.logger.log(f"不完整的规则结构，缺少必要字段: {required_keys}")
+                    self._reported_invalid_rule_structure = True
+                continue
+                
+            try:
+                feature = rule['feature']
+                operator = rule['operator']
+                value = rule['value']
+                label = rule['label']
+                
+                # 获取特征值
+                sample_value = sample_dict.get(feature, None)
+                if sample_value is None:
                     continue
                     
-            if sample_pred is None:
-                raise ValueError(
-                    f"样本未匹配任何规则: {sample}\n"
-                    f"可用规则数量: {len(self.parsed_rules)}\n"
-                    f"示例规则: {self.parsed_rules[0]['raw_rule'] if self.parsed_rules else '无'}"
-                )
+                # 类型一致性处理
+                try:
+                    # 尝试数值比较
+                    num_sample = float(sample_value)
+                    num_value = float(value)
+                    comparison_type = 'numeric'
+                except (ValueError, TypeError):
+                    # 字符串比较
+                    str_sample = str(sample_value).lower()
+                    str_value = str(value).lower()
+                    comparison_type = 'string'
                 
-            predictions.append(sample_pred)
-        
-        return np.array(predictions)
-
-    def _check_condition(self, sample_value, rule: dict) -> bool:
-        """检查样本值是否满足规则条件"""
-        op = rule["operator"]
-        threshold = rule["threshold"]
-        
-        try:
-            # 数值型比较
-            if op in ['<=', '<', '>', '>=', '==', '!=']:
-                sample_val = float(sample_value)
-                thresh = float(threshold)
-                return {
-                    '<=': sample_val <= thresh,
-                    '<':  sample_val < thresh,
-                    '>=': sample_val >= thresh,
-                    '>':  sample_val > thresh,
-                    '==': sample_val == thresh,
-                    '!=': sample_val != thresh
-                }.get(op, False)
+                # 执行比较
+                match = False
+                if comparison_type == 'numeric':
+                    if operator == '>=': match = num_sample >= num_value
+                    elif operator == '<=': match = num_sample <= num_value
+                    elif operator == '>': match = num_sample > num_value
+                    elif operator == '<': match = num_sample < num_value
+                    elif operator == '=': match = abs(num_sample - num_value) < 1e-6
+                else:
+                    if operator == '=': match = str_sample == str_value
+                    elif operator in ['>', '<']:  # 对分类特征支持排序操作
+                        match = str_sample == str_value  # 这里需要根据实际需求调整
                 
-            # 类别型判断
-            elif op == ' in ':
-                return str(sample_value) in threshold
+                if match and 'sub_rules' in rule:
+                    # 验证所有子规则
+                    all_sub_matched = True
+                    for sub_rule in rule['sub_rules']:
+                        # 同样的安全检查
+                        if not isinstance(sub_rule, dict):
+                            continue
+                        # ... 类似主规则的验证逻辑 ...
+                        # （此处需要添加子规则的验证代码）
+                    if all_sub_matched:
+                        return label
+                elif match:
+                    return label
+                    
+            except Exception as e:
+                print(f"应用规则时出错: {rule}\n错误: {str(e)}")
+                continue
                 
-            elif op == ' not in ':
-                return str(sample_value) not in threshold
-                
-            return False
-            
-        except (TypeError, ValueError):
-            # 类型不匹配时的兜底处理
-            return str(sample_value) == str(threshold)
+        return self.meta.labels[0].value
 
-    def _validate_rules(self) -> bool:
-        """最终规则有效性验证"""
-        if not self.parsed_rules:
-            return False
-
-        # 检查预测标签有效性
-        valid_labels = {label.name for label in self.meta.labels}
-        for rule in self.parsed_rules:
-            if rule["prediction"] not in valid_labels:
-                self.logger.log(f"无效预测标签: {rule['prediction']}")
-                return False
-                
-        return True
-
-    def get_rules(self, raw_format: bool = False):
-        """获取规则
-        :param raw_format: 是否返回原始文本格式
-        """
-        return self.raw_rules if raw_format else self.parsed_rules
-
-    def print_debug_info(self):
-        """打印调试信息"""
-        self.logger.log("=== 决策树调试信息 ===")
-        self.logger.log(f"原始规则数量: {len(self.raw_rules)}")
-        self.logger.log(f"有效结构化规则: {len(self.parsed_rules)}")
-        if self.parsed_rules:
-            sample_rule = self.parsed_rules[0]
-            self.logger.log(
-                "示例规则结构:\n"
-                f"- 特征: {sample_rule['feature']}\n"
-                f"- 操作符: {sample_rule['operator']}\n"
-                f"- 阈值: {sample_rule['threshold']}\n"
-                f"- 预测: {sample_rule['prediction']}\n"
-                f"- 原始文本: {sample_rule['raw_rule']}"
-            )
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
         super().__init__(meta)

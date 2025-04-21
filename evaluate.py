@@ -517,9 +517,10 @@ def evaluate(
         elif isinstance(tree_model, LLMDecisionTree):
             # LLM决策树的特殊处理逻辑
             tree_model.fit(x_train, y_train)
+            
             rules = tree_model.get_rules()
             tree_model.rules = rules
-
+            logger.log(f"Generated rules: {rules}")
             if with_llm:
                 # 使用LLM进行预测
                 prompts, test_splits, labels = gen_prompt(
@@ -656,7 +657,18 @@ def evaluate(
 
 def main():
     args = parse_args()
+    log_dir = Path("output") / "evaluate" / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = getattr(args.runner_args, "model_name", args.runner)  # 兼容不同runner
+    file_name = f"{args.exp_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    output_file = Path(args.output_dir) / file_name
+    log_path = Path(args.output_dir) / file_name
 
+    logger.log("Saving results to {}...".format(output_file))
+    if not output_file.parent.exists():
+        output_file.parent.mkdir(parents=True)
+    
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
 
@@ -675,64 +687,6 @@ def main():
 
     results: dict[int, list] = {}
     runner,serializer, master_template = None, None,None
-    
-
-   
-
-    
-    if not args.tree_only:
-        if args.runner == "openai_api":
-            from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
-
-            runner = OpenAIAPIParallelRunner(
-                args.runner_args.api_base,
-                args.runner_args.model_name,
-                args.runner_args.openai_api_key,
-                args.runner_args.request_interval,
-                args.runner_args.timeout,
-                args.runner_args.parallel_batch_size,
-            )
-
-        elif args.runner == "huggingchat":
-            from tree_prompt.runner.huggingchat import HuggingChatParallelRunner
-
-            runner = HuggingChatParallelRunner(
-                args.runner_args.hf_username,
-                args.runner_args.hf_password,
-                args.runner_args.hf_cookie_dir,
-                args.runner_args.request_interval,
-                args.runner_args.timeout,
-            )
-        elif args.runner == "together_api":
-            from tree_prompt.runner.together_api import TogetherAPIParallelRunner
-
-            runner = TogetherAPIParallelRunner(
-                args.runner_args.api_base,
-                args.runner_args.model_name,
-                args.runner_args.together_api_key,
-                args.runner_args.request_interval,
-                args.runner_args.timeout,
-                args.runner_args.parallel_batch_size,
-            )
-        else:
-            raise ValueError("Unknown runner type: {}".format(args.runner))
-
-        if args.serializer_type == "tabular":
-            serializer = TabularSerializer(meta)
-        elif args.serializer_type == "list":
-            serializer = ListSerializer(meta)
-        elif args.serializer_type == "text":
-            serializer = TextSerializer(meta)
-        else:
-            raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
-
-        
-        master_template_path = Path(args.template)
-        env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(master_template_path.parent),
-        )
-        master_template = env.get_template(master_template_path.name)
-
     if args.tree_type == "simple":
         tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
     elif args.tree_type == "xgboost":
@@ -758,33 +712,96 @@ def main():
             args.tree_args.num_trees,
             args.tree_args.max_depth,
         )
-    elif args.tree_type == "llm_gen_tree":
-        template_dir = Path("C:/Users/chenx/git/tree/template")
-        tree_template_path = template_dir / "basic.jinja" 
-
-       
+    
         
 
-       
+   
+
+    
+    if not args.tree_only:
+        if args.runner == "openai_api":
+            from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
+
+            runner = OpenAIAPIParallelRunner(
+                args.runner_args.api_base,
+                args.runner_args.model_name,
+                args.runner_args.openai_api_key,
+                args.runner_args.request_interval,
+                args.runner_args.timeout,
+                args.runner_args.parallel_batch_size,
+            )
+            logger.log(f"OpenAIAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
+
+        elif args.runner == "huggingchat":
+            from tree_prompt.runner.huggingchat import HuggingChatParallelRunner
+
+            runner = HuggingChatParallelRunner(
+                args.runner_args.hf_username,
+                args.runner_args.hf_password,
+                args.runner_args.hf_cookie_dir,
+                args.runner_args.request_interval,
+                args.runner_args.timeout,
+            )
+            logger.log("HuggingChatParallelRunner initialized")
+        elif args.runner == "together_api":
+            from tree_prompt.runner.together_api import TogetherAPIParallelRunner
+
+            runner = TogetherAPIParallelRunner(
+                args.runner_args.api_base,
+                args.runner_args.model_name,
+                args.runner_args.together_api_key,
+                args.runner_args.request_interval,
+                args.runner_args.timeout,
+                args.runner_args.parallel_batch_size,
+            )
+            logger.log(f"TogetherAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
+        else:
+            logger.log(f"Unknown runner type: {args.runner}")
+            raise ValueError("Unknown runner type: {}".format(args.runner))
+
+        if args.serializer_type == "tabular":
+            serializer = TabularSerializer(meta)
+            logger.log("Using TabularSerializer")
+        elif args.serializer_type == "list":
+            serializer = ListSerializer(meta)
+            logger.log("Using ListSerializer")
+        elif args.serializer_type == "text":
+            serializer = TextSerializer(meta)
+            logger.log("Using TextSerializer")
+        else:
+            logger.log(f"Unknown serializer type: {args.serializer_type}")
+            raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
+
+        
+        master_template_path = Path(args.template)
+        env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(master_template_path.parent),
+        )
+        master_template = env.get_template(master_template_path.name)
+        logger.log(f"Template loaded from: {master_template_path}")
+    if args.tree_type == "llm_gen_tree":
+        template_dir = Path("C:/Users/chenx/git/tree/template")
+        tree_template_path = template_dir / "basic.jinja" 
         tree_model = LLMDecisionTree(
             meta=meta,
             max_depth=args.tree_args.max_depth,
             runner=runner,
-            
+            log_file=log_path,
         )
-        
-       
-    else:
-        raise ValueError("Unknown tree type: {}".format(args.tree_type))
+        logger.log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth}")
+    
 
     results: dict[int, list[dict]] = {}
 
     test_x, test_y = x[: args.test_size], y[: args.test_size]
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
+    logger.log(f"Test set size: {len(test_x)}, Available set size: {len(avail_x)}")
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
+    logger.log(f"Starting evaluation with train sizes: {args.train_sizes}")
 
     for train_size in args.train_sizes:
+        logger.log(f"Processing train size: {train_size}")
         train_cases = sample_balanced(
             avail_x,
             avail_y,
@@ -792,6 +809,7 @@ def main():
             train_size,
             args.random_seed,
         )
+        logger.log(f"Generated {len(train_cases)} balanced training cases")
 
         for train_x, train_y in train_cases:
             result = evaluate(
@@ -813,8 +831,7 @@ def main():
             results.setdefault(train_size, []).append(result)
             bar.update(1)
 
-    file_name = args.exp_name + ".json"
-    output_file = Path(args.output_dir) / file_name
+    
 
     logger.log("Saving results to {}...".format(output_file))
 
@@ -827,7 +844,13 @@ def main():
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
         logger.log("Output file already exists, renamed to {}".format(target))
+    file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
+    output_file = Path(args.output_dir) / file_name
 
+    logger.log(f"Saving results to {output_file}...")
+  
+    if not output_file.parent.exists():
+        output_file.parent.mkdir(parents=True)
     def json_default_decode(obj):
         if isinstance(obj, np.integer):
             return int(obj)

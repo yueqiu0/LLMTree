@@ -3,9 +3,9 @@ config:
   runner_args:
     model_name: Qwen/Qwen2.5-72B-Instruct-Turbo
     api_base: https://api.together.xyz/v1
-    request_interval: 0.2
-    timeout: 20
-    parallel_batch_size: 6
+    request_interval: 0.5
+    timeout: 60
+    parallel_batch_size: 3
     temperature: 0.0
     top_p: 0.0
     top_k: 1
