@@ -16,10 +16,17 @@ from .meta_rule import MetaRule
 
 
 _delta = 2
+_threshold = 0.70  # 默认值
+
+def set_threshold(value: float):
+    """设置叶子节点标签修改的阈值"""
+    global _threshold
+    _threshold = value
+
 def set_delta(delta: int):
     global _delta
     _delta = delta
-        
+
 def _get_feature_values(
     meta: DatasetMeta, x: np.ndarray, hist_nbins: int
 ) -> list[list]:
@@ -92,16 +99,27 @@ class TrainStrategy:
         
         # 获取节点深度和样本
         depth = next_split.depth
-        node_samples = next_split.get_samples()
+        samples = next_split.get_samples()
         
-        # 检查节点是否已达到最大深度或样本数不足
-        if depth >= self.max_depth or len(node_samples) <= 1:
-            logger.log(f"节点无法继续分裂: 样本数={len(node_samples)}, 深度={depth}, 最大深度={self.max_depth}")
-            next_split.freeze()
-            return True, None
+        # 检查是否所有样本都属于同一类别
+        if samples is not None and len(samples) > 0:
+            node_labels = [self.train_y[i] for i in samples]
+            if len(set(node_labels)) == 1:
+                # 如果是，直接将该节点标记为叶子节点
+                original_prediction = node_labels[0]
+                logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {original_prediction}")
+                
+                # 使用LLM验证叶子节点标签
+                verified_prediction = self._llm_verify_leaf_node(next_split, original_prediction)
+                
+                next_split.is_leaf = True
+                next_split.prediction = verified_prediction
+                # 确保节点被正确冻结，不再参与分裂
+                next_split.freeze()
+                return True, None
         
         # 检查节点样本的标签是否一致
-        node_y = self.train_y[node_samples]
+        node_y = self.train_y[samples]
         unique_labels = np.unique(node_y)
         if len(unique_labels) == 1:
             logger.log(f"节点样本标签一致，直接设为叶子节点，标签: {unique_labels[0]}")
@@ -115,7 +133,7 @@ class TrainStrategy:
         
         # 检查深度和增益
         shallow_depth = depth <= 1  
-        is_small_sample = len(node_samples) <= 5
+        is_small_sample = len(samples) <= 5
 
         # 处理不同情况的决策逻辑
         if best_meta_rule is None:
@@ -124,15 +142,18 @@ class TrainStrategy:
             most_common_label = np.argmax(np.bincount(node_y))
             next_split.prediction = most_common_label
             next_split.depth = self.max_depth
+            next_split.is_leaf = True
+            next_split.freeze()
+            logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
             return True, None
         elif best_gain <= 0:
             # 有规则但增益为0的情况
             if shallow_depth and is_small_sample:
                 # 浅层节点且样本少时，即使增益为0也使用规则
-                logger.log(f"浅层节点(深度={depth})，小样本情况({len(node_samples)}个样本)，即使增益为0也使用规则: {best_meta_rule}")
+                logger.log(f"浅层节点(深度={depth})，小样本情况({len(samples)}个样本)，即使增益为0也使用规则: {best_meta_rule}")
             else:
                 # 深层节点或样本较多时，增益为0就冻结节点
-                logger.log(f"增益为0且非浅层小样本情况(深度={depth}，样本数={len(node_samples)})，节点冻结")
+                logger.log(f"增益为0且非浅层小样本情况(深度={depth}，样本数={len(samples)})，节点冻结")
                 most_common_label = np.argmax(np.bincount(node_y))
                 next_split.prediction = most_common_label
                 next_split.is_leaf = True
@@ -152,7 +173,7 @@ class TrainStrategy:
             logger.log(f"选择特征: {best_feature} ({feature_name}), 分裂点: {split_value}, 是否为分类特征: {is_categorical}")
         
         # 根据规则进行分裂
-        node_X = self.train_x[node_samples]
+        node_X = self.train_x[samples]
         if is_categorical:
             left_mask = node_X[:, best_feature] == split_value
         else:
@@ -279,15 +300,15 @@ class TrainStrategy:
    
     
     def _assign_leaf_values(self, node, feature_idx, split_value):
-        """使用多数投票快速确定叶节点值"""
-        node_samples = node.get_samples()
-        node_x = self.train_x[node_samples]
-        node_y = self.train_y[node_samples]
+        """为分裂后的左右子节点分配标签值"""
+        samples = node.get_samples()
+        node_x = self.train_x[samples]
+        node_y = self.train_y[samples]
         
         # 添加完整的标签分布日志
         unique_labels, label_counts = np.unique(node_y, return_counts=True)
         label_dist = {int(label): count for label, count in zip(unique_labels, label_counts)}
-        logger.log(f"分配叶值前节点({id(node)})标签分布: {label_dist}, 总样本数: {len(node_samples)}")
+        logger.log(f"分配叶值前节点({id(node)})标签分布: {label_dist}, 总样本数: {len(samples)}")
         
         # 根据分裂值将样本分为左右两组
         if self._meta.features[feature_idx].is_categorical:
@@ -334,12 +355,10 @@ class TrainStrategy:
             if left_label_counts:
                 left_class = max(left_label_counts.items(), key=lambda x: x[1])[0]
                 logger.log(f"左子节点多数类标签: {left_class}")
-            else:
+        else:
                 left_class = valid_labels[0] if valid_labels else 0  # 默认使用第一个有效标签
                 logger.log(f"左子节点无样本，使用默认标签: {left_class}")
-        else:
-            left_class = valid_labels[0] if valid_labels else 0
-            logger.log(f"左子节点无样本，使用默认标签: {left_class}")
+
         
         # 右子节点标签处理 - 同样修改为详细计算过程
         if len(right_y) > 0:
@@ -355,21 +374,60 @@ class TrainStrategy:
             if right_label_counts:
                 right_class = max(right_label_counts.items(), key=lambda x: x[1])[0]
                 logger.log(f"右子节点多数类标签: {right_class}")
-            else:
+        else:
                 right_class = valid_labels[0] if valid_labels else 0
                 logger.log(f"右子节点无样本，使用默认标签: {right_class}")
-        else:
-            right_class = valid_labels[0] if valid_labels else 0
-            logger.log(f"右子节点无样本，使用默认标签: {right_class}")
+
         
         logger.log(f"最终分配标签 - 左: {left_class}, 右: {right_class}")
-        return left_class, right_class
+        
+        # 获取当前节点的路径规则
+        current_path_rules = self._get_path_to_node(node)
+        
+        # 获取特征名称
+        feature_name = f"Feature {feature_idx}"
+        if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
+            feature = self._meta.features[feature_idx]
+            feature_name = feature.name
+            
+            # 从描述中提取单位信息
+            if hasattr(feature, 'desc') and feature.desc:
+                import re
+                # 查找描述末尾的括号内容作为单位
+                unit_match = re.search(r'\((.*?)\)$', feature.desc.strip())
+                if unit_match:
+                    unit = unit_match.group(1)
+                    unit_info = f" ({unit})"
+                else:
+                    # 如果末尾没有括号，查找描述中的最后一对括号
+                    unit_match = re.search(r'\((.*?)\)', feature.desc)
+                    if unit_match:
+                        unit = unit_match.group(1)
+                        unit_info = f" ({unit})"
+                    else:
+                        unit_info = ""
+            
+        # 构建左右子节点的路径规则
+        is_categorical = self._meta.features[feature_idx].is_categorical if hasattr(self._meta, 'features') and feature_idx < len(self._meta.features) else False
+        
+        if is_categorical:
+            left_path_rules = current_path_rules + [f"{feature_name} = {split_value}"]
+            right_path_rules = current_path_rules + [f"{feature_name} != {split_value}"]
+        else:
+            left_path_rules = current_path_rules + [f"{feature_name} < {split_value}{unit_info}"]
+            right_path_rules = current_path_rules + [f"{feature_name} >= {split_value}{unit_info}"]
+        
+        # 使用路径规则直接验证标签
+        verified_left_class = self._llm_verify_leaf_node(left_path_rules, left_class)
+        verified_right_class = self._llm_verify_leaf_node(right_path_rules, right_class)
+        
+        return verified_left_class, verified_right_class
 
     def _process_categorical_feature(self, feature_idx, node):
         """专门处理分类特征的方法"""
         # 获取该特征在当前节点的所有数据
-        node_samples = node.get_samples()
-        node_data = self.train_x[node_samples, feature_idx]
+        samples = node.get_samples()
+        node_data = self.train_x[samples, feature_idx]
         unique_values = np.unique(node_data)
         
         # 增加调试信息 - 显示特征分布
@@ -381,7 +439,7 @@ class TrainStrategy:
             return None
         
         # 获取当前节点的标签
-        node_labels = self.train_y[node_samples]
+        node_labels = self.train_y[samples]
         unique_labels = np.unique(node_labels)
         
         # 增加调试信息 - 显示标签分布
@@ -630,6 +688,227 @@ class TrainStrategy:
         else:
             return f"{label_name} (无条件)"
 
+    def _get_path_to_node(self, node):
+        """获取从根节点到当前节点的路径规则"""
+        path = []
+        current = node
+        
+        while hasattr(current, 'parent') and current.parent is not None:
+            parent = current.parent
+            if not hasattr(parent, 'split_feature') or parent.split_feature is None:
+                break
+            
+            feature_idx = parent.split_feature
+            split_value = parent.split_value
+            
+            # 确定当前节点是左子节点还是右子节点
+            is_left = parent.left_child == current
+            
+            # 获取特征名称和单位信息
+            feature_name = f"Feature {feature_idx}"
+            unit_info = ""
+            
+            if hasattr(self, '_meta') and self._meta and feature_idx < len(self._meta.features):
+                feature = self._meta.features[feature_idx]
+                feature_name = feature.name
+                
+                # 从描述中提取单位信息
+                if hasattr(feature, 'desc') and feature.desc:
+                    import re
+                    # 查找描述末尾的括号内容作为单位
+                    unit_match = re.search(r'\((.*?)\)$', feature.desc.strip())
+                    if unit_match:
+                        unit = unit_match.group(1)
+                        unit_info = f" ({unit})"
+                    else:
+                        # 如果末尾没有括号，查找描述中的最后一对括号
+                        unit_match = re.search(r'\((.*?)\)', feature.desc)
+                        if unit_match:
+                            unit = unit_match.group(1)
+                            unit_info = f" ({unit})"
+                        else:
+                            unit_info = ""
+            
+            # 构建规则描述
+            if hasattr(parent, 'is_categorical') and parent.is_categorical:
+                if is_left:
+                    rule = f"{feature_name} = {split_value}"
+                else:
+                    rule = f"{feature_name} != {split_value}"
+            else:
+                if is_left:
+                    rule = f"{feature_name} < {split_value}{unit_info}"
+                else:
+                    rule = f"{feature_name} >= {split_value}{unit_info}"
+            
+            path.append(rule)
+            current = parent
+        
+        # 反转路径，使其从根节点开始
+        path.reverse()
+        return path
+
+    def _llm_verify_leaf_node(self, node_or_rules, prediction):
+        """
+        使用LLM验证叶子节点的预测标签
+        
+        参数:
+            node_or_rules: 节点对象或预先计算的路径规则列表
+            prediction: 当前预测标签
+        
+        返回:
+            验证后的标签
+        """
+        # 获取路径规则
+        path_rules = None
+        if isinstance(node_or_rules, list):
+            # 如果传入的是规则列表，直接使用
+            path_rules = node_or_rules
+        else:
+            # 如果传入的是节点对象，获取其路径规则
+            path_rules = self._get_path_to_node(node_or_rules)
+        
+        if not path_rules:
+            logger.log("无法获取节点路径规则，跳过LLM验证")
+            return prediction
+        
+        # 构建特征描述
+        feature_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for i, feature in enumerate(self._meta.features):
+                feature_type = "Categorical" if feature.is_categorical else "Numerical"
+                desc = feature.desc if hasattr(feature, 'desc') and feature.desc else ""
+                feature_desc = f"Feature {i}: {feature.name} (Type: {feature_type}) - {desc}"
+                
+                # 添加对类别型特征值的详细描述
+                if feature.is_categorical and hasattr(feature, 'categories') and feature.categories:
+                    feature_desc += "\n    Possible values:"
+                    for cat_value, cat_desc in feature.categories.items():
+                        feature_desc += f"\n    - {cat_value}: {cat_desc}"
+                    
+                feature_descriptions.append(feature_desc)
+        
+        # 构建标签描述
+        label_descriptions = []
+        if hasattr(self, '_meta') and self._meta:
+            for label in self._meta.labels:
+                description = ""
+                if hasattr(label, 'meaning') and label.meaning:
+                    description = label.meaning
+                elif hasattr(label, 'desc') and label.desc:
+                    description = label.desc
+                
+                label_descriptions.append(f"Label {label.value}: {label.name} - {description}")
+        
+        # 构建完整的prompt
+        prompt = f"""You are an expert who {self._get_domain_expertise()}.
+
+## Task
+Analyze whether the current prediction is reasonable based on rules, feature descriptions, and label meanings.
+
+Label context: {self._meta.label_meaning if hasattr(self._meta, 'label_meaning') else "Classification evaluation"}
+
+## Rules (must ALL be satisfied):
+{chr(10).join([f"- {r}" for r in path_rules])}
+
+## Feature descriptions:
+{chr(10).join(feature_descriptions)}
+
+## Label meanings:
+{chr(10).join(label_descriptions)}
+
+## Instructions:
+- Assume the feature values used in rules are representative of the current sample.
+- You must respect all rules and treat them as hard constraints.
+- If there are multiple restrictions on the same attribute, consider them **together** (AND logic).
+- For **each possible label**, provide a **confidence score** between 0 and 1.
+  - 0 means you're completely confident this label is incorrect for samples matching these rules
+  - 0.5 means the probability of this label being correct is 
+roughly equal to it being incorrect (maximum uncertainty)
+  - 1 means you're completely confident this label is correct 
+for samples matching these rules
+- The scores must **sum to exactly 1.000** (representing a probability distribution).
+- Use float format with **3 decimal places**.
+
+## Note:
+- Remember also when there is little information do not give high probabilities (equal or higher than 0.9), unless you are very sure of them , because you may be overestimating.
+
+## Output format (no additional explanation):
+{chr(10).join([f"Label {label.value}: <score> " for label in self._meta.labels])}
+"""
+        
+        # 调用LLM
+        logger.log(f"发送LLM验证请求，路径规则: {' AND '.join(path_rules)}")
+        
+        # 使用已有的runner进行调用
+        if not hasattr(self, 'llm_runner') or self.llm_runner is None:
+            # 使用与训练相同的runner
+            from ..runner import Runner
+            if hasattr(self, '_runner') and isinstance(self._runner, Runner):
+                self.llm_runner = self._runner
+            else:
+                logger.log("未设置LLM runner，跳过LLM验证")
+                return prediction
+        
+        try:
+            # 调用LLM
+            response_gen = self.llm_runner.run([prompt])
+            response = next(response_gen)[0]
+            
+            # 解析响应
+            logger.log(f"LLM响应: {response}")
+            
+            # 提取每个标签的信心值
+            confidence_scores = {}
+            highest_confidence = 0
+            best_label = prediction
+            
+            for line in response.split('\n'):
+                if line.startswith('Label '):
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        label_str = parts[0].strip().replace('Label ', '')
+                        try:
+                            label = int(label_str)
+                            confidence_str = parts[1].strip()
+                            # 提取数字
+                            import re
+                            confidence_match = re.search(r'(\d+\.\d+|\d+)', confidence_str)
+                            if confidence_match:
+                                confidence = float(confidence_match.group(1))
+                                confidence_scores[label] = confidence
+                                
+                                if confidence > highest_confidence:
+                                    highest_confidence = confidence
+                                    best_label = label
+                        except ValueError:
+                            continue
+            
+            # 检查是否需要替换标签
+            if highest_confidence >= _threshold and best_label != prediction:
+                logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
+                return best_label
+            else:
+                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
+                return prediction
+            
+        except Exception as e:
+            logger.log(f"LLM验证过程出错: {str(e)}")
+            return prediction
+
+    def _get_domain_expertise(self):
+        """获取数据集的专业领域描述"""
+        # 优先使用完整的target作为专业领域
+        if hasattr(self, '_meta') and hasattr(self._meta, 'target') and self._meta.target:
+            return self._meta.target
+        
+        # 退路选项：如果没有target，则尝试使用数据集名称
+        if hasattr(self, '_meta') and hasattr(self._meta, 'name') and self._meta.name:
+            return f"{self._meta.name} classification"
+        
+        # 如果什么都没有，返回通用描述
+        return "data analysis"
+
 
 class UnknownClassStrategy(TrainStrategy):
     def __init__(
@@ -649,6 +928,7 @@ class UnknownClassStrategy(TrainStrategy):
         self.max_depth = max_depth
         self.train_batch = train_batch
         self.hist_nbins = hist_nbins
+        self.llm_runner = runner  # 使用相同的runner进行LLM验证
 
     @property
     def _meta(self) -> DatasetMeta:
@@ -870,8 +1150,8 @@ sex = female [ confidence: 4 ]
     def _select_meta_rule(self, node, meta_rules: list[MetaRule], delta: int = 2) -> tuple[MetaRule, float]:
         """为当前节点选择最佳元规则"""
         delta = _delta
-        node_samples = node.get_samples()
-        is_small_sample = len(node_samples) <= 5  # 设置小样本阈值
+        samples = node.get_samples()
+        is_small_sample = len(samples) <= 5  # 设置小样本阈值
         
         # 获取当前节点路径上使用过的特征
         used_features = set()
@@ -914,7 +1194,7 @@ sex = female [ confidence: 4 ]
         
         for rule in usable_rules:
             gain, left_gini, right_gini, left_mask, right_mask = calculate_meta_rule_gini(
-                rule, self.train_x, self.train_y, node_samples
+                rule, self.train_x, self.train_y, samples
             )
             
             # 记录日志
@@ -941,7 +1221,7 @@ sex = female [ confidence: 4 ]
         
         # 如果是小样本且没找到有效规则但有备选规则，使用备选规则
         if is_small_sample and best_rule is None and best_small_sample_rule is not None:
-            logger.log(f"小样本情况({len(node_samples)}≤5)，使用最高置信度规则: {best_small_sample_rule}，即使一边为空")
+            logger.log(f"小样本情况({len(samples)}≤5)，使用最高置信度规则: {best_small_sample_rule}，即使一边为空")
             return best_small_sample_rule, 0.001  # 使用一个很小的正值表示有效
         
         if best_rule:
@@ -1222,9 +1502,9 @@ class FeatureBaggingStrategy(TrainStrategy):
     def _determine_split_point(self, node, feature_idx):
         """确定特征的最佳分裂点"""
         # 获取节点样本
-        node_samples = node.get_samples()
-        node_x = self.train_x[node_samples]
-        node_y = self.train_y[node_samples]
+        samples = node.get_samples()
+        node_x = self.train_x[samples]
+        node_y = self.train_y[samples]
         
         logger.log(f"节点({id(node)})样本标签分布: {dict(Counter(node_y))}, 总样本数: {len(node_y)}")
         

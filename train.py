@@ -268,6 +268,9 @@ def parse_args() -> TrainArgs:
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
 
+    parser.add_argument('--threshold', type=float, default=0.70, help='threshold of modifying labels for leaf supervision')
+
+   
     cml_args = parser.parse_args()
 
     args = TrainArgs()
@@ -381,9 +384,10 @@ def parse_args() -> TrainArgs:
         args.test_size = cml_args.test_size
     if cml_args.test_batch is not None:
         args.test_batch = cml_args.test_batch
-        
     if cml_args.delta is not None:
         args.delta = cml_args.delta
+    if cml_args.threshold is not None:
+        args.threshold = cml_args.threshold
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
@@ -412,6 +416,8 @@ def parse_args() -> TrainArgs:
     if len(missing_fields) > 0:
         raise ValueError("Incomplete arguments: missing {}".format(missing_fields))
 
+
+    
     return args
 
 
@@ -737,6 +743,21 @@ def main():
         from tree_prompt.model.strategy import set_delta
         set_delta(args.delta)
         logger.log(f"set the delta as: {args.delta}")
+
+
+    
+    # 设置threshold参数 (叶子节点标签修改阈值)
+    if args.threshold is not None:
+        # 导入和设置阈值
+        if hasattr(tree_prompt.model.strategy, 'set_threshold'):
+            tree_prompt.model.strategy.set_threshold(args.threshold)
+            logger.log(f"set the leaf node label modification threshold (threshold) as: {args.threshold}")
+        else:
+            logger.log(f"warning: cannot set threshold, the set_threshold function does not exist in the module")
+
+
+    
+
 
     x, y, strategy = load_args(args)
 

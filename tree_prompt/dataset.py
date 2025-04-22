@@ -249,6 +249,12 @@ Dataset Information:
     prompt += "The dataset consists of the following features:\n"
     for i, feat in enumerate(meta.features):
         prompt += f"{i+1}. {feat.name}: {feat.desc or 'No description available'}\n"
+        
+        # 添加对类别型特征值的详细描述
+        if feat.is_categorical and feat.categories:
+            prompt += "   Possible values:\n"
+            for cat_value, cat_desc in feat.categories.items():
+                prompt += f"   - {cat_value}: {cat_desc}\n"
     
     prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
     
