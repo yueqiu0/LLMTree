@@ -20,7 +20,9 @@ from tree_prompt.external.tree import (
     XGBoostDecisionTree,
     RandomForestDecisionTree,
     FederatedDecisionTree,
-    LLMDecisionTree,
+    CoTDecisionTree,
+    CoTDecisionTree,
+
 )
 from tree_prompt.prompt import (
     Serializer,
@@ -209,6 +211,8 @@ class EvaluateArgs:
             self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
+        elif self.tree_type == "CoT":  
+            self.tree_args = LLMDecisionTree()  
         elif self.tree_type == "llm_gen_tree":  
             self.tree_args = LLMTreeArgs()  
         else:
@@ -244,7 +248,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree'], 
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree','CoT'], 
                        default='simple')
     parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
                        help='Use LLM for final prediction (1) or use rules directly (0)')
@@ -514,7 +518,7 @@ def evaluate(
                 tree_accuracies.append(tree_accuracy)
             tree_auc = tree_aucs
             tree_accuracy = tree_accuracies
-        elif isinstance(tree_model, LLMDecisionTree):
+        elif isinstance(tree_model, CoTDecisionTree):
             # LLM决策树的特殊处理逻辑
             tree_model.fit(x_train, y_train)
             
@@ -584,12 +588,12 @@ def evaluate(
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
-            "tree_results": [float(y) for y in tree_predict],
-            "rules": rules if isinstance(tree_model, LLMDecisionTree) else None
+            "tree_results": tree_predict,
+            "rules": rules if isinstance(tree_model, CoTDecisionTree) else None
         }
 
-    # 如果不是tree_only模式且不是LLMDecisionTree的with_llm模式
-    if not (isinstance(tree_model, LLMDecisionTree) and with_llm):
+    # 如果不是tree_only模式且不是CoTDecisionTree的with_llm模式
+    if not (isinstance(tree_model, CoTDecisionTree) and with_llm):
         prompts, test_splits, labels = gen_prompt(
             meta,
             master_template,
@@ -640,17 +644,17 @@ def evaluate(
     result_dict = {
         "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
         "labels": [int(y) for y in y_test],
-        "results": [int(meta.get_label_value(r)) if (r is not None and isinstance(tree_model, LLMDecisionTree)) else (float(meta.get_label_value(r)) if r is not None else None) for r in (results if 'results' in locals() else tree_predict)],
+        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
         "auc": auc if 'auc' in locals() else tree_auc,
         "accuracy": acc if 'acc' in locals() else tree_accuracy,
     }
 
-    if use_tree_rules or isinstance(tree_model, LLMDecisionTree):
+    if use_tree_rules or isinstance(tree_model, CoTDecisionTree):
         result_dict.update({
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
             "tree_results": tree_predict,
-            "rules": rules if isinstance(tree_model, LLMDecisionTree) else None
+            "rules": rules if isinstance(tree_model, CoTDecisionTree) else None
         })
 
     return result_dict
@@ -782,13 +786,13 @@ def main():
     if args.tree_type == "llm_gen_tree":
         template_dir = Path("C:/Users/chenx/git/tree/template")
         tree_template_path = template_dir / "basic.jinja" 
-        tree_model = LLMDecisionTree(
+        tree_model = CoTDecisionTree(
             meta=meta,
             max_depth=args.tree_args.max_depth,
             runner=runner,
             log_file=log_path,
         )
-        logger.log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth}")
+        logger.log(f"CoTDecisionTree initialized with max_depth={args.tree_args.max_depth}")
     
 
     results: dict[int, list[dict]] = {}
@@ -844,11 +848,7 @@ def main():
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
         logger.log("Output file already exists, renamed to {}".format(target))
-     # 根据with_llm参数添加后缀
-    if getattr(args, 'with_llm', False):
-        file_name = f"{args.exp_name}_with_llm_{timestamp}.json"
-    else:
-        file_name = f"{args.exp_name}_{timestamp}.json"
+    file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
     output_file = Path(args.output_dir) / file_name
 
     logger.log(f"Saving results to {output_file}...")

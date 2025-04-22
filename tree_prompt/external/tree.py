@@ -11,7 +11,7 @@ from jinja2 import Environment, FileSystemLoader
 from sklearn.utils import check_array
 import warnings
 from ..logger import Logger,add_logger  
-from ..dataset import generate_decision_tree_prompt
+from ..dataset import generate_CoT_tree_prompt
 def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, list]:
     
     feat_stack = []
@@ -68,7 +68,7 @@ class DecisionTree:
 
 
 
-class LLMDecisionTree:
+class CoTDecisionTree:
     def __init__(self, meta, max_depth, runner, log_file):
         self.meta = meta          # Dataset metadata
         self.max_depth = max_depth  # Max tree depth
@@ -80,11 +80,11 @@ class LLMDecisionTree:
         log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)  # 1 means line buffering
         self.logger = Logger(log_file_obj)  # Initialize logger with file object
         # Ensure first log message marks the start
-        self.logger.log(f"=== LLMDecisionTree initialized at {datetime.now().isoformat()} ===")
+        self.logger.log(f"=== CoTDecision initialized at {datetime.now().isoformat()} ===")
 
     def fit(self, x_train, y_train):
         """Generate decision tree rules using LLM"""
-        prompt = generate_decision_tree_prompt(
+        prompt = generate_CoT_tree_prompt(
             meta=self.meta,
             x_train=x_train,
             y_train=y_train,

@@ -1,8 +1,8 @@
 base_configs:
   - ../base/dataset/abalone.yml
   - ../base/runner/chatgpt.yml
-  - ./direct_llm_tree.yml  
-  - tree/llm_gen_directly.yml
+  - ./CoT_llm_tree.yml
+  - tree/CoT.yml
   - ./common.yml
 
 config:

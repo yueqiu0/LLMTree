@@ -1,5 +1,5 @@
 config:
-  tree_type: llm_gen_directly
+  tree_type: CoT
   tree_args:
     max_depth: 3
     llm_tree_args:

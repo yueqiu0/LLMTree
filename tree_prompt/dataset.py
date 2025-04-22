@@ -314,13 +314,13 @@ def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[in
 
 
 
-def generate_decision_tree_prompt(
+def generate_CoT_tree_prompt(
     meta: DatasetMeta,
     x_train: np.ndarray,
     y_train: np.ndarray,
     max_depth: int = 3,  # 强制设置为3层深度
     num_examples: int = 5
-) -> str:
+    ) -> str:
         """
         生成决策树构建提示词（完整优化版）
         修改重点：
@@ -506,39 +506,27 @@ def generate_decision_tree_prompt(
             rule_examples.append(rule)
         logger.log(f"完成规则生成，共生成{len(rule_examples)}条规则")
     
-        prompt_parts.append("# CRITICAL OUTPUT FORMAT REQUIREMENTS")
-        prompt_parts.append("You MUST generate decision tree rules in the EXACT format shown below.")
-        prompt_parts.append("Any deviation from this format will make the rules unparsable.")
-        prompt_parts.append("")
-        prompt_parts.append("## REQUIRED RULE FORMAT:")
-        prompt_parts.append("rule X: if feature operator value then label")
-        prompt_parts.append("")
-        prompt_parts.append("## EXAMPLES OF VALID RULES:")
-        # 数值特征示例
-        prompt_parts.append("rule 1: if age >= 30.0000 then yes")
-        prompt_parts.append("rule 2: if income < 50000.0000 then no")
-        # 分类特征示例
-        prompt_parts.append("rule 3: if gender = male then yes")
-        prompt_parts.append("rule 4: if education = college then no")
-        prompt_parts.append("")
-        prompt_parts.append("## STRICT REQUIREMENTS:")
-        prompt_parts.append("1. Each rule MUST start with 'rule X:' where X is the rule number")
-        prompt_parts.append("2. Feature names MUST match exactly (case-sensitive) from this list:")
-        prompt_parts.append("   " + ", ".join([f.name for f in meta.features]))
-        prompt_parts.append("3. For numerical features:")
-        prompt_parts.append("   - Use operators: >, >=, <, <=")
-        prompt_parts.append("   - Values MUST use exactly 4 decimal places (e.g. 30.0000)")
-        prompt_parts.append("4. For categorical features:")
-        prompt_parts.append("   - Use operator: =")
-        prompt_parts.append("   - Values MUST match exactly (case-sensitive) from the categories")
-        prompt_parts.append("5. Labels MUST be one of: " + ", ".join([l.name for l in meta.labels]))
-        prompt_parts.append("")
-        prompt_parts.append("## YOUR OUTPUT MUST:")
-        prompt_parts.append("1. Contain ONLY rules in the specified format")
-        prompt_parts.append("2. NOT include any explanations, notes or additional text")
-        prompt_parts.append("3. Have each rule on a separate line")
-        prompt_parts.append("")
-        prompt_parts.append("BEGIN YOUR RESPONSE WITH THE RULES:")
+    prompt_parts.append("# Decision Tree Requirements")
+    prompt_parts.append("1. The tree must have exactly 2 levels (max_depth=3)")
+    prompt_parts.append("2. Each level must split on a different feature")
+    prompt_parts.append("3. Rules must be mutually exclusive")
+    prompt_parts.append("4. You must leverage your knowledge about the domain when creating rules")
+    prompt_parts.append("5. All rules must include both THEN and ELSE branches")
+    prompt_parts.append("")
+
+    # ++++ NEW REASONING GUIDANCE SECTION ++++
+    prompt_parts.append("# Step-by-Step Construction Guidance")
+    prompt_parts.append("Let's think step by step. First, we need to select the best root node feature. Consider the following:")
+    prompt_parts.append("1. Which feature provides the highest information gain for the initial split?")
+    prompt_parts.append("2. How do the statistical properties (mean, distribution, categories) influence this choice?")
+    prompt_parts.append("3. After selecting the root feature:")
+    prompt_parts.append("   a. For numerical features: What threshold optimally separates the classes?")
+    prompt_parts.append("   b. For categorical features: Which category provides the purest subgroup?")
+    prompt_parts.append("4. Repeat this process for subsequent levels, ensuring:")
+    prompt_parts.append("   a. Different features are used at each level")
+    prompt_parts.append("   b. Splits maximize class separation at each node")
+    prompt_parts.append("")
+
 
         # ============== 最终组装 ==============
         full_prompt = "\n".join(prompt_parts)
