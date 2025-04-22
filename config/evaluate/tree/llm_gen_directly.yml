@@ -1,15 +1,12 @@
 config:
-  tree_type: llm
-  llm_gen_tree: true
-  tree_only: false
+  tree_type: llm_gen_directly
   tree_args:
-  max_depth: 3
-  llm_tree_args:
-  model_name: "togethercomputer/llama-2-70b-chat"
-  temperature: 0
-  max_retry: 3
-  use_tree_rules: true
-  random_seed: 0      
-  num_tests_per_set: 1 
-  test_size: 0.2       
-  test_batch: 1        
+    max_depth: 3
+    llm_tree_args:
+    model_name: "togethercomputer/llama-2-70b-chat"
+  random_seed: 42
+  num_tests_per_set: 10
+  test_size: 100
+  test_batch: 5
+  use_tree_rules: True
+  
