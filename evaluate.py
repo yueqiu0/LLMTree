@@ -212,7 +212,7 @@ class EvaluateArgs:
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
         elif self.tree_type == "CoT":  
-            self.tree_args = LLMDecisionTree()  
+            self.tree_args = LLMTreeArgs()  
         elif self.tree_type == "llm_gen_tree":  
             self.tree_args = LLMTreeArgs()  
         else:
@@ -783,7 +783,7 @@ def main():
         )
         master_template = env.get_template(master_template_path.name)
         logger.log(f"Template loaded from: {master_template_path}")
-    if args.tree_type == "llm_gen_tree":
+    if args.tree_type == "CoT":
         template_dir = Path("C:/Users/chenx/git/tree/template")
         tree_template_path = template_dir / "basic.jinja" 
         tree_model = CoTDecisionTree(
