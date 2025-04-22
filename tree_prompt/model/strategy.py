@@ -17,11 +17,18 @@ from .meta_rule import MetaRule
 
 _delta = 2
 _threshold = 0.70  # 默认值
-
+_beta = 0.0  # 默认值
 def set_threshold(value: float):
     """设置叶子节点标签修改的阈值"""
     global _threshold
     _threshold = value
+    logger.log(f"叶子节点标签修改阈值设置为: {value}")
+    
+def set_beta(value: float):
+    """设置不确定性区间"""
+    global _beta
+    _beta = value
+    logger.log(f"不确定性区间设置为: {value}")
 
 def set_delta(delta: int):
     global _delta
@@ -221,7 +228,7 @@ class TrainStrategy:
         raw_predictions = self.tree.predict(x)
         
         # 添加调试信息，显示原始预测和转换过程
-        logger.log(f"原始预测结果: {raw_predictions[:10]}...")  # 只显示前10个
+        logger.log(f"原始预测结果: {raw_predictions}...")  
         
         # 对每个预测结果进行转换
         results = []
@@ -669,16 +676,17 @@ class TrainStrategy:
         label_name = None
         rule_value = rule.value
         
-        # 打印调试信息
-        logger.log(f"规则值: {rule_value}, 标签信息: {[f'值:{l.value},名称:{l.name}' for l in self._meta.labels]}")
+        # 特殊处理 -1 值（未知类别）
+        if rule_value == -1:
+            label_name = "unknown"
+        else:
+            # 查找匹配的标签
+            for label in self._meta.labels:
+                if label.value == rule_value:
+                    label_name = label.name
+                    break
         
-        # 查找匹配的标签
-        for label in self._meta.labels:
-            if label.value == rule_value:
-                label_name = label.name
-                break
-        
-        # 如果没找到匹配的标签，使用默认名称
+        # 如果没找到匹配的标签
         if label_name is None:
             label_name = f"unknown"
             logger.log(f"警告: 未找到值为 {rule_value} 的标签")
@@ -749,16 +757,7 @@ class TrainStrategy:
         return path
 
     def _llm_verify_leaf_node(self, node_or_rules, prediction):
-        """
-        使用LLM验证叶子节点的预测标签
-        
-        参数:
-            node_or_rules: 节点对象或预先计算的路径规则列表
-            prediction: 当前预测标签
-        
-        返回:
-            验证后的标签
-        """
+        """使用LLM验证叶子节点的预测标签"""
         # 获取路径规则
         path_rules = None
         if isinstance(node_or_rules, list):
@@ -855,7 +854,7 @@ for samples matching these rules
             response_gen = self.llm_runner.run([prompt])
             response = next(response_gen)[0]
             
-            # 解析响应
+            # 解析响应和置信度
             logger.log(f"LLM响应: {response}")
             
             # 提取每个标签的信心值
@@ -884,16 +883,21 @@ for samples matching these rules
                         except ValueError:
                             continue
             
-            # 检查是否需要替换标签
+
+            # 当置信度在0.5±β区间内时，将标签设为未知(-1)
+            if highest_confidence >= 0.5 - _beta and highest_confidence <= 0.5 + _beta:
+                logger.log(f"LLM置信度在模糊区域: {highest_confidence}, 设置为未知类别")
+                return -1
+            
+            # 原有逻辑：检查是否需要替换标签    
             if highest_confidence >= _threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
             else:
-                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
                 return prediction
             
         except Exception as e:
-            logger.log(f"LLM验证过程出错: {str(e)}")
+            logger.log(f"LLM验证过程发生错误: {e}")
             return prediction
 
     def _get_domain_expertise(self):
@@ -936,7 +940,7 @@ class UnknownClassStrategy(TrainStrategy):
         return self.serializer.meta  # 使用serializer中的meta
 
     def _get_available_predictions(self) -> list[int]:
-        """获取可用的预测值列表"""
+        """获取可用的预测值列表，包括-1表示未知类别"""
         return [-1, *range(self._meta.label_count())]
 
     def _gen_prompt(

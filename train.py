@@ -267,10 +267,8 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-
     parser.add_argument('--threshold', type=float, default=0.70, help='threshold of modifying labels for leaf supervision')
-
-   
+    parser.add_argument('--beta', type=float, default=0.0, help='interval of uncertainty for leaf supervision')
     cml_args = parser.parse_args()
 
     args = TrainArgs()
@@ -391,6 +389,11 @@ def parse_args() -> TrainArgs:
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
+
+    if cml_args.threshold is not None:
+        args.threshold = cml_args.threshold
+    if cml_args.beta is not None:
+        args.beta = cml_args.beta
 
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -754,9 +757,16 @@ def main():
             logger.log(f"set the leaf node label modification threshold (threshold) as: {args.threshold}")
         else:
             logger.log(f"warning: cannot set threshold, the set_threshold function does not exist in the module")
+        
+    # 设置beta参数 (不确定性区间)
+    if args.beta is not None:
+        if hasattr(tree_prompt.model.strategy, 'set_beta'):
+            tree_prompt.model.strategy.set_beta(args.beta)
+            logger.log(f"set the uncertainty interval (beta) as: {args.beta}")
+        else:
+            logger.log(f"warning: cannot set beta, the set_beta function does not exist in the module")
 
 
-    
 
 
     x, y, strategy = load_args(args)
