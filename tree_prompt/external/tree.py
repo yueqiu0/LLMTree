@@ -1,3 +1,4 @@
+from datetime import datetime
 from sklearn.preprocessing import OneHotEncoder
 import sklearn.tree
 import sklearn.ensemble
@@ -75,9 +76,11 @@ class LLMDecisionTree:
         self.log_file = log_file  # Log file path
         self.rules = []           # List to store parsed rules
         self.feature_names = [f.name for f in meta.features]  # Get feature names from metadata features
-        # Open log file in append mode before passing to Logger
-        log_file_obj = open(self.log_file, 'a', encoding='utf-8')
+        # Open log file in append mode with line buffering for real-time writing
+        log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)  # 1 means line buffering
         self.logger = Logger(log_file_obj)  # Initialize logger with file object
+        # Ensure first log message marks the start
+        self.logger.log(f"=== LLMDecisionTree initialized at {datetime.now().isoformat()} ===")
 
     def fit(self, x_train, y_train):
         """Generate decision tree rules using LLM"""
@@ -151,127 +154,221 @@ class LLMDecisionTree:
 
 
     def _parse_llm_response(self, response):
-        """使用更健壮的正则表达式解析规则"""
-        # 添加输入响应日志
+        """支持嵌套规则结构的解析方法"""
         self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
         import re
         rules = []
-        rule_groups = {}
-        group_id = 1
+        rule_map = {}  # 存储规则ID到规则内容的映射
+        terminal_rules = []  # 存储最终决策规则
+        rule_groups = {}  # 存储分组后的规则
+        group_id = 1  # 初始化分组ID
         
-        # 输入验证
+        # 输入验证和预处理
         if not response:
+            self.logger.log("Error: Empty LLM response received")
             return []
             
-        # 统一输入为字符串并验证内容
-        if isinstance(response, (list, tuple)):
-            response = "\n".join(str(r) for r in response)
         response = str(response).strip()
-        
-        if not response or len(response) < 10:  # 最小长度检查
-            print("LLM响应过短或无效")
+        if not response:
+            self.logger.log("Error: Response is empty after conversion")
             return []
+            
+        # 诊断信息
+        lines = response.split('\n')
+        line_count = len(lines)
+        rule_prefix_count = len(re.findall(r'^rule\s+\d+:', response, re.MULTILINE | re.IGNORECASE))
+        self.logger.log(f"Response diagnostics - Lines: {line_count}, Rule prefixes found: {rule_prefix_count}")
 
-        # 改进的规则解析正则表达式
+        # 第一阶段：收集所有规则
         rule_pattern = re.compile(
-            r'rule\s+\d+:\s*if\s+(.+?)\s+then\s+(.+?)$', 
-            re.IGNORECASE
+            r'^rule\s+(\d+):\s*if\s+(.+?)\s+then\s+(.+?)$',
+            re.IGNORECASE | re.MULTILINE
         )
-        condition_pattern = re.compile(
-            r'^\s*([\w\s]+?)\s*(<=|>=|<|>|=)\s*([\d.]+|\".+?\"|\'.+?\'|\w+)\s*$'
-        )
-
-        for line in response.split('\n'):
+        
+        for line in lines:
             line = line.strip()
-            rule_match = rule_pattern.match(line)
-            if not rule_match:
-                continue
-
-            try:
-                full_condition, label = rule_match.groups()
-                label = label.strip()
+            match = rule_pattern.match(line)
+            if match:
+                rule_id, condition, consequence = match.groups()
+                rule_map[rule_id] = {
+                    'condition': condition.strip(),
+                    'consequence': consequence.strip(),
+                    'is_terminal': False
+                }
                 
-                # 解析完整条件中的多个子条件
-                conditions = [c.strip() for c in full_condition.split(' AND ')]
+        # 第二阶段：识别终端规则(最终决策)
+        label_names = [label.name.lower() for label in self.meta.labels]
+        for rule_id, rule in rule_map.items():
+            if rule['consequence'].lower() in label_names:
+                rule['is_terminal'] = True
+                terminal_rules.append(rule_id)
+                
+        # 第三阶段：构建规则链
+        for terminal_rule_id in terminal_rules:
+            current_rule_id = terminal_rule_id
+            rule_chain = []
+            
+            while current_rule_id in rule_map:
+                current_rule = rule_map[current_rule_id]
+                rule_chain.insert(0, {
+                    'condition': current_rule['condition'],
+                    'label': current_rule['consequence'] if current_rule['is_terminal'] else None
+                })
+                
+                # 查找前驱规则
+                current_rule_id = None
+                for rule_id, rule in rule_map.items():
+                    if rule['consequence'] == current_rule_id:
+                        current_rule_id = rule_id
+                        break
+                        
+            if rule_chain:
+                # 解析条件
+                condition_pattern = re.compile(
+                    r'^\s*([\w\s]+?)\s*(<=|>=|<|>|=)\s*([\d.]+|\".+?\"|\'.+?\'|\w+)\s*$'
+                )
                 parsed_conditions = []
+                valid = True
                 
-                for cond in conditions:
-                    # 使用正则表达式解析每个条件
-                    cond_match = condition_pattern.match(cond)
+                for step in rule_chain:
+                    cond_match = condition_pattern.match(step['condition'])
                     if not cond_match:
-                        continue
+                        valid = False
+                        break
                         
                     feature, operator, value = cond_match.groups()
+                    feature = ' '.join(feature.split())  # 清理多余空格
                     
-                    # 清理特征名称中的多余空格
-                    feature = ' '.join(feature.split())
-                    
-                    # 值类型转换（支持字符串和数值）
-                    try:
-                        # 尝试去除引号
-                        value = value.strip('\'"')
-                        numeric_value = float(value) if '.' in value else int(value)
-                        value = numeric_value
-                    except:
-                        # 保持为字符串类型
-                        pass
-                    
-                    # 特征名称校验（包含大小写不敏感匹配）
+                    # 特征验证
                     matched_feature = next(
                         (f for f in self.feature_names if f.lower() == feature.lower()),
                         None
                     )
                     if not matched_feature:
-                        continue
+                        valid = False
+                        break
                         
                     parsed_conditions.append({
-                        'condition': cond,
                         'feature': matched_feature,
                         'operator': operator,
-                        'value': value
+                        'value': value,
+                        'label': step['label']
                     })
-
-                if not parsed_conditions:
-                    continue
                     
-                # 构建规则结构
-                main_condition = parsed_conditions[0]
-                rule_entry = {
-                    'condition': main_condition['condition'],
-                    'feature': main_condition['feature'],
-                    'operator': main_condition['operator'],
-                    'value': main_condition['value'],
-                    'label': label,
-                    'sub_rules': []
-                }
-                
-                # 处理子规则
-                if len(parsed_conditions) > 1:
-                    rule_entry['sub_rules'] = [
-                        {
-                            'condition': c['condition'],
-                            'feature': c['feature'],
-                            'operator': c['operator'],
-                            'value': c['value']
-                        } for c in parsed_conditions[1:]
-                    ]
-                
-                # 按主特征分组
-                group_key = f"{rule_entry['feature']}_{rule_entry['operator']}_{rule_entry['value']}"
-                if group_key not in rule_groups:
-                    rule_groups[group_key] = {
-                        'main_rule': rule_entry,
-                        'group_id': group_id
+                if valid and parsed_conditions:
+                    main_condition = parsed_conditions[0]
+                    rule_entry = {
+                        'condition': main_condition['feature'] + ' ' + main_condition['operator'] + ' ' + str(main_condition['value']),
+                        'feature': main_condition['feature'],
+                        'operator': main_condition['operator'],
+                        'value': main_condition['value'],
+                        'label': rule_chain[-1]['label'] or main_condition['label'],
+                        'sub_rules': []
                     }
-                    group_id += 1
-                else:
-                    # 合并子规则
-                    existing = rule_groups[group_key]['main_rule']
-                    existing['sub_rules'].extend(rule_entry['sub_rules'])
+                    
+                    # 添加子规则
+                    for cond in parsed_conditions[1:]:
+                        rule_entry['sub_rules'].append({
+                            'condition': cond['feature'] + ' ' + cond['operator'] + ' ' + str(cond['value']),
+                            'feature': cond['feature'],
+                            'operator': cond['operator'],
+                            'value': cond['value']
+                        })
+                    
+                    rules.append(rule_entry)
+                    
+                    # 验证标签
+                    label = rule_entry['label']  # 从rule_entry获取label
+                    valid_labels = [l.name.lower() for l in self.meta.labels]
+                    if label and label.lower() not in valid_labels:
+                        self.logger.log(f"Invalid label '{label}', skipping rule")
+                        continue
+                        
+                    # 解析完整条件中的多个子条件
+                    conditions = [c.strip() for c in rule_entry['condition'].split(' AND ')]
+                    parsed_conditions = []
+                    valid_conditions = True
+                    
+                    for cond in conditions:
+                        # 使用正则表达式解析每个条件
+                        cond_match = condition_pattern.match(cond)
+                        if not cond_match:
+                            self.logger.log(f"Invalid condition format: {cond}")
+                            valid_conditions = False
+                            break
+                        feature, operator, value = cond_match.groups()
+                        
+                        # 清理特征名称中的多余空格
+                        feature = ' '.join(feature.split())
+                        
+                        # 值类型转换（支持字符串和数值）
+                        try:
+                            # 尝试去除引号
+                            value = value.strip('\'"')
+                            numeric_value = float(value) if '.' in value else int(value)
+                            value = numeric_value
+                        except:
+                            # 保持为字符串类型
+                            pass
+                        
+                        # 特征名称校验（包含大小写不敏感匹配）
+                        matched_feature = next(
+                            (f for f in self.feature_names if f.lower() == feature.lower()),
+                            None
+                        )
+                        if not matched_feature:
+                            self.logger.log(f"Unknown feature '{feature}', skipping condition")
+                            valid_conditions = False
+                            break
+                            
+                        parsed_conditions.append({
+                            'condition': cond,
+                            'feature': matched_feature,
+                            'operator': operator,
+                            'value': value
+                        })
+
+                    if not valid_conditions or not parsed_conditions:
+                        continue
+                        
+                    # 构建规则结构
+                    main_condition = parsed_conditions[0]
+                    rule_entry = {
+                        'condition': main_condition['condition'],
+                        'feature': main_condition['feature'],
+                        'operator': main_condition['operator'],
+                        'value': main_condition['value'],
+                        'label': label,
+                        'sub_rules': []
+                    }
+                    
+                    # 处理子规则
+                    if len(parsed_conditions) > 1:
+                        rule_entry['sub_rules'] = [
+                            {
+                                'condition': c['condition'],
+                                'feature': c['feature'],
+                                'operator': c['operator'],
+                                'value': c['value']
+                            } for c in parsed_conditions[1:]
+                        ]
+                    
+                    # 按主特征分组
+                    group_key = f"{rule_entry['feature']}_{rule_entry['operator']}_{rule_entry['value']}"
+                    if group_key not in rule_groups:
+                        rule_groups[group_key] = {
+                            'main_rule': rule_entry,
+                            'group_id': group_id
+                        }
+                        group_id += 1
+                        self.logger.log(f"Added new rule group for feature: {rule_entry['feature']}")
+                    else:
+                        # 合并子规则
+                        existing = rule_groups[group_key]['main_rule']
+                        existing['sub_rules'].extend(rule_entry['sub_rules'])
+                        self.logger.log(f"Merged sub-rules into existing group for feature: {rule_entry['feature']}")
+                    
                 
-            except Exception as e:
-                print(f"规则解析错误: {line}\n错误: {str(e)}")
-                continue
         
         # 构建最终规则列表
         for group in rule_groups.values():
@@ -293,34 +390,34 @@ class LLMDecisionTree:
         return rules
 
     def _apply_rules(self, sample):
-        """应用规则时添加类型安全检查"""
-        if not self.rules:
-            return self.meta.get_default_label()
+            """应用规则时添加类型安全检查"""
+            if not self.rules:
+                return self.meta.get_default_label()
+                
+            sample_dict = {self.feature_names[i]: val for i, val in enumerate(sample)}
             
-        sample_dict = {self.feature_names[i]: val for i, val in enumerate(sample)}
-        
-        for rule in self.rules:
-            # 类型安全检查
-            if not isinstance(rule, dict):
-                if not hasattr(self, '_reported_invalid_rule_types'):
-                    self._reported_invalid_rule_types = set()
+            for rule in self.rules:
+                # 类型安全检查
+                if not isinstance(rule, dict):
+                    if not hasattr(self, '_reported_invalid_rule_types'):
+                        self._reported_invalid_rule_types = set()
+                    
+                    rule_type = str(type(rule))
+                    if rule_type not in self._reported_invalid_rule_types:
+                        self.logger.log(f"发现无效规则类型: {rule_type}")
+                        self.logger.log(f"示例无效规则内容: {str(rule)[:100]}...")
+                        self.logger.log("规则应包含condition, feature, operator, value等键")
+                        self._reported_invalid_rule_types.add(rule_type)
+                    continue
+                    
+                required_keys = ['feature', 'operator', 'value', 'label']
+                if not all(k in rule for k in required_keys):
+                    if not hasattr(self, '_reported_invalid_rule_structure'):
+                        self.logger.log(f"不完整的规则结构，缺少必要字段: {required_keys}")
+                        self._reported_invalid_rule_structure = True
+                    continue
                 
-                rule_type = str(type(rule))
-                if rule_type not in self._reported_invalid_rule_types:
-                    self.logger.log(f"发现无效规则类型: {rule_type}")
-                    self.logger.log(f"示例无效规则内容: {str(rule)[:100]}...")
-                    self.logger.log("规则应包含condition, feature, operator, value等键")
-                    self._reported_invalid_rule_types.add(rule_type)
-                continue
-                
-            required_keys = ['feature', 'operator', 'value', 'label']
-            if not all(k in rule for k in required_keys):
-                if not hasattr(self, '_reported_invalid_rule_structure'):
-                    self.logger.log(f"不完整的规则结构，缺少必要字段: {required_keys}")
-                    self._reported_invalid_rule_structure = True
-                continue
-                
-            try:
+            
                 feature = rule['feature']
                 operator = rule['operator']
                 value = rule['value']
@@ -360,21 +457,63 @@ class LLMDecisionTree:
                     # 验证所有子规则
                     all_sub_matched = True
                     for sub_rule in rule['sub_rules']:
-                        # 同样的安全检查
-                        if not isinstance(sub_rule, dict):
-                            continue
-                        # ... 类似主规则的验证逻辑 ...
-                        # （此处需要添加子规则的验证代码）
+                        try:
+                            # 同样的安全检查
+                            if not isinstance(sub_rule, dict):
+                                all_sub_matched = False
+                                break
+                                
+                            # 子规则验证逻辑
+                            sub_feature = sub_rule.get('feature')
+                            sub_operator = sub_rule.get('operator') 
+                            sub_value = sub_rule.get('value')
+                            
+                            if None in [sub_feature, sub_operator, sub_value]:
+                                all_sub_matched = False
+                                break
+                                
+                            # 获取子规则特征值
+                            sub_sample_value = sample_dict.get(sub_feature)
+                            if sub_sample_value is None:
+                                all_sub_matched = False
+                                break
+                                
+                            # 类型一致性处理
+                            try:
+                                if isinstance(sub_value, (int, float)):
+                                    sub_num_sample = float(sub_sample_value)
+                                    sub_num_value = float(sub_value)
+                                    if sub_operator == '>=': sub_match = sub_num_sample >= sub_num_value
+                                    elif sub_operator == '<=': sub_match = sub_num_sample <= sub_num_value
+                                    elif sub_operator == '>': sub_match = sub_num_sample > sub_num_value
+                                    elif sub_operator == '<': sub_match = sub_num_sample < sub_num_value
+                                    elif sub_operator == '=': sub_match = abs(sub_num_sample - sub_num_value) < 1e-6
+                                    else: sub_match = False
+                                else:
+                                    sub_str_sample = str(sub_sample_value).lower()
+                                    sub_str_value = str(sub_value).lower()
+                                    sub_match = (sub_operator == '=' and sub_str_sample == sub_str_value)
+                                    
+                                if not sub_match:
+                                    all_sub_matched = False
+                                    break
+                                    
+                            except Exception as e:
+                                self.logger.log(f"子规则验证错误: {str(e)}")
+                                all_sub_matched = False
+                                break
+                                
+                        except Exception as e:
+                            self.logger.log(f"子规则处理异常: {str(e)}")
+                            all_sub_matched = False
+                            break
+                            
                     if all_sub_matched:
                         return label
                 elif match:
                     return label
-                    
-            except Exception as e:
-                print(f"应用规则时出错: {rule}\n错误: {str(e)}")
-                continue
                 
-        return self.meta.labels[0].value
+            return self.meta.labels[0].value
 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:

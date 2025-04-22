@@ -584,7 +584,7 @@ def evaluate(
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
+            "tree_results": [float(y) for y in tree_predict],
             "rules": rules if isinstance(tree_model, LLMDecisionTree) else None
         }
 
@@ -640,7 +640,7 @@ def evaluate(
     result_dict = {
         "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
         "labels": [int(y) for y in y_test],
-        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
+        "results": [int(meta.get_label_value(r)) if (r is not None and isinstance(tree_model, LLMDecisionTree)) else (float(meta.get_label_value(r)) if r is not None else None) for r in (results if 'results' in locals() else tree_predict)],
         "auc": auc if 'auc' in locals() else tree_auc,
         "accuracy": acc if 'acc' in locals() else tree_accuracy,
     }
@@ -844,7 +844,11 @@ def main():
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
         logger.log("Output file already exists, renamed to {}".format(target))
-    file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
+     # 根据with_llm参数添加后缀
+    if getattr(args, 'with_llm', False):
+        file_name = f"{args.exp_name}_with_llm_{timestamp}.json"
+    else:
+        file_name = f"{args.exp_name}_{timestamp}.json"
     output_file = Path(args.output_dir) / file_name
 
     logger.log(f"Saving results to {output_file}...")

@@ -35,9 +35,26 @@ These are some known data points:
 {%- endblock %}
 {% block tree_rules -%}
 {% if rules -%}
-The rules are as follows:
+The rules must follow this EXACT format (each rule on a new line):
+rule 1: if feature1 operator value then label
+rule 2: if feature2 operator value then label
+...
+
+STRICT REQUIREMENTS:
+1. Start each rule with "rule X: if"
+2. Feature names must match exactly from the feature list
+3. Operators must be one of: >, >=, <, <=, =
+4. Values must be numbers or quoted strings
+5. End with "then label" (label must match exactly from label list)
+6. Each rule must be on a separate line
+
+Example:
+rule 1: if age >= 30 then yes
+rule 2: if gender = "male" then no
+
+The rules are:
 {% for rule in rules %}
-({{loop.index}}) {{ rule }}
+({{loop.index}}) if {{ rule }} then 1 else 0
 {%- endfor %}
 {%- endif %}
 {%- endblock %}
