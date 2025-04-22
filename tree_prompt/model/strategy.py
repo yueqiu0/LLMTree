@@ -119,10 +119,23 @@ class TrainStrategy:
                 # 使用LLM验证叶子节点标签
                 verified_prediction = self._llm_verify_leaf_node(next_split, original_prediction)
                 
+                # 调试: 确认验证后的标签
+                logger.log(f"LLM验证结果: {verified_prediction}")
+                
+                # 关键修复: 正确设置节点属性，确保-1能被保存
                 next_split.is_leaf = True
-                next_split.prediction = verified_prediction
-                # 确保节点被正确冻结，不再参与分裂
+                next_split.leaf_class = verified_prediction  # 直接设置leaf_class
+                next_split.prediction = verified_prediction  # 同时设置prediction
+                
+                # 添加调试日志确认设置
+                logger.log(f"设置节点leaf_class为: {next_split.leaf_class}")
+                
+                # 确保节点被冻结
                 next_split.freeze()
+                
+                # 再次确认设置成功
+                logger.log(f"设置后的节点状态: leaf_class={next_split.leaf_class}, is_leaf={next_split.is_leaf}")
+                
                 return True, None
         
         # 检查节点样本的标签是否一致

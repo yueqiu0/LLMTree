@@ -149,7 +149,13 @@ class Node:
         self.is_categorical = None
 
     def freeze(self) -> None:
+        """冻结节点，不再参与分裂"""
         self.freezed = True
+        # 如果是叶子节点，确保leaf_class保持不变
+        if self.is_leaf and self.leaf_class == -1:
+            logger.log("冻结未知类别(-1)叶子节点")
+        else:
+            logger.log(f"冻结节点，预测值: {self.leaf_class}")
 
     def next_node(self, feat_value: float | str | int) -> "Node":
         if self.is_leaf:
@@ -200,6 +206,40 @@ class Node:
                 return self.left_child.predict(x) if self.left_child else -1
             else:
                 return self.right_child.predict(x) if self.right_child else -1
+
+    def to_graphviz_node(self, node_id: str, features: list[str] = None, classes: list[str] = None) -> str:
+        """将节点转换为Graphviz节点表示"""
+        if self.is_leaf:
+            # 修复: 正确处理-1（未知）类别
+            if self.leaf_class == -1:
+                return f'  {node_id} [label="-1"]'  # 显示为-1或unknown
+            
+            label = str(self.leaf_class)
+            if classes is not None and 0 <= self.leaf_class < len(classes):
+                label = classes[self.leaf_class]
+            return f'  {node_id} [label="{label}"]'
+        
+        # 非叶子节点的表示保持不变
+        feature_name = str(self.split_feature)
+        if features is not None and 0 <= self.split_feature < len(features):
+            feature_name = features[self.split_feature]
+        
+        if self.is_categorical:
+            return f'  {node_id} [label="{feature_name} == {self.split_value}?"]'
+        else:
+            return f'  {node_id} [label="{feature_name} < {self.split_value}?"]'
+
+    @property
+    def prediction(self) -> int:
+        """获取节点的预测值"""
+        return self.leaf_class
+
+    @prediction.setter
+    def prediction(self, value: int) -> None:
+        """设置节点的预测值"""
+        # 修复: 不要替换-1值
+        self.leaf_class = value  # 直接设置，保留-1值
+        logger.log(f"设置节点预测值为: {value}")
 
 
 class TreeBase:
