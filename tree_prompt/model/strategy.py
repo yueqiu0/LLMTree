@@ -103,6 +103,33 @@ class TrainStrategy:
         depth = next_split.depth
         samples = next_split.get_samples()
         
+        # 检查深度是否超过最大深度 - 新增检查
+        if depth >= self.max_depth:
+            logger.log(f"节点深度({depth})已达到最大深度({self.max_depth})，自动设为叶子节点")
+            
+            # 如果有样本，根据样本投票决定标签
+            if samples is not None and len(samples) > 0:
+                node_y = self.train_y[samples]
+                most_common_label = np.argmax(np.bincount(node_y))
+                logger.log(f"基于样本标签分布，预测为: {most_common_label}")
+            else:
+                # 如果没有样本，设为未知类别
+                most_common_label = -1
+                logger.log("节点没有样本，初始设置为未知类别(-1)")
+            
+            # 使用LLM验证叶子节点标签
+            verified_prediction = self._llm_verify_leaf_node(next_split, most_common_label)
+            logger.log(f"LLM验证结果: {verified_prediction}")
+            
+            # 设置节点属性
+            next_split.is_leaf = True
+            next_split.leaf_class = verified_prediction
+            next_split.prediction = verified_prediction
+            next_split.freeze()
+            
+            logger.log(f"最大深度叶子节点设置完成: {verified_prediction}")
+            return True, None
+        
         # 检查是否有样本 - 关键修改点
         if samples is None or len(samples) == 0:
             logger.log("节点没有样本，初始设置为未知类别(-1)")
@@ -740,7 +767,7 @@ class TrainStrategy:
         if conditions:
             return f"IF {' AND '.join(conditions)} THEN {label_name}"
         else:
-            return f"{label_name} (无条件)"
+            return f"{label_name}"
 
     def _get_path_to_node(self, node):
         """获取从根节点到当前节点的路径规则"""
@@ -813,9 +840,11 @@ class TrainStrategy:
             # 如果传入的是节点对象，获取其路径规则
             path_rules = self._get_path_to_node(node_or_rules)
         
+        # 检查是否有空规则或"无条件"规则
         if not path_rules:
-            logger.log("无法获取节点路径规则，跳过LLM验证")
-            return prediction
+            logger.log("无法获取节点路径规则，设置为未知类别(-1)")
+            return -1  # 返回未知类别
+
         
         # 构建特征描述
         feature_descriptions = []
@@ -1126,20 +1155,20 @@ Note: We ONLY allow '<' and '=' as numerical and categorical operators respectiv
 
 1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
 2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
-3. **Decimal Precision**: Use precision suited to each feature’s scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
+3. **Decimal Precision**: Use precision suited to each feature's scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
 Precision reflects reasoning, not formatting.
 4. **Rule Quality**: Choose thresholds that create meaningful splits and align with typical value patterns. Avoid overfitting to noise; confidence < 5 only if necessary. 
 5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
 6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
 7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
 8. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
-
+9. **First Rule Matters**: Think carefully about the first rule — its feature and threshold should reflect your strongest, most confident split. It is often treated as the default decision.
   
 ## Output Format (Strict):  
 Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
   
 Example:  
-study hours per week < 3.25 [ confidence: 9 ]
+study hours per week < 3.25 [ confidence: 10 ]
 attendance rate < 74.5 [ confidence: 9 ]
 assignment completion rate < 62.75 [ confidence: 8 ]
 study hours per week < 6.0 [ confidence: 7 ]
