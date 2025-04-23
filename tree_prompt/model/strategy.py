@@ -108,14 +108,24 @@ class TrainStrategy:
         depth = next_split.depth
         samples = next_split.get_samples()
         
-        # 检查是否有样本 - 重要修复点
+        # 检查是否有样本 - 关键修改点
         if samples is None or len(samples) == 0:
-            logger.log("节点没有样本，设置为未知类别(-1)")
+            logger.log("节点没有样本，初始设置为未知类别(-1)")
+            
+            # 使用LLM验证叶子节点标签，与其他情况一致
+            initial_prediction = -1  # 初始预测为未知类别
+            verified_prediction = self._llm_verify_leaf_node(next_split, initial_prediction)
+            
+            # 调试: 记录验证结果
+            logger.log(f"LLM验证结果(空节点): {verified_prediction}")
+            
+            # 设置节点属性
             next_split.is_leaf = True
-            next_split.leaf_class = -1  # 直接设置leaf_class
-            next_split.prediction = -1  # 同时设置prediction属性
+            next_split.leaf_class = verified_prediction  # 直接设置leaf_class
+            next_split.prediction = verified_prediction  # 同时设置prediction属性
             next_split.freeze()
-            logger.log(f"节点没有样本，已设置为未知类别(-1)，状态: leaf_class={next_split.leaf_class}")
+            
+            logger.log(f"空节点设置完成，最终类别: {verified_prediction}")
             return True, None
         
         # 获取样本标签
@@ -167,12 +177,22 @@ class TrainStrategy:
         if best_meta_rule is None:
             # 没有可用规则，冻结节点
             logger.log("没有可用的元规则，节点冻结")
+            
+            # 获取最常见标签作为初始预测
             most_common_label = np.argmax(np.bincount(node_y))
-            next_split.prediction = most_common_label
-            next_split.depth = self.max_depth
+            logger.log(f"节点初始预测值: {most_common_label}")
+            
+            # 使用LLM验证叶子节点标签
+            verified_prediction = self._llm_verify_leaf_node(next_split, most_common_label)
+            logger.log(f"LLM验证结果: {verified_prediction}")
+            
+            # 设置节点属性
+            next_split.prediction = verified_prediction
+            next_split.leaf_class = verified_prediction
             next_split.is_leaf = True
             next_split.freeze()
-            logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
+            
+            logger.log(f"节点最终设置为: {verified_prediction}")
             return True, None
         elif best_gain <= 0:
             # 有规则但增益为0的情况
@@ -182,11 +202,22 @@ class TrainStrategy:
             else:
                 # 深层节点或样本较多时，增益为0就冻结节点
                 logger.log(f"增益为0且非浅层小样本情况(深度={depth}，样本数={len(samples)})，节点冻结")
+                
+                # 获取最常见标签作为初始预测
                 most_common_label = np.argmax(np.bincount(node_y))
-                next_split.prediction = most_common_label
+                logger.log(f"节点初始预测值: {most_common_label}")
+                
+                # 使用LLM验证叶子节点标签
+                verified_prediction = self._llm_verify_leaf_node(next_split, most_common_label)
+                logger.log(f"LLM验证结果: {verified_prediction}")
+                
+                # 设置节点属性
+                next_split.prediction = verified_prediction
+                next_split.leaf_class = verified_prediction
                 next_split.is_leaf = True
                 next_split.freeze()
-                logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
+                
+                logger.log(f"节点最终设置为: {verified_prediction}")
                 return True, None
 
         # 使用选择的元规则设置分裂 (走到这里说明有规则可用且将被使用)
@@ -828,9 +859,6 @@ Analyze whether the current prediction is reasonable based on rules, feature des
 
 Label context: {self._meta.label_meaning if hasattr(self._meta, 'label_meaning') else "Classification evaluation"}
 
-## Rules (must ALL be satisfied):
-{chr(10).join([f"- {r}" for r in path_rules])}
-
 ## Feature descriptions:
 {chr(10).join(feature_descriptions)}
 
@@ -852,6 +880,9 @@ for samples matching these rules
 
 ## Note:
 - Remember also when there is little information do not give high probabilities (equal or higher than 0.9), unless you are very sure of them , because you may be overestimating.
+
+## Rules (must ALL be satisfied):
+{chr(10).join([f"- {r}" for r in path_rules])}
 
 ## Output format (no additional explanation):
 {chr(10).join([f"Label {label.value}: <score> " for label in self._meta.labels])}
@@ -1101,26 +1132,31 @@ Generate exactly {{ num_rules_required }} distinct and important meta-rules for 
 - For **categorical** features: `feature_name = category`  
 Note: We ONLY allow '<' and '=' as numerical and categorical operators respectively, '>' or '!=' is NOT allowed.
   
-Important Constraints & Guidelines:  
-1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.
-2. **Numerical Precision**: Use integers for `int` features; use reasonable decimals for `float`.  
-3. **Rule Quality**: All 7 rules must be useful splits (avoid confidence < 5). Important features can have multiple rules. 
-4. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
-5. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
-6. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
-7. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
+
+**Important Constraints & Guidelines:**
+
+1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
+2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
+3. **Decimal Precision**: Use decimals appropriate to the feature and threshold meaning — typically up to 3 decimal places. Precision reflects reasoning granularity, not just formatting, and should not be mechanically uniform.
+4. **Rule Quality**: All rules must be useful splits (avoid confidence < 5 as possible). Important features can have multiple rules.  
+5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
+6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
+7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
+8. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
+
   
 ## Output Format (Strict):  
 Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
   
 Example:  
-blood pressure < 130 [ confidence: 9 ]  
-blood pressure < 120 [ confidence: 8 ]  
-age < 40 [ confidence: 7 ]  
-blood pressure < 114 [ confidence: 7 ]  
-weight < 80.5 [ confidence: 6 ]  
-age < 25 [ confidence: 6 ]  
-sex = female [ confidence: 4 ]  
+study hours per week < 3.25 [ confidence: 9 ]
+attendance rate < 74.5 [ confidence: 9 ]
+assignment completion rate < 62.75 [ confidence: 8 ]
+study hours per week < 6.0 [ confidence: 7 ]
+participation = low [ confidence: 7 ]
+attendance rate < 85.000 [ confidence: 6 ]
+previous exam grade < 59.5 [ confidence: 6 ]
+ 
   
 ## Generated Meta-Rules:""")
         
