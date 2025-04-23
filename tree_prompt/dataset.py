@@ -38,7 +38,7 @@ class DatasetMeta:
         self.name: str = ""
         self.target: str = ""
         self.desc: str = ""
-        self.labal_meaning: str = ""
+        self.label_meaning: str = ""
         self.feature_shuffle_map: dict[int, int] = {}
 
     def get_label(self, id: int) -> Label:
@@ -103,7 +103,7 @@ def load_meta(path: str) -> DatasetMeta:
     meta.name = data.get("name")
     meta.desc = data.get("desc")
     meta.target = data.get("target")
-    meta.labal_meaning = data.get("label_meaning")
+    meta.label_meaning = data.get("label_meaning")
 
     features: list[dict] = data.get("features")
     for feat in features:
@@ -128,7 +128,7 @@ def load_meta(path: str) -> DatasetMeta:
 def _dummy(num_features: int) -> DatasetMeta:
     meta = DatasetMeta()
     meta.name = "dummy"
-    meta.labal_meaning = "result"
+    meta.label_meaning = "result"
 
     for i in range(num_features):
         feature = DatasetMeta.Feature()
@@ -238,7 +238,7 @@ def sample_balanced(
 
 def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
     """创建用于特征重要性排序的提示"""
-    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.labal_meaning or "the target variable"}.
+    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.label_meaning or "the target variable"}.
 
 Dataset Information:
 """
@@ -256,7 +256,7 @@ Dataset Information:
             for cat_value, cat_desc in feat.categories.items():
                 prompt += f"   - {cat_value}: {cat_desc}\n"
     
-    prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
+    prompt += f"\nTarget Variable: {meta.label_meaning or 'The output'}\n"
     
     # 添加标签的详细描述
     prompt += "Possible values:\n"

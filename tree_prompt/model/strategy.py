@@ -1046,7 +1046,7 @@ class FeatureBaggingStrategy(TrainStrategy):
             meta.name = self.all_meta.name
             meta.target = self.all_meta.target
             meta.desc = self.all_meta.desc
-            meta.labal_meaning = self.all_meta.labal_meaning
+            meta.label_meaning = self.all_meta.label_meaning
             meta.features = [self.all_meta.features[i] for i in feature_idxes]
             meta.labels = self.all_meta.labels
             self.sub_metas.append(meta)
