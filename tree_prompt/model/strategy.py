@@ -1137,8 +1137,9 @@ Note: We ONLY allow '<' and '=' as numerical and categorical operators respectiv
 
 1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
 2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
-3. **Decimal Precision**: Use decimals appropriate to the feature and threshold meaning — typically up to 3 decimal places. Precision reflects reasoning granularity, not just formatting, and should not be mechanically uniform.
-4. **Rule Quality**: All rules must be useful splits (avoid confidence < 5 as possible). Important features can have multiple rules.  
+3. **Decimal Precision**: Use precision suited to each feature’s scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
+Precision reflects reasoning, not formatting.
+4. **Rule Quality**: Choose thresholds that create meaningful splits and align with typical value patterns. Avoid overfitting to noise; confidence < 5 only if necessary. 
 5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
 6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
 7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
@@ -1376,7 +1377,7 @@ class FeatureBaggingStrategy(TrainStrategy):
             meta.name = self.all_meta.name
             meta.target = self.all_meta.target
             meta.desc = self.all_meta.desc
-            meta.labal_meaning = self.all_meta.labal_meaning
+            meta.label_meaning = self.all_meta.label_meaning
             meta.features = [self.all_meta.features[i] for i in feature_idxes]
             meta.labels = self.all_meta.labels
             self.sub_metas.append(meta)
