@@ -149,7 +149,13 @@ class Node:
         self.is_categorical = None
 
     def freeze(self) -> None:
+        """冻结节点，不再参与分裂"""
         self.freezed = True
+        # 如果是叶子节点，确保leaf_class保持不变
+        if self.is_leaf and self.leaf_class == -1:
+            logger.log("冻结未知类别(-1)叶子节点")
+        else:
+            logger.log(f"冻结节点，预测值: {self.leaf_class}")
 
     def next_node(self, feat_value: float | str | int) -> "Node":
         if self.is_leaf:
@@ -200,6 +206,40 @@ class Node:
                 return self.left_child.predict(x) if self.left_child else -1
             else:
                 return self.right_child.predict(x) if self.right_child else -1
+
+    def to_graphviz_node(self, node_id: str, features: list[str] = None, classes: list[str] = None) -> str:
+        """将节点转换为Graphviz节点表示"""
+        if self.is_leaf:
+            # 修复: 正确处理-1（未知）类别
+            if self.leaf_class == -1:
+                return f'  {node_id} [label="-1"]'  # 显示为-1或unknown
+            
+            label = str(self.leaf_class)
+            if classes is not None and 0 <= self.leaf_class < len(classes):
+                label = classes[self.leaf_class]
+            return f'  {node_id} [label="{label}"]'
+        
+        # 非叶子节点的表示保持不变
+        feature_name = str(self.split_feature)
+        if features is not None and 0 <= self.split_feature < len(features):
+            feature_name = features[self.split_feature]
+        
+        if self.is_categorical:
+            return f'  {node_id} [label="{feature_name} == {self.split_value}?"]'
+        else:
+            return f'  {node_id} [label="{feature_name} < {self.split_value}?"]'
+
+    @property
+    def prediction(self) -> int:
+        """获取节点的预测值"""
+        return self.leaf_class
+
+    @prediction.setter
+    def prediction(self, value: int) -> None:
+        """设置节点的预测值"""
+        # 修复: 不要替换-1值
+        self.leaf_class = value  # 直接设置，保留-1值
+        logger.log(f"设置节点预测值为: {value}")
 
 
 class TreeBase:
@@ -349,9 +389,37 @@ class DecisionTree(TreeBase):
         # 如果节点存在并且是叶节点，返回其类别
         return node.leaf_class if node is not None else -1
 
-    def predict(self, x: np.ndarray) -> list[int]:
-        """预测多个样本的类别"""
-        return [self.predict_one(sample) for sample in x]
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        """预测样本的类别"""
+        predictions = np.zeros(x.shape[0], dtype=int)
+        
+        for i in range(x.shape[0]):
+            node = self.root_node
+            # 检查根节点是否为None
+            if node is None:
+                predictions[i] = -1  # 如果根节点为None，返回未知类别
+                continue
+            
+            while node is not None and not node.is_leaf:
+                if self._go_left(x[i], node):
+                    node = node.left_child
+                else:
+                    node = node.right_child
+                
+                # 检查子节点是否为None
+                if node is None:
+                    # 子节点为None，设置为未知类别并跳出循环
+                    predictions[i] = -1
+                    break
+                
+            # 如果节点存在且是叶节点，使用其类别值
+            if node is not None:
+                predictions[i] = node.leaf_class
+            else:
+                # 如果节点是None（例如在上面的break之后），使用未知类别
+                predictions[i] = -1
+        
+        return predictions
 
     def predict_raw(self, x: np.ndarray) -> list[int]:
         """预测样本的原始类别（包括unknown）"""
@@ -566,6 +634,31 @@ class DecisionTree(TreeBase):
             logger.log(f"节点分配标签: {majority_label}, 样本标签分布: {label_counts}")
         else:
             logger.log("警告: 节点没有样本，无法分配标签")
+
+    def to_dict(self) -> dict:
+        """将决策树转换为字典"""
+        return {
+            "nodes": self._nodes_to_dict(self.root_node),
+            "num_classes": max(self._get_available_predictions()) + 1,  # 考虑-1标签
+        }
+        
+    def _nodes_to_dict(self, node) -> dict:
+        """将节点转换为字典"""
+        result = {"id": id(node)}
+        
+        # 处理叶节点
+        if node.is_leaf:
+            result["value"] = node.leaf_class
+            # 对-1做特殊标记
+            if node.leaf_class == -1:
+                result["unknown"] = True
+            return result
+        
+        # ... 其余节点转换代码 ...
+
+    def _get_available_predictions(self) -> list[int]:
+        """获取可用的预测值列表，包括-1表示未知类别"""
+        return [-1, *range(max(1, np.max(self.train_y) + 1) if hasattr(self, 'train_y') and len(self.train_y) > 0 else 1)]
 
 
 class RandomForest(TreeBase):

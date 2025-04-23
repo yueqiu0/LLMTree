@@ -13,7 +13,7 @@ def calculate_weight_factor(depth: int) -> float:
     alpha = 0.8 # 使用模块变量
     logger.log(f"深度 {depth} 的权重因子计算: α={alpha:.2f}")
     return alpha
- 
+
 # def calculate_chi_square_scores(
 #     X: np.ndarray, 
 #     y: np.ndarray,

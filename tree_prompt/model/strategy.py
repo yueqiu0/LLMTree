@@ -22,6 +22,8 @@ def set_threshold(value: float):
     """设置叶子节点标签修改的阈值"""
     global _threshold
     _threshold = value
+    logger.log(f"叶子节点标签修改阈值设置为: {value}")
+    
 
 def set_delta(delta: int):
     global _delta
@@ -101,12 +103,24 @@ class TrainStrategy:
         depth = next_split.depth
         samples = next_split.get_samples()
         
-        # 检查是否有样本
+        # 检查是否有样本 - 关键修改点
         if samples is None or len(samples) == 0:
-            logger.log("节点没有样本，设置为未知类别(-1)")
+            logger.log("节点没有样本，初始设置为未知类别(-1)")
+            
+            # 使用LLM验证叶子节点标签，与其他情况一致
+            initial_prediction = -1  # 初始预测为未知类别
+            verified_prediction = self._llm_verify_leaf_node(next_split, initial_prediction)
+            
+            # 调试: 记录验证结果
+            logger.log(f"LLM验证结果(空节点): {verified_prediction}")
+            
+            # 设置节点属性
             next_split.is_leaf = True
-            next_split.prediction = -1
+            next_split.leaf_class = verified_prediction  # 直接设置leaf_class
+            next_split.prediction = verified_prediction  # 同时设置prediction属性
             next_split.freeze()
+            
+            logger.log(f"空节点设置完成，最终类别: {verified_prediction}")
             return True, None
         
         # 获取样本标签
@@ -121,10 +135,20 @@ class TrainStrategy:
             # 使用LLM验证叶子节点标签
             verified_prediction = self._llm_verify_leaf_node(next_split, original_prediction)
             
+            # 调试: 记录验证结果
+            logger.log(f"LLM验证结果: {verified_prediction}")
+            
+            # 确保节点属性正确设置 - 重要修复点
             next_split.is_leaf = True
-            next_split.prediction = verified_prediction
-            # 确保节点被正确冻结，不再参与分裂
+            next_split.leaf_class = verified_prediction  # 直接设置leaf_class
+            next_split.prediction = verified_prediction  # 同时设置prediction
+            
+            # 确保节点被正确冻结
             next_split.freeze()
+            
+            # 再次确认设置是否成功
+            logger.log(f"叶子节点设置完成: leaf_class={next_split.leaf_class}, is_leaf={next_split.is_leaf}")
+            
             return True, None
         
         # 检查节点样本的标签是否一致
@@ -148,18 +172,21 @@ class TrainStrategy:
             # 没有可用规则，冻结节点
             logger.log("没有可用的元规则，节点冻结")
             
-            # 修复: 检查node_y是否为空
-            if len(node_y) == 0:
-                logger.log("节点没有样本，设置为未知类别(-1)")
-                most_common_label = -1
-            else:
-                most_common_label = np.argmax(np.bincount(node_y))
+            # 获取最常见标签作为初始预测
+            most_common_label = np.argmax(np.bincount(node_y))
+            logger.log(f"节点初始预测值: {most_common_label}")
             
-            next_split.prediction = most_common_label
-            next_split.depth = self.max_depth
+            # 使用LLM验证叶子节点标签
+            verified_prediction = self._llm_verify_leaf_node(next_split, most_common_label)
+            logger.log(f"LLM验证结果: {verified_prediction}")
+            
+            # 设置节点属性
+            next_split.prediction = verified_prediction
+            next_split.leaf_class = verified_prediction
             next_split.is_leaf = True
             next_split.freeze()
-            logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
+            
+            logger.log(f"节点最终设置为: {verified_prediction}")
             return True, None
         elif best_gain <= 0:
             # 有规则但增益为0的情况
@@ -170,17 +197,21 @@ class TrainStrategy:
                 # 深层节点或样本较多时，增益为0就冻结节点
                 logger.log(f"增益为0且非浅层小样本情况(深度={depth}，样本数={len(samples)})，节点冻结")
                 
-                # 修复: 检查node_y是否为空
-                if len(node_y) == 0:
-                    logger.log("节点没有样本，设置为未知类别(-1)")
-                    most_common_label = -1
-                else:
-                    most_common_label = np.argmax(np.bincount(node_y))
+                # 获取最常见标签作为初始预测
+                most_common_label = np.argmax(np.bincount(node_y))
+                logger.log(f"节点初始预测值: {most_common_label}")
                 
-                next_split.prediction = most_common_label
+                # 使用LLM验证叶子节点标签
+                verified_prediction = self._llm_verify_leaf_node(next_split, most_common_label)
+                logger.log(f"LLM验证结果: {verified_prediction}")
+                
+                # 设置节点属性
+                next_split.prediction = verified_prediction
+                next_split.leaf_class = verified_prediction
                 next_split.is_leaf = True
                 next_split.freeze()
-                logger.log(f"节点被标记为叶子节点，预测值: {most_common_label}")
+                
+                logger.log(f"节点最终设置为: {verified_prediction}")
                 return True, None
 
         # 使用选择的元规则设置分裂 (走到这里说明有规则可用且将被使用)
@@ -243,7 +274,7 @@ class TrainStrategy:
         raw_predictions = self.tree.predict(x)
         
         # 添加调试信息，显示原始预测和转换过程
-        logger.log(f"原始预测结果: {raw_predictions[:10]}...")  # 只显示前10个
+        logger.log(f"原始预测结果: {raw_predictions}...")  
         
         # 对每个预测结果进行转换
         results = []
@@ -691,16 +722,17 @@ class TrainStrategy:
         label_name = None
         rule_value = rule.value
         
-        # 打印调试信息
-        logger.log(f"规则值: {rule_value}, 标签信息: {[f'值:{l.value},名称:{l.name}' for l in self._meta.labels]}")
+        # 特殊处理 -1 值（未知类别）
+        if rule_value == -1:
+            label_name = "unknown"
+        else:
+            # 查找匹配的标签
+            for label in self._meta.labels:
+                if label.value == rule_value:
+                    label_name = label.name
+                    break
         
-        # 查找匹配的标签
-        for label in self._meta.labels:
-            if label.value == rule_value:
-                label_name = label.name
-                break
-        
-        # 如果没找到匹配的标签，使用默认名称
+        # 如果没找到匹配的标签
         if label_name is None:
             label_name = f"unknown"
             logger.log(f"警告: 未找到值为 {rule_value} 的标签")
@@ -771,16 +803,7 @@ class TrainStrategy:
         return path
 
     def _llm_verify_leaf_node(self, node_or_rules, prediction):
-        """
-        使用LLM验证叶子节点的预测标签
-        
-        参数:
-            node_or_rules: 节点对象或预先计算的路径规则列表
-            prediction: 当前预测标签
-        
-        返回:
-            验证后的标签
-        """
+        """使用LLM验证叶子节点的预测标签"""
         # 获取路径规则
         path_rules = None
         if isinstance(node_or_rules, list):
@@ -830,9 +853,6 @@ Analyze whether the current prediction is reasonable based on rules, feature des
 
 Label context: {self._meta.label_meaning if hasattr(self._meta, 'label_meaning') else "Classification evaluation"}
 
-## Rules (must ALL be satisfied):
-{chr(10).join([f"- {r}" for r in path_rules])}
-
 ## Feature descriptions:
 {chr(10).join(feature_descriptions)}
 
@@ -854,6 +874,9 @@ for samples matching these rules
 
 ## Note:
 - Remember also when there is little information do not give high probabilities (equal or higher than 0.9), unless you are very sure of them , because you may be overestimating.
+
+## Rules (must ALL be satisfied):
+{chr(10).join([f"- {r}" for r in path_rules])}
 
 ## Output format (no additional explanation):
 {chr(10).join([f"Label {label.value}: <score> " for label in self._meta.labels])}
@@ -877,7 +900,7 @@ for samples matching these rules
             response_gen = self.llm_runner.run([prompt])
             response = next(response_gen)[0]
             
-            # 解析响应
+            # 解析响应和置信度
             logger.log(f"LLM响应: {response}")
             
             # 提取每个标签的信心值
@@ -906,16 +929,16 @@ for samples matching these rules
                         except ValueError:
                             continue
             
-            # 检查是否需要替换标签
+            
+            # 原有逻辑：检查是否需要替换标签    
             if highest_confidence >= _threshold and best_label != prediction:
                 logger.log(f"LLM建议替换标签: {prediction} -> {best_label} (信心值: {highest_confidence})")
                 return best_label
             else:
-                logger.log(f"保持原标签: {prediction} (最高信心值: {highest_confidence})")
                 return prediction
             
         except Exception as e:
-            logger.log(f"LLM验证过程出错: {str(e)}")
+            logger.log(f"LLM验证过程发生错误: {e}")
             return prediction
 
     def _get_domain_expertise(self):
@@ -958,7 +981,7 @@ class UnknownClassStrategy(TrainStrategy):
         return self.serializer.meta  # 使用serializer中的meta
 
     def _get_available_predictions(self) -> list[int]:
-        """获取可用的预测值列表"""
+        """获取可用的预测值列表，包括-1表示未知类别"""
         return [-1, *range(self._meta.label_count())]
 
     def _gen_prompt(
@@ -1098,26 +1121,32 @@ Generate exactly {{ num_rules_required }} distinct and important meta-rules for 
 - For **categorical** features: `feature_name = category`  
 Note: We ONLY allow '<' and '=' as numerical and categorical operators respectively, '>' or '!=' is NOT allowed.
   
-Important Constraints & Guidelines:  
-1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.
-2. **Numerical Precision**: Use integers for `int` features; use reasonable decimals for `float`.  
-3. **Rule Quality**: All 7 rules must be useful splits (avoid confidence < 5). Important features can have multiple rules. 
-4. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
-5. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
-6. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
-7. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
+
+**Important Constraints & Guidelines:**
+
+1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
+2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
+3. **Decimal Precision**: Use precision suited to each feature’s scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
+Precision reflects reasoning, not formatting.
+4. **Rule Quality**: Choose thresholds that create meaningful splits and align with typical value patterns. Avoid overfitting to noise; confidence < 5 only if necessary. 
+5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
+6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
+7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
+8. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
+
   
 ## Output Format (Strict):  
 Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
   
 Example:  
-blood pressure < 130 [ confidence: 9 ]  
-blood pressure < 120 [ confidence: 8 ]  
-age < 40 [ confidence: 7 ]  
-blood pressure < 114 [ confidence: 7 ]  
-weight < 80.5 [ confidence: 6 ]  
-age < 25 [ confidence: 6 ]  
-sex = female [ confidence: 4 ]  
+study hours per week < 3.25 [ confidence: 9 ]
+attendance rate < 74.5 [ confidence: 9 ]
+assignment completion rate < 62.75 [ confidence: 8 ]
+study hours per week < 6.0 [ confidence: 7 ]
+participation = low [ confidence: 7 ]
+attendance rate < 85.000 [ confidence: 6 ]
+previous exam grade < 59.5 [ confidence: 6 ]
+ 
   
 ## Generated Meta-Rules:""")
         
@@ -1337,7 +1366,7 @@ class FeatureBaggingStrategy(TrainStrategy):
             meta.name = self.all_meta.name
             meta.target = self.all_meta.target
             meta.desc = self.all_meta.desc
-            meta.labal_meaning = self.all_meta.labal_meaning
+            meta.label_meaning = self.all_meta.label_meaning
             meta.features = [self.all_meta.features[i] for i in feature_idxes]
             meta.labels = self.all_meta.labels
             self.sub_metas.append(meta)

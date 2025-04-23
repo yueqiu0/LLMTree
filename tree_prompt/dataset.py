@@ -21,24 +21,54 @@ class DatasetMeta:
         def is_categorical(self) -> bool:
             return self.type == "categorical"
 
+        def __init__(self, name="", desc="", type="", categories=None):
+            self.name = name
+            self.desc = desc
+            self.type = type
+            self.categories = categories or {}
+
         def __repr__(self) -> str:
             return str(self.__dict__)
+
+        @classmethod
+        def from_dict(cls, data):
+            """从字典创建Feature对象"""
+            feature = cls()
+            feature.name = data.get("name", "")
+            feature.desc = data.get("desc", "")
+            feature.type = data.get("type", "")
+            feature.categories = data.get("categories", {})
+            return feature
 
     class Label:
         name: str
         value: float
         desc: str
 
+        def __init__(self, name="", value=0, desc=""):
+            self.name = name
+            self.value = value
+            self.desc = desc
+
         def __repr__(self) -> str:
             return str(self.__dict__)
 
-    def __init__(self) -> None:
-        self.features: list[DatasetMeta.Feature] = []
-        self.labels: list[DatasetMeta.Label] = []
-        self.name: str = ""
-        self.target: str = ""
-        self.desc: str = ""
-        self.labal_meaning: str = ""
+        @classmethod
+        def from_dict(cls, data):
+            """从字典创建Label对象"""
+            label = cls()
+            label.name = data.get("name", "")
+            label.value = data.get("value", 0)
+            label.desc = data.get("desc", "")
+            return label
+
+    def __init__(self, name, desc='', target='', label_meaning='', features=None, labels=None):
+        self.name = name
+        self.desc = desc
+        self.target = target
+        self.label_meaning = label_meaning  # 确保初始化时保存label_meaning
+        self.features = features or []
+        self.labels = labels or []
         self.feature_shuffle_map: dict[int, int] = {}
 
     def get_label(self, id: int) -> Label:
@@ -94,56 +124,42 @@ class DatasetMeta:
     def __repr__(self) -> str:
         return str(self.__dict__)
 
+    @classmethod
+    def from_dict(cls, meta_dict):
+        """从字典创建数据集元数据"""
+        name = meta_dict.get('name', '')
+        desc = meta_dict.get('desc', '')
+        target = meta_dict.get('target', '')
+        label_meaning = meta_dict.get('label_meaning', '')  # 确保从字典中提取label_meaning
+        
+        # 创建DatasetMeta实例时传入label_meaning
+        return cls(
+            name=name,
+            desc=desc,
+            target=target,
+            label_meaning=label_meaning,  # 确保传递label_meaning
+            features=[DatasetMeta.Feature.from_dict(f) for f in meta_dict.get('features', [])],
+            labels=[DatasetMeta.Label.from_dict(l) for l in meta_dict.get('labels', [])]
+        )
+
 
 def load_meta(path: str) -> DatasetMeta:
     with open(path, "r") as f:
         data: dict = yaml.safe_load(f)
 
-    meta = DatasetMeta()
-    meta.name = data.get("name")
-    meta.desc = data.get("desc")
-    meta.target = data.get("target")
-    meta.labal_meaning = data.get("label_meaning")
-
-    features: list[dict] = data.get("features")
-    for feat in features:
-        feature = meta.Feature()
-        feature.name = feat["name"]
-        feature.desc = feat["desc"]
-        feature.type = feat["type"]
-        feature.categories = feat.get("categories")
-        meta.features.append(feature)
-
-    labels: list[dict] = data.get("labels")
-    for l in labels:
-        label = meta.Label()
-        label.name = l["name"]
-        label.value = l["value"]
-        label.desc = l["desc"]
-        meta.labels.append(label)
-
+    meta = DatasetMeta.from_dict(data)
     return meta
 
 
 def _dummy(num_features: int) -> DatasetMeta:
-    meta = DatasetMeta()
-    meta.name = "dummy"
-    meta.labal_meaning = "result"
-
-    for i in range(num_features):
-        feature = DatasetMeta.Feature()
-        feature.name = "feature_{}".format(i + 1)
-        feature.desc = ""
-        feature.type = "float"
-        meta.features.append(feature)
-
-    for i, name in enumerate(["no", "yes"]):
-        label = DatasetMeta.Label()
-        label.name = name
-        label.value = i
-        label.desc = ""
-        meta.labels.append(label)
-
+    meta = DatasetMeta(
+        name="dummy",
+        desc="",
+        target="",
+        label_meaning="result",
+        features=[DatasetMeta.Feature(name=f"feature_{i+1}", desc="", type="float") for i in range(num_features)],
+        labels=[DatasetMeta.Label(name="no", value=0, desc=""), DatasetMeta.Label(name="yes", value=1, desc="")]
+    )
     return meta
 
 
@@ -238,7 +254,7 @@ def sample_balanced(
 
 def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
     """创建用于特征重要性排序的提示"""
-    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.labal_meaning or "the target variable"}.
+    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.label_meaning or "the target variable"}.
 
 Dataset Information:
 """
@@ -256,7 +272,7 @@ Dataset Information:
             for cat_value, cat_desc in feat.categories.items():
                 prompt += f"   - {cat_value}: {cat_desc}\n"
     
-    prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
+    prompt += f"\nTarget Variable: {meta.label_meaning or 'The output'}\n"
     
     # 添加标签的详细描述
     prompt += "Possible values:\n"

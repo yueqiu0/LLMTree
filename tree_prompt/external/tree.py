@@ -28,7 +28,7 @@ def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, l
     new_meta.name = meta.name
     new_meta.target = meta.target
     new_meta.desc = meta.desc
-    new_meta.labal_meaning = meta.labal_meaning
+    new_meta.label_meaning = meta.label_meaning
 
     for feat_idx, ori_feat in enumerate(meta.features):
         if ori_feat.is_categorical:
@@ -286,7 +286,7 @@ class FederatedDecisionTree(DecisionTree):
             meta.name = self.meta.name
             meta.target = self.meta.target
             meta.desc = self.meta.desc
-            meta.labal_meaning = self.meta.labal_meaning
+            meta.label_meaning = self.meta.label_meaning
             meta.features = [self.meta.features[i] for i in feature_idxes]
             meta.labels = self.meta.labels
             self.sub_metas.append(meta)
