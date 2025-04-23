@@ -1,11 +1,11 @@
 base_configs:
-  - ../base/dataset/abalone.yml
+  - ../base/dataset/diabetes.yml
   - ../base/runner/chatgpt.yml
   - ./CoT_llm_tree.yml
   - tree/CoT.yml
   - ./common.yml
 
 config:
-  exp_name: llm_gen_tree-abalone-baseline
+  exp_name: CoT_tree-diabetes-baseline
   template: template/basic.jinja
   tree_only: False

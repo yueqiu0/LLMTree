@@ -504,7 +504,7 @@ def evaluate(
     use_tree_rules: bool,
     tree_only: bool,
     num_tests_per_round: int,
-    with_llm: bool = True,  # 新增参数，控制是否使用LLM进行预测
+    with_llm: bool = True,
 ):
     # get tree's prediction rules & results
     if use_tree_rules or tree_only:
@@ -519,12 +519,18 @@ def evaluate(
             tree_auc = tree_aucs
             tree_accuracy = tree_accuracies
         elif isinstance(tree_model, CoTDecisionTree):
-            # LLM决策树的特殊处理逻辑
+            # 确保在调用 predict 之前调用 fit 方法
             tree_model.fit(x_train, y_train)
             
             rules = tree_model.get_rules()
             tree_model.rules = rules
-            logger.log(f"Generated rules: {rules}")
+            logger.log("=== Parsed Decision Tree Rules ===")
+            if isinstance(tree_model.rules, list):
+                rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                logger.log(rules_str)  # Print the full rule chain as a string
+            else:
+                logger.log(str(tree_model.rules))  # Fallback for non-list types
+            logger.log("====================================")
             if with_llm:
                 # 使用LLM进行预测
                 prompts, test_splits, labels = gen_prompt(
@@ -613,6 +619,7 @@ def evaluate(
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
+                logger.log(f"Full LLM response:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
                 if len(results_batch) == expected_len:
                     found = True
@@ -666,8 +673,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_name = getattr(args.runner_args, "model_name", args.runner)  # 兼容不同runner
     file_name = f"{args.exp_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    output_file = Path(args.output_dir) / file_name
-    log_path = Path(args.output_dir) / file_name
+    output_file = log_dir / file_name
+    log_path = log_dir / file_name
 
     logger.log("Saving results to {}...".format(output_file))
     if not output_file.parent.exists():
