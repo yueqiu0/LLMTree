@@ -38,7 +38,7 @@ class DatasetMeta:
         self.name: str = ""
         self.target: str = ""
         self.desc: str = ""
-        self.label_meaning: str = ""
+        self.labal_meaning: str = ""
         self.feature_shuffle_map: dict[int, int] = {}
 
     def get_label(self, id: int) -> Label:
@@ -103,7 +103,7 @@ def load_meta(path: str) -> DatasetMeta:
     meta.name = data.get("name")
     meta.desc = data.get("desc")
     meta.target = data.get("target")
-    meta.label_meaning = data.get("label_meaning")
+    meta.labal_meaning = data.get("label_meaning")
 
     features: list[dict] = data.get("features")
     for feat in features:
@@ -122,13 +122,15 @@ def load_meta(path: str) -> DatasetMeta:
         label.desc = l["desc"]
         meta.labels.append(label)
 
+    logger.log(f"Loaded dataset metadata from {path}")
+    logger.log(f"Dataset: {meta.name}, Features: {len(meta.features)}, Labels: {len(meta.labels)}")
     return meta
 
 
 def _dummy(num_features: int) -> DatasetMeta:
     meta = DatasetMeta()
     meta.name = "dummy"
-    meta.label_meaning = "result"
+    meta.labal_meaning = "result"
 
     for i in range(num_features):
         feature = DatasetMeta.Feature()
@@ -161,6 +163,9 @@ def load_dataset(
     else:
         raise ValueError("Unknown dataset format: {}".format(args.format))
 
+    logger.log(f"Dataset loaded - Samples: {x.shape[0]}, Features: {x.shape[1]}")
+    logger.log(f"Label distribution: {dict(zip(*np.unique(y, return_counts=True)))}")
+
     # 在打乱前先收集原始特征名称
     original_feature_names = [feature.name for feature in meta.features]
     
@@ -169,6 +174,7 @@ def load_dataset(
     np.random.shuffle(indices)
     x = x[indices]
     y = y[indices]
+    logger.log("Data shuffled")
 
     if args.shuffle_column:
         # ===== 特征打乱和映射日志 =====
@@ -206,8 +212,10 @@ def sample_balanced(
     num_samples_per_group: int,
     random_seed: int,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
+    logger.log(f"Starting balanced sampling - Groups: {num_groups}, Samples/group: {num_samples_per_group}, Seed: {random_seed}")
     all_samples = []
     classes = np.unique(y)
+    logger.log(f"Class distribution: {dict(zip(classes, np.bincount(y.astype(int))))}")
 
     if num_samples_per_group != 1:
         assert num_samples_per_group % len(classes) == 0
@@ -233,39 +241,23 @@ def sample_balanced(
 
         all_samples.append((samples_x, samples_y))
 
+    logger.log(f"Completed balanced sampling - Total samples generated: {len(all_samples)}")
     return all_samples
 
 
 def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
     """创建用于特征重要性排序的提示"""
-    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.label_meaning or "the target variable"}.
+    prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.labal_meaning or "the target variable"}.
 
 Dataset Information:
+The dataset consists of the following features:
 """
-    # 添加数据集目标描述
-    if meta.target:
-        prompt += f"Task: {meta.target}\n\n"
-    
-    prompt += "The dataset consists of the following features:\n"
     for i, feat in enumerate(meta.features):
         prompt += f"{i+1}. {feat.name}: {feat.desc or 'No description available'}\n"
-        
-        # 添加对类别型特征值的详细描述
-        if feat.is_categorical and feat.categories:
-            prompt += "   Possible values:\n"
-            for cat_value, cat_desc in feat.categories.items():
-                prompt += f"   - {cat_value}: {cat_desc}\n"
     
-    prompt += f"\nTarget Variable: {meta.label_meaning or 'The output'}\n"
-    
-    # 添加标签的详细描述
-    prompt += "Possible values:\n"
-    for label in meta.labels:
-        desc = f" ({label.desc})" if label.desc else ""
-        prompt += f"- {label.name}{desc}\n"
-    
-    prompt += """
-Based on common knowledge and intuition about this kind of data, rank the features from most important to least important for predicting the target variable.
+    prompt += f"\nTarget Variable: {meta.labal_meaning or 'The output'}\n"
+    prompt += "Possible values: " + ", ".join([f"{label.name}" for label in meta.labels]) + "\n\n"
+    prompt += """Based on common knowledge and intuition about this kind of data, rank the features from most important to least important for predicting the target variable.
 
 Please return your answer as a comma-separated list of feature indices, ordered from most important to least important. For example: 2,4,1,3
 
@@ -319,3 +311,167 @@ def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[in
     default_order = list(range(meta.feature_count()))
     logger.log(f"无法获取有效的特征排序，使用默认顺序: {default_order}")
     return default_order
+
+
+
+def generate_ToT_tree_prompt(
+    meta: DatasetMeta,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    max_depth: int = 3,  # 强制设置为3层深度
+    num_examples: int = 5
+) -> dict:
+    """
+    生成决策树构建提示词（完整优化版）
+    修改重点：
+    1. 移除数值型特征的统计信息显示
+    2. 强制要求决策树使用max_depth-1个不同特征
+    返回值：dict，包括prompt、label_dist、num_examples等
+    """
+    # ================= 输入校验 =================
+    if not hasattr(meta, 'features') or len(meta.features) == 0:
+        logger.error("特征元数据为空，请检查meta文件")
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+        
+    if x_train.shape[1] != len(meta.features):
+        logger.error(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+
+    # ============== 标签分布计算 ============= =
+    label_dist = {}
+    try:
+        unique_labels, label_counts = np.unique(y_train, return_counts=True)
+        for val, count in zip(unique_labels, label_counts):
+            label = meta.find_label(float(val))
+            label_name = label.name if label else f"未知({val})"
+            label_dist[label_name] = int(count)
+    except Exception as e:
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+
+    # ============== 示例数据生成 ==============
+    examples = []
+    try:
+        indices = np.random.choice(len(x_train), min(num_examples, len(x_train)), replace=False)
+        for idx in indices:
+            features = []
+            for i, feat in enumerate(meta.features):
+                val = x_train[idx][i]
+                # 处理特殊值
+                if feat.is_categorical:
+                    val = feat.categories.get(str(val), f"未知({val})")
+                elif feat.type == "float":
+                    val = f"{float(val):.4f}"
+                features.append(f"{feat.name}={val}")
+            
+            label_val = float(y_train[idx])
+            label = meta.find_label(label_val)
+            label_name = label.name if label else "未知"
+            examples.append(f"样本 {idx+1}: {', '.join(features)} → {label_name}")
+    except Exception as e:
+        examples = []
+
+    # ============== 构建提示词 ==============
+    prompt_parts = []
+    
+    # ------ 元数据部分 ------
+    prompt_parts.append("# Dataset Metadata")
+    prompt_parts.append(f"Dataset Name: {getattr(meta, 'name', 'Unnamed Dataset')}")
+    prompt_parts.append(f"Target Variable: {getattr(meta, 'target', 'Not Specified')}")
+    prompt_parts.append(f"Sample Count: {x_train.shape[0]}")
+    prompt_parts.append(f"Feature Count: {len(meta.features)}")
+    prompt_parts.append("Label Distribution: " + ", ".join(
+        [f"{k}({v})" for k, v in label_dist.items()]
+    ))
+    prompt_parts.append("")
+
+    # ------ 特征详情 ------
+    prompt_parts.append("# Feature Details")
+    feature_details = []
+    for i, feat in enumerate(meta.features):
+        feat_lines = []
+        
+        # 基础信息
+        feat_lines.append(f"Feature {i+1}: {feat.name}")
+        feat_lines.append(f"- Type: {feat.type}{' (Categorical)' if feat.is_categorical else ''}")
+        
+        # 处理描述信息
+        desc = getattr(feat, 'desc', 'No description').replace('"', '\"')
+        feat_lines.append(f"- Description: {desc}")
+
+        # 类型特定信息
+        if feat.is_categorical:
+            categories = []
+            for k, v in feat.categories.items():
+                safe_k = k.replace('"', '\"')
+                categories.append(f"{safe_k}({v})")
+            feat_lines.append(f"- Categories: {', '.join(categories)}")
+        # 数值型特征的统计信息已移除
+        
+        feature_details.append("\n".join(feat_lines))
+    
+    prompt_parts.append("\n\n".join(feature_details))
+    prompt_parts.append("")
+
+    # ------ 标签定义 ------
+    prompt_parts.append("# Label Definitions")
+    label_defs = []
+    for label in meta.labels:
+        desc = getattr(label, 'desc', 'No description').replace('"', '\"')
+        label_defs.append(f"{label.name} (Value={label.value}): {desc}")
+    prompt_parts.append("\n".join(label_defs))
+    prompt_parts.append("")
+
+    # ------ 决策树要求 ------
+    prompt_parts.append("# Decision Tree Requirements")
+    prompt_parts.append("1. The tree must have exactly 3 levels (max_depth=3)")
+    prompt_parts.append("2. Use exactly 2 distinct features in total (max_depth -1)")
+    prompt_parts.append("3. Each split must use a different feature than the previous ones")
+    prompt_parts.append("4. Rules must be mutually exclusive")
+    prompt_parts.append("5. Leverage domain knowledge when creating splitting rules")
+    prompt_parts.append("6. All rules must include both THEN and ELSE branches")
+    prompt_parts.append("")
+    
+    # ------ 决策树输出格式要求 ------
+    prompt_parts.append("# Decision Tree Output Format Requirement")
+    prompt_parts.append("Please strictly follow the following format for each rule:")
+    prompt_parts.append("- Each rule must be on a single line, starting with 'Rule N:'.")
+    prompt_parts.append("- Use 'IF ... THEN ...' structure. For multiple conditions, use 'AND' to connect.")
+    prompt_parts.append("- All feature names and label names must match the metadata exactly.")
+    prompt_parts.append("- Do not add extra explanations, comments, or blank lines.")
+    prompt_parts.append("")
+
+    # ------ 决策树示例 ------
+    prompt_parts.append("# Rule Example")
+    # 只给出一条一层的示例规则
+    if len(meta.features) > 0 and len(meta.labels) > 1:
+        feat = meta.features[0]
+        label1 = meta.labels[0].name
+        label2 = meta.labels[1].name
+        if feat.is_categorical:
+            common_cat = list(feat.categories.keys())[0] if feat.categories else "A"
+            rule = f"Rule 1: IF {feat.name} = '{common_cat}' THEN {label1} ELSE {label2}"
+        else:
+            threshold = 0.5
+            rule = f"Rule 1: IF {feat.name} > {threshold:.4f} THEN {label1} ELSE {label2}"
+        prompt_parts.append(rule)
+        prompt_parts.append("")
+    else:
+        prompt_parts.append("")
+
+    # ============== 最终组装 ==============
+    full_prompt = "\n".join(prompt_parts)
+
+    # 只在首次调用时打印一次完整提示词内容
+    if not hasattr(generate_ToT_tree_prompt, "_printed"):
+        logger.log("=============== 完整提示词内容 ===============")
+        logger.log(full_prompt)
+        logger.log(f"提示词长度: {len(full_prompt)} 字符")
+        generate_ToT_tree_prompt._printed = True
+    # 此处不再输出大模型规则，实际规则应在外部调用大模型后打印
+    
+    return {
+        "prompt": full_prompt.strip(),
+        "label_dist": label_dist,
+        "num_examples": len(examples),
+        "examples": examples
+    }

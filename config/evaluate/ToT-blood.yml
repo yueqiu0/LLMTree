@@ -1,0 +1,11 @@
+base_configs:
+  - ../base/dataset/blood.yml
+  - ../base/runner/chatgpt.yml
+  - ./ToT_llm_tree.yml
+  - tree/ToT.yml
+  - ./common.yml
+
+config:
+  exp_name: ToT_tree-blood-baseline
+  template: template/basic.jinja
+  tree_only: False

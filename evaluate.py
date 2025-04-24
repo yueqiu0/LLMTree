@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 import yaml
 from pathlib import Path
 import os
-
+from jinja2 import Environment, FileSystemLoader
 import tree_prompt.prompt as prompt
 import tree_prompt.dataset as dataset
 from tree_prompt.external.tree import (
@@ -20,6 +20,8 @@ from tree_prompt.external.tree import (
     XGBoostDecisionTree,
     RandomForestDecisionTree,
     FederatedDecisionTree,
+    ToTDecisionTree,
+
 )
 from tree_prompt.prompt import (
     Serializer,
@@ -53,6 +55,8 @@ def _load_from_dict(instance: any, config: dict):
 
 
 def _merge_dict(a: dict, b: dict):
+    if b is None:
+        return
     for k in b.keys():
         if k in a and isinstance(a[k], dict) and isinstance(b[k], dict):  # noqa
             _merge_dict(a[k], b[k])
@@ -67,7 +71,14 @@ class SimpleTreeArgs:
     def __repr__(self):
         return str(self.__dict__)
 
-
+class LLMTreeArgs:
+    def __init__(self):
+        self.max_depth = 3  # 默认最大深度
+        
+        self.temperature = 0.7
+        #      self.num_rules = 10
+    def __repr__(self):
+        return str(self.__dict__)
 class XGBoostArgs:
     def __init__(self) -> None:
         self.max_depth: int = None
@@ -80,6 +91,15 @@ class XGBoostArgs:
 RandomForestArgs = XGBoostArgs
 FederatedTreeArgs = XGBoostArgs
 
+
+class ToTTreeArgs:
+    def __init__(self) -> None:
+        self.max_depth: int = 3
+        self.num_rule_candidates: int = 5  # 每层生成规则数，默认5
+        self.select_top_k: int = 1         # 每层选最优k个，默认1
+
+    def __repr__(self):
+        return str(self.__dict__)
 
 class EvaluateArgs:
     def __init__(self) -> None:
@@ -101,7 +121,8 @@ class EvaluateArgs:
         self.serializer_type: str = None
         self.exp_id: str = ""
         self.print_only: bool = False
-
+        self.with_llm: bool = True
+    
     def get_missing_fields(self) -> list[str]:
         missing_fields = _get_missing_fields(self)
 
@@ -200,6 +221,12 @@ class EvaluateArgs:
             self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
+        elif self.tree_type == "ToT":  # 新增ToTTreeArgs支持
+            self.tree_args = ToTTreeArgs()
+        elif self.tree_type == "CoT":  
+            self.tree_args = LLMTreeArgs()  
+        elif self.tree_type == "llm_gen_tree":  
+            self.tree_args = LLMTreeArgs()  
         else:
             raise ValueError("Unknown tree type: {}".format(self.tree_type))
 
@@ -233,9 +260,10 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument(
-        "--tree-type", type=str, help="tree model type (simple, xgboost)"
-    )
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree','CoT', 'ToT'], 
+                       default='simple')
+    parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
+                       help='Use LLM for final prediction (1) or use rules directly (0)')
     parser.add_argument("--tree-only", type=int, help="only evaluate the tree")
     parser.add_argument("--max-depth", type=int, help="max depth of the tree")
     parser.add_argument("--num-trees", type=int, help="number of trees")
@@ -280,7 +308,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-
+  
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -400,7 +428,8 @@ def parse_args() -> EvaluateArgs:
 
     if cml_args.exp_id is not None:
         args.exp_id = cml_args.exp_id
-
+    if cml_args.with_llm is not None:
+        args.with_llm = bool(cml_args.with_llm)  # 将参数值赋给args.with_llm
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if (
@@ -487,10 +516,11 @@ def evaluate(
     use_tree_rules: bool,
     tree_only: bool,
     num_tests_per_round: int,
+    with_llm: bool = True,
 ):
     # get tree's prediction rules & results
     if use_tree_rules or tree_only:
-        if type(tree_model) == FederatedDecisionTree:
+        if isinstance(tree_model, FederatedDecisionTree):
             all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
             tree_aucs, tree_accuracies = [], []
             for tree_predict in all_tree_predict:
@@ -500,7 +530,79 @@ def evaluate(
                 tree_accuracies.append(tree_accuracy)
             tree_auc = tree_aucs
             tree_accuracy = tree_accuracies
+        elif isinstance(tree_model, ToTDecisionTree):
+            # 确保在调用 predict 之前调用 fit 方法
+            logger.log(f"Start fitting ToTDecisionTree for train size {len(x_train)}")
+            try:
+                tree_model.fit(x_train, y_train)
+            except Exception as e:
+                logger.log(f"Exception during ToTDecisionTree.fit: {e}")
+                import traceback
+                logger.log(traceback.format_exc())
+            logger.log(f"Finished fitting ToTDecisionTree for train size {len(x_train)}")
+            
+            rules = tree_model.get_rules()
+            tree_model.rules = rules
+            logger.log("=== Parsed Decision Tree Rules ===")
+            if isinstance(tree_model.rules, list):
+                rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                logger.log(rules_str)  # Print the full rule chain as a string
+            else:
+                logger.log(str(tree_model.rules))  # Fallback for non-list types
+            logger.log("====================================")
+            if with_llm:
+                # 使用LLM进行预测
+                prompts, test_splits, labels = gen_prompt(
+                    meta,
+                    master_template,
+                    serializer,
+                    x_train,
+                    y_train,
+                    x_test,
+                    y_test,
+                    rules,
+                    num_tests_per_round,
+                )
+                
+                raw_results = []
+                results = []
+                for idx, responses in enumerate(runner.run(prompts)):
+                    expected_len = test_splits[idx][1] - test_splits[idx][0]
+                    found = False
+                    for response in responses:
+                        results_batch = serializer.answer_decoder.decode(response)
+                        if len(results_batch) == expected_len:
+                            found = True
+                            results += results_batch
+                            raw_results.append(response)
+                            break
+                        else:
+                            logger.log(
+                                "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                    expected_len, len(results_batch), response
+                                )
+                            )
+                    if not found:
+                        logger.log("Failed to find any valid response, skipping...")
+                        result_dict = {
+                            "record": prompts[0],
+                            "failed_raw_output": responses,
+                        }
+                        return result_dict
+                
+                tree_accuracy = calc_accuracy(labels, results)
+                tree_auc = sklearn.metrics.roc_auc_score(
+                    y_test,
+                    [meta.get_label_value(r) for r in results],
+                )
+                tree_predict = results
+            else:
+                # 直接应用规则进行预测
+                tree_predict = tree_model.predict(x_test)
+                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+                tree_accuracy = calc_accuracy(y_test, tree_predict)
         else:
+            # 其他类型的决策树
             tree_predict, rules = tree_model.predict(
                 x_train, y_train, x_test, export_rules=True
             )
@@ -512,76 +614,91 @@ def evaluate(
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
             "tree_results": tree_predict,
+            "rules": rules if isinstance(tree_model, ToTDecisionTree) else None
         }
 
-    prompts, test_splits, labels = gen_prompt(
-        meta,
-        master_template,
-        serializer,
-        x_train,
-        y_train,
-        x_test,
-        y_test,
-        rules if use_tree_rules else [],
-        num_tests_per_round,
-    )
+    # 如果不是tree_only模式且不是ToTDecisionTree的with_llm模式
+    if not (isinstance(tree_model, ToTDecisionTree) and with_llm):
+        prompts, test_splits, labels = gen_prompt(
+            meta,
+            master_template,
+            serializer,
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            rules if use_tree_rules else [],
+            num_tests_per_round,
+        )
 
-    raw_results = []
-    results = []
+        raw_results = []
+        results = []
 
-    for idx, responses in enumerate(runner.run(prompts)):
-        expected_len = test_splits[idx][1] - test_splits[idx][0]
-        found = False
-        for response in responses:
-            results_batch = serializer.answer_decoder.decode(response)
-            if len(results_batch) == expected_len:
-                found = True
-                results += results_batch
-                raw_results.append(response)
-                break
-            else:
-                logger.log(
-                    "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                        expected_len, len(results_batch), response
+        for idx, responses in enumerate(runner.run(prompts)):
+            expected_len = test_splits[idx][1] - test_splits[idx][0]
+            found = False
+            for response in responses:
+                logger.log(f"Full LLM response:\n{response}")
+                results_batch = serializer.answer_decoder.decode(response)
+                if len(results_batch) == expected_len:
+                    found = True
+                    results += results_batch
+                    raw_results.append(response)
+                    break
+                else:
+                    logger.log(
+                        "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                            expected_len, len(results_batch), response
+                        )
                     )
-                )
-        if not found:
-            logger.log("Failed to find any valid response, skipping...")
-            result_dict = {
-                "record": prompts[0],
-                "failed_raw_output": responses,
-            }
-            return result_dict
+            if not found:
+                logger.log("Failed to find any valid response, skipping...")
+                result_dict = {
+                    "record": prompts[0],
+                    "failed_raw_output": responses,
+                }
+                return result_dict
 
-    acc = calc_accuracy(labels, results)
-    auc = sklearn.metrics.roc_auc_score(
-        y_test,
-        [meta.get_label_value(r) for r in results],
-    )
+        acc = calc_accuracy(labels, results)
+        auc = sklearn.metrics.roc_auc_score(
+            y_test,
+            [meta.get_label_value(r) for r in results],
+        )
 
-    logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
+        logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
 
-    if use_tree_rules:
-        logger.log("Tree accuracy/AUC: {}/{}".format(tree_accuracy, tree_auc))
+    result_dict = {
+        "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
+        "labels": [int(y) for y in y_test],
+        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
+        "auc": auc if 'auc' in locals() else tree_auc,
+        "accuracy": acc if 'acc' in locals() else tree_accuracy,
+    }
 
-    result_dict = {}
-    result_dict["record"] = {"prompt": prompts[0]}
-    result_dict["labels"] = [int(y) for y in y_test]
-    result_dict["results"] = [meta.get_label_value(r) for r in results]
-    result_dict["auc"] = auc
-    result_dict["accuracy"] = acc
-
-    if use_tree_rules:
-        result_dict["tree_auc"] = tree_auc
-        result_dict["tree_accuracy"] = tree_accuracy
-        result_dict["tree_results"] = tree_predict
+    if use_tree_rules or isinstance(tree_model, ToTDecisionTree):
+        result_dict.update({
+            "tree_auc": tree_auc,
+            "tree_accuracy": tree_accuracy,
+            "tree_results": tree_predict,
+            "rules": rules if isinstance(tree_model, ToTDecisionTree) else None
+        })
 
     return result_dict
 
-
 def main():
     args = parse_args()
+    log_dir = Path("output") / "evaluate" / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = getattr(args.runner_args, "model_name", args.runner)  # 兼容不同runner
+    file_name = f"{args.exp_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    output_file = log_dir / file_name
+    log_path = log_dir / file_name
 
+    logger.log("Saving results to {}...".format(output_file))
+    if not output_file.parent.exists():
+        output_file.parent.mkdir(parents=True)
+    
     if args.exp_id:
         logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
 
@@ -599,7 +716,7 @@ def main():
         raise NotImplementedError("Not implemented yet")
 
     results: dict[int, list] = {}
-
+    runner,serializer, master_template = None, None,None
     if args.tree_type == "simple":
         tree_model = SimpleDecisionTree(meta, args.tree_args.max_depth)
     elif args.tree_type == "xgboost":
@@ -625,11 +742,12 @@ def main():
             args.tree_args.num_trees,
             args.tree_args.max_depth,
         )
-    else:
-        raise ValueError("Unknown tree type: {}".format(args.tree_type))
+    
+        
 
-    runner, serializer, master_template = None, None, None
+   
 
+    
     if not args.tree_only:
         if args.runner == "openai_api":
             from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
@@ -642,6 +760,7 @@ def main():
                 args.runner_args.timeout,
                 args.runner_args.parallel_batch_size,
             )
+            logger.log(f"OpenAIAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
 
         elif args.runner == "huggingchat":
             from tree_prompt.runner.huggingchat import HuggingChatParallelRunner
@@ -653,6 +772,7 @@ def main():
                 args.runner_args.request_interval,
                 args.runner_args.timeout,
             )
+            logger.log("HuggingChatParallelRunner initialized")
         elif args.runner == "together_api":
             from tree_prompt.runner.together_api import TogetherAPIParallelRunner
 
@@ -664,32 +784,55 @@ def main():
                 args.runner_args.timeout,
                 args.runner_args.parallel_batch_size,
             )
+            logger.log(f"TogetherAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
         else:
+            logger.log(f"Unknown runner type: {args.runner}")
             raise ValueError("Unknown runner type: {}".format(args.runner))
 
         if args.serializer_type == "tabular":
             serializer = TabularSerializer(meta)
+            logger.log("Using TabularSerializer")
         elif args.serializer_type == "list":
             serializer = ListSerializer(meta)
+            logger.log("Using ListSerializer")
         elif args.serializer_type == "text":
             serializer = TextSerializer(meta)
+            logger.log("Using TextSerializer")
         else:
+            logger.log(f"Unknown serializer type: {args.serializer_type}")
             raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
+        
         master_template_path = Path(args.template)
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
         )
         master_template = env.get_template(master_template_path.name)
+        logger.log(f"Template loaded from: {master_template_path}")
+    if args.tree_type == "ToT":
+        template_dir = Path("C:/Users/chenx/git/tree/template")
+        tree_template_path = template_dir / "basic.jinja" 
+        tree_model = ToTDecisionTree(
+            meta=meta,
+            max_depth=args.tree_args.max_depth,
+            runner=runner,
+            log_file=log_path,
+            num_rule_candidates=getattr(args.tree_args, "num_rule_candidates", 5),
+            select_top_k=getattr(args.tree_args, "select_top_k", 1),
+        )
+        logger.log(f"ToTDecisionTree initialized with max_depth={args.tree_args.max_depth}, num_rule_candidates={getattr(args.tree_args, 'num_rule_candidates', 5)}, select_top_k={getattr(args.tree_args, 'select_top_k', 1)}")
 
     results: dict[int, list[dict]] = {}
 
     test_x, test_y = x[: args.test_size], y[: args.test_size]
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
+    logger.log(f"Test set size: {len(test_x)}, Available set size: {len(avail_x)}")
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
+    logger.log(f"Starting evaluation with train sizes: {args.train_sizes}")
 
     for train_size in args.train_sizes:
+        logger.log(f"Processing train size: {train_size}")
         train_cases = sample_balanced(
             avail_x,
             avail_y,
@@ -697,6 +840,7 @@ def main():
             train_size,
             args.random_seed,
         )
+        logger.log(f"Generated {len(train_cases)} balanced training cases")
 
         for train_x, train_y in train_cases:
             result = evaluate(
@@ -712,13 +856,13 @@ def main():
                 args.use_tree_rules,
                 args.tree_only,
                 args.test_batch,
+                with_llm=args.with_llm,
             )
 
             results.setdefault(train_size, []).append(result)
             bar.update(1)
 
-    file_name = args.exp_name + ".json"
-    output_file = Path(args.output_dir) / file_name
+    
 
     logger.log("Saving results to {}...".format(output_file))
 
@@ -731,7 +875,13 @@ def main():
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
         logger.log("Output file already exists, renamed to {}".format(target))
+    file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
+    output_file = Path(args.output_dir) / file_name
 
+    logger.log(f"Saving results to {output_file}...")
+  
+    if not output_file.parent.exists():
+        output_file.parent.mkdir(parents=True)
     def json_default_decode(obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -748,4 +898,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

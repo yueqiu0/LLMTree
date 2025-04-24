@@ -82,16 +82,17 @@ class TabularSerializer(Serializer):
 
     def serialize(self, x, y) -> str:
         if y is not None:
-            label_text = self.meta.find_label(y).name
+            label = self.meta.find_label(y)
+            label_text = label.name if label is not None else str(y)
         else:
-            label_text = "<RESULT>".format(self.meta.label_meaning)
+            label_text = "<RESULT>"
         return self._gen_feat_desc(x) + " " + label_text
 
     def format_desc(self):
         desc = "Here's how the data will be presented. For each line:\n"
         for feat in self.meta.features:
             desc += f"<{feat.name}>, "
-        desc = desc[:-2] + " <RESULT>".format(self.meta.label_meaning)
+        desc = desc[:-2] + " <RESULT>".format(getattr(self.meta, 'labal_meaning', getattr(self.meta, 'label_meaning', 'result')))
         return desc
 
     def answer_requirement(self, ncases: int) -> str:
@@ -128,9 +129,9 @@ class ListSerializer(Serializer):
             ret += f"{feat_name}: {feat_repr}; "
         if y is not None:
             label = self.meta.find_label(y)
-            label_text = "The {}: {}".format(self.meta.label_meaning, label.name)
+            label_text = "The {}: {}".format(getattr(self.meta, 'labal_meaning', getattr(self.meta, 'label_meaning', 'result')), label.name)
         else:
-            label_text = "The {}: <RESULT>".format(self.meta.label_meaning)
+            label_text = "The {}: <RESULT>".format(getattr(self.meta, 'labal_meaning', getattr(self.meta, 'label_meaning', 'result')))
 
         ret += f"{label_text}"
         return ret
@@ -168,9 +169,9 @@ class TextSerializer(Serializer):
 
         if y is not None:
             label = self.meta.find_label(y)
-            label_text = "The {} is: {}".format(self.meta.label_meaning, label.name)
+            label_text = "The {} is: {}".format(getattr(self.meta, 'labal_meaning', getattr(self.meta, 'label_meaning', 'result')), label.name)
         else:
-            label_text = "The {} is: <RESULT>".format(self.meta.label_meaning)
+            label_text = "The {} is: <RESULT>".format(getattr(self.meta, 'labal_meaning', getattr(self.meta, 'label_meaning', 'result')))
 
         ret += f"{label_text}"
         return ret
