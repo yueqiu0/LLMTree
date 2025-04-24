@@ -3,9 +3,9 @@ config:
   tree_args:
     max_depth: 3
     llm_tree_args:
-    model_name: "togethercomputer/llama-2-70b-chat"
+    model_name: Qwen/Qwen2.5-72B-Instruct-Turbo
   random_seed: 42
-  num_tests_per_set: 10
+  num_tests_per_set: 5
   test_size: 100
   test_batch: 5
   use_tree_rules: True

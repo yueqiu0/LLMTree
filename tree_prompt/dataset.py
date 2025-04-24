@@ -319,7 +319,8 @@ def generate_ToT_tree_prompt(
     x_train: np.ndarray,
     y_train: np.ndarray,
     max_depth: int = 3,  # 强制设置为3层深度
-    num_examples: int = 5
+    num_examples: int = 5,
+    current_rules: list[str] = None  # 当前层级已生成的规则，用于避免重复
 ) -> dict:
     """
     生成决策树构建提示词（完整优化版）
@@ -384,6 +385,13 @@ def generate_ToT_tree_prompt(
     ))
     prompt_parts.append("")
 
+    # ------ 当前层级规则 ------
+    if current_rules and len(current_rules) > 0:
+        prompt_parts.append("# Current Layer Rules (DO NOT REPEAT THESE)")
+        for i, rule in enumerate(current_rules):
+            prompt_parts.append(f"{i+1}. {rule}")
+        prompt_parts.append("")
+
     # ------ 特征详情 ------
     prompt_parts.append("# Feature Details")
     feature_details = []
@@ -429,6 +437,16 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("4. Rules must be mutually exclusive")
     prompt_parts.append("5. Leverage domain knowledge when creating splitting rules")
     prompt_parts.append("6. All rules must include both THEN and ELSE branches")
+    prompt_parts.append("7. DO NOT generate any rule that already exists in Current Layer Rules")
+    prompt_parts.append("8. Each rule in this layer must use different features or split values")
+    prompt_parts.append("")
+
+    # ------ 重要提示 ------
+    prompt_parts.append("# Important Note")
+    prompt_parts.append("You MUST NOT generate any rule that:")
+    prompt_parts.append("- Has the same feature and split value as any rule in Current Layer Rules")
+    prompt_parts.append("- Has the same logical structure as any existing rule")
+    prompt_parts.append("If you're unsure, generate a completely different rule.")
     prompt_parts.append("")
     
     # ------ 决策树输出格式要求 ------

@@ -74,10 +74,18 @@ class RulePath:
 
     @staticmethod
     def from_conditions(conditions: list[Condition], value: float) -> "RulePath":
-        """从条件列表创建规则路径"""
+        """从条件列表创建规则路径(适用于层级生成的决策树)"""
         rule = RulePath()
         rule.value = value
         
+        # 决策树是逐层生成的，每层只应有一个特征条件
+        # 检查是否有多个特征的条件(不应该出现)
+        features = {cond.feature for cond in conditions}
+        if len(features) > 1:
+            logger.log(f"警告: 规则路径包含多个特征条件: {features}")
+            return None
+            
+        # 对于层级生成的决策树，只需合并相同特征的条件
         for cond in conditions:
             if cond.feature not in rule.conditions:
                 rule.conditions[cond.feature] = cond
@@ -214,6 +222,8 @@ class DecisionTree(TreeBase):
         self.categories_map = categories_map
         self.root_node = Node(None, 1)
         self.train_x = None
+        self.used_rules = set()  # 存储已使用的规则特征和分割值
+        self.current_layer_rules = set()  # 存储当前层级生成的候选规则
 
     def set_train_data(self, train_x: np.ndarray) -> None:
         self.train_x = train_x
@@ -380,8 +390,10 @@ class DecisionTree(TreeBase):
         return paths
 
     def get_rules(self) -> list[RulePath]:
-        """获取所有决策路径规则"""
+        """获取所有决策路径规则，并避免重复规则"""
         rules = []
+        new_rules = []
+        self.current_layer_rules.clear()  # 清空当前层级规则
         
         def _collect_rules(node, conditions, collect_leaf):
             if node is None:
@@ -394,7 +406,32 @@ class DecisionTree(TreeBase):
                     logger.log(f"收集到叶节点规则，标签值: {node.leaf_class}")
                     rule = RulePath.from_conditions(conditions.copy(), node.leaf_class)
                     if rule:
-                        rules.append(rule)
+                        # 生成更严格的规则唯一标识
+                        rule_key_parts = []
+                        for cond in conditions:
+                            if cond.is_categorical:
+                                categories = sorted(cond.categories)
+                                rule_key_parts.append(f"cat_{cond.feature}={categories}")
+                            else:
+                                # 数值型特征精确到小数点后4位
+                                lower = round(cond.lower, 4) if cond.lower is not None else None
+                                upper = round(cond.upper, 4) if cond.upper is not None else None
+                                rule_key_parts.append(f"num_{cond.feature}[{lower},{upper}]")
+                        # 添加预测结果到规则键
+                        rule_key = f"{node.leaf_class}||{'|'.join(rule_key_parts)}"
+                        
+                        logger.log(f"生成的规则键: {rule_key}")
+                        logger.log(f"已存储的规则键数量: {len(self.used_rules)}")
+                        logger.log(f"当前层级规则数量: {len(self.current_layer_rules)}")
+                        
+                        # 检查规则是否已存在
+                        if rule_key not in self.used_rules and rule_key not in self.current_layer_rules:
+                            rules.append(rule)
+                            new_rules.append(rule_key)
+                            self.current_layer_rules.add(rule_key)
+                            logger.log(f"添加新规则: {rule_key}")
+                        else:
+                            logger.log(f"跳过重复规则: {rule_key}")
                 return
             
             # 非叶节点或不收集叶节点的情况
@@ -424,7 +461,10 @@ class DecisionTree(TreeBase):
             conditions.pop()
         
         _collect_rules(self.root_node, [], True)
-        logger.log(f"总共收集了 {len(rules)} 条规则")
+        
+        # 添加新规则到已使用集合
+        self.used_rules.update(new_rules)
+        logger.log(f"获取到 {len(rules)} 条新规则（已过滤重复规则）")
         return rules
 
     def export_nodes_dict(self) -> dict:

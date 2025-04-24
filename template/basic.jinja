@@ -15,13 +15,11 @@ The data consists of the following features:
 {%- endblock %}
 
 {% block labels_intro -%}
-For each data, the result can ONLY be one of the following:
+For each data, the result can be one of the following:
 {% for label in meta.labels %}
 ({{ loop.index }}) {{ label.name }}{%if label.desc %}: {{ label.desc }}{% endif %}{{" "}}
 {%- endfor -%}
 {%- endblock %}
-
-NOTE: “unknown” is NOT a valid label.
 
 {% block format_descriptions -%}
 {%- if format_desc -%}{{ format_desc }}{%- endif -%}
@@ -35,31 +33,22 @@ These are some known data points:
 {%- endfor -%}
 {%- endif %}
 {%- endblock %}
-
 {% block tree_rules -%}
 {% if rules -%}
 The rules are as follows:
 {% for rule in rules %}
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
-{%- endif -%}
+{%- endif %}
 {%- endblock %}
 
-NOTE:
-If a rule says "unknown", it means the given rule CANNOT decide the result. 
-In this situation, the prediction should be COMPLETELY BASED on your knowledge rather than given tree rules.
-
-
+For data points that are not covered by any rule, you should predict the result based on your observation.
 
 {% block prediction_intro -%}
 {{ prediction_intro }}
-"<RESULT>" should NEVER be filled with "unknown"!
 {%- endblock %}
 {% block test_cases -%}
 {% for case in tests %}
 ({{ loop.index }}) {{ case }}
 {%- endfor %}
 {%- endblock %}
-
-IMPORTANT REMINDER: 
-NEVER include "unknown" in ANY of your predictions!!!
