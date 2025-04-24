@@ -21,6 +21,8 @@ from tree_prompt.external.tree import (
     RandomForestDecisionTree,
     FederatedDecisionTree,
     LLMDecisionTree,
+    LLMDecisionTree,
+
 )
 from tree_prompt.prompt import (
     Serializer,
@@ -209,6 +211,8 @@ class EvaluateArgs:
             self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
+        elif self.tree_type == "CoT":  
+            self.tree_args = LLMTreeArgs()  
         elif self.tree_type == "llm_gen_tree":  
             self.tree_args = LLMTreeArgs()  
         else:
@@ -244,7 +248,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree'], 
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree','CoT'], 
                        default='simple')
     parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
                        help='Use LLM for final prediction (1) or use rules directly (0)')
@@ -500,7 +504,7 @@ def evaluate(
     use_tree_rules: bool,
     tree_only: bool,
     num_tests_per_round: int,
-    with_llm: bool = True,  # 新增参数，控制是否使用LLM进行预测
+    with_llm: bool = True,
 ):
     # get tree's prediction rules & results
     if use_tree_rules or tree_only:
@@ -515,12 +519,18 @@ def evaluate(
             tree_auc = tree_aucs
             tree_accuracy = tree_accuracies
         elif isinstance(tree_model, LLMDecisionTree):
-            # LLM决策树的特殊处理逻辑
+            # 确保在调用 predict 之前调用 fit 方法
             tree_model.fit(x_train, y_train)
             
             rules = tree_model.get_rules()
             tree_model.rules = rules
-            logger.log(f"Generated rules: {rules}")
+            logger.log("=== Parsed Decision Tree Rules ===")
+            if isinstance(tree_model.rules, list):
+                rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                logger.log(rules_str)  # Print the full rule chain as a string
+            else:
+                logger.log(str(tree_model.rules))  # Fallback for non-list types
+            logger.log("====================================")
             if with_llm:
                 # 使用LLM进行预测
                 prompts, test_splits, labels = gen_prompt(
@@ -609,6 +619,7 @@ def evaluate(
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
+                logger.log(f"Full LLM response:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
                 if len(results_batch) == expected_len:
                     found = True
@@ -662,8 +673,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_name = getattr(args.runner_args, "model_name", args.runner)  # 兼容不同runner
     file_name = f"{args.exp_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    output_file = Path(args.output_dir) / file_name
-    log_path = Path(args.output_dir) / file_name
+    output_file = log_dir / file_name
+    log_path = log_dir / file_name
 
     logger.log("Saving results to {}...".format(output_file))
     if not output_file.parent.exists():
@@ -774,11 +785,19 @@ def main():
 
         
         master_template_path = Path(args.template)
+        if not master_template_path.exists():
+            logger.log(f"Template file not found: {master_template_path}, falling back to basic.jinja")
+            master_template_path = Path("template/basic.jinja")
+        
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
         )
-        master_template = env.get_template(master_template_path.name)
-        logger.log(f"Template loaded from: {master_template_path}")
+        try:
+            master_template = env.get_template(master_template_path.name)
+            logger.log(f"Template loaded from: {master_template_path}")
+        except jinja2.TemplateNotFound:
+            logger.log(f"Template not found: {master_template_path.name}")
+            raise
     if args.tree_type == "llm_gen_tree":
         template_dir = Path("C:/Users/chenx/git/tree/template")
         tree_template_path = template_dir / "basic.jinja" 
