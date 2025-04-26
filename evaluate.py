@@ -513,6 +513,7 @@ def evaluate(
     num_tests_per_round: int,
     with_llm: bool = True,
 ):
+    rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
     # --- 强制CoTDecisionTree二次LLM交互始终被执行 ---
     if isinstance(tree_model, CoTDecisionTree) and with_llm:
@@ -585,11 +586,16 @@ def evaluate(
         global_log(f"[DEBUG][CoT] 二次LLM推理最终labels: {labels}")
         global_log(f"[DEBUG][CoT] 二次LLM推理最终results: {results}")
         tree_accuracy = calc_accuracy(labels, results)
-        tree_auc = sklearn.metrics.roc_auc_score(
-            y_test,
-            [meta.get_label_value(r) for r in results],
-        )
-        tree_predict = results
+        # 转换为01标签
+        results_num = [meta.get_label_value(r) for r in results]
+        y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+        # 只有预测结果有两个类别时才计算AUC，否则返回NaN
+        if len(set(results_num)) < 2:
+            global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+            tree_auc = float('nan')
+        else:
+            tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+        tree_predict = results_num
         acc = tree_accuracy
         auc = tree_auc
         global_log(f"[DEBUG][CoT] <<< 结束CoTDecisionTree二次LLM推理分支，已完成全部流程 >>>")
@@ -677,23 +683,37 @@ def evaluate(
                     global_log(f"[DEBUG][CoT] 二次LLM推理最终labels: {labels}")
                     global_log(f"[DEBUG][CoT] 二次LLM推理最终results: {results}")
                     tree_accuracy = calc_accuracy(labels, results)
-                    tree_auc = sklearn.metrics.roc_auc_score(
-                        y_test,
-                        [meta.get_label_value(r) for r in results],
-                    )
-                    tree_predict = results
+                    # 转换为01标签
+                    results_num = [meta.get_label_value(r) for r in results]
+                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+                    # 只有预测结果有两个类别时才计算AUC，否则返回NaN
+                    if len(set(results_num)) < 2:
+                        global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+                        tree_auc = float('nan')
+                    else:
+                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+                    tree_predict = results_num
                     acc = tree_accuracy
                     auc = tree_auc
+                    global_log(f"[DEBUG][CoT] <<< 结束CoTDecisionTree二次LLM推理分支，已完成全部流程 >>>")
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
                     global_log("[DEBUG][CoT] 直接用规则本地推理，无LLM参与")
+                    tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
                     tree_predict = tree_model.predict(x_test)
-                    tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                    tree_accuracy = calc_accuracy(y_test, tree_predict)
+                    # 转换为01标签
+                    tree_predict_num = [meta.get_label_value(r) for r in tree_predict]
+                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+                    if len(set(tree_predict_num)) < 2:
+                        global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+                        tree_auc = float('nan')
+                    else:
+                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, tree_predict_num)
+                    tree_accuracy = calc_accuracy(y_test_num, tree_predict_num)
                     global_log("[CoTDecisionTree] 直接用规则推理（未调用LLM）")
                     global_log(f"规则数量: {len(tree_model.rules)}")
                     global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
-                    results = tree_predict
+                    results = tree_predict_num
                     acc = tree_accuracy
                     auc = tree_auc
             else:
@@ -764,8 +784,8 @@ def evaluate(
 
     result_dict = {
         "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
-        "labels": [int(y) for y in y_test],
-        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
+        "labels": [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test],
+        "results": [meta.get_label_value(r) if isinstance(r, str) else int(r) for r in (results if 'results' in locals() else tree_predict)],
         "auc": auc if 'auc' in locals() else tree_auc,
         "accuracy": acc if 'acc' in locals() else tree_accuracy,
     }
