@@ -207,6 +207,16 @@ class TreeBase:
     ) -> str:
         raise NotImplementedError()
 
+    def log_tree_graphviz(self, features: list[str] = None, classes: list[str] = None, graph_name: str = None):
+        from ..logger import log
+        source = self.to_graphviz_source(features, classes, graph_name)
+        log("=============== graphviz 源码 ===============")
+        log(source)
+        log(f"graphviz 源码长度: {len(source)} 字符")
+        print("=============== graphviz 源码 ===============")
+        print(source)
+        print(f"graphviz 源码长度: {len(source)} 字符")
+
 
 class DecisionTree(TreeBase):
     def __init__(self, max_depth: int, categories_map: dict[int, set[str]]) -> None:

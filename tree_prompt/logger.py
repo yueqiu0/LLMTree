@@ -8,7 +8,9 @@ class Logger:
         self.prefix = ""
 
     def log(self, msg: str):
-        tqdm.write(self.prefix + msg, self.file)
+        # 直接写入文件，确保超长内容完整输出
+        self.file.write(self.prefix + msg + "\n")
+        self.file.flush()
 
 
 DEFAULT_LOGGERS = [Logger(sys.stderr)]

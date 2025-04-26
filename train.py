@@ -720,7 +720,7 @@ def main():
 
     x, y, strategy = load_args(args)
 
-    file_name = args.exp_name + ".json"
+    file_name = args.exp_name + ("_with_llm" if getattr(args, "with_llm", False) else "") + ".json"
     output_file = Path(args.output_dir) / file_name
     logger.log("The result is saving to {}...".format(output_file))
 

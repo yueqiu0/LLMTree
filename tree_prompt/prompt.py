@@ -204,6 +204,7 @@ def gen_prompt(
     x_test,
     extra_rules: list[str],
     num_tests_per_round: int,
+    with_llm: bool = False,
 ) -> tuple[list[str], list[tuple[int]]]:
     prompts: list[str] = []
 
@@ -240,11 +241,17 @@ def gen_prompt(
         )
         prompt = prompt.strip() + "\n"
 
+        # 仅在with_llm为True时写入日志
+        if with_llm:
+            from .logger import log
+            log("=============== basic.jinja prompt ===============")
+            log(prompt)
+            log(f"Prompt length: {len(prompt)} characters")
+        print("=============== basic.jinja prompt ===============")
+        print(prompt)
+
         prompts.append(prompt)
         test_splits.append((current, current + num_cases))
         current += num_cases
-
-    # print(prompts[0])
-    # exit()
 
     return prompts, test_splits
