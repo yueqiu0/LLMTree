@@ -380,7 +380,17 @@ def generate_CoT_tree_prompt(
     # ------ 特征定义 ------
     prompt_parts.append("# Feature Definitions")
     for feat in meta.features:
-        prompt_parts.append(f"- {feat.name}: {getattr(feat, 'desc', 'No description')}")
+        # 自动提取单位（如desc中有括号）
+        desc = getattr(feat, 'desc', 'No description')
+        unit = ''
+        import re
+        m = re.search(r'\(([^)]+)\)', desc)
+        if m:
+            unit = m.group(1)
+        if unit:
+            prompt_parts.append(f"- {feat.name}: {desc} [unit: {unit}]")
+        else:
+            prompt_parts.append(f"- {feat.name}: {desc}")
         if feat.is_categorical:
             categories = [f"{k}({v})" for k, v in feat.categories.items()]
             prompt_parts.append(f"  Categories: {', '.join(categories)}")
@@ -396,38 +406,35 @@ def generate_CoT_tree_prompt(
     # ------ 决策树要求 ------
     prompt_parts.append("# Decision Tree Requirements")
     prompt_parts.append(f"1. Generate a decision tree with maximum depth={max_depth} (You can use a shallower tree if simple rules with high confidence, e.g. >0.95, are sufficient for accurate classification)")
-    prompt_parts.append("2. Use different features for each split")
-    prompt_parts.append("3. Each rule must be complete from root to leaf")
-    prompt_parts.append("4. Rules must follow this exact format:")
+    prompt_parts.append("2. Type Matching: Use integers for int features and floating-point numbers for float features.")
+    prompt_parts.append("3. Decimal Precision: Use precision suited to each feature's scale - typically up to 3 decimals. Avoid overly precise thresholds (e.g., 0.165) when simpler ones (e.g., 0.22) better match value ranges.")
+    prompt_parts.append("4. Use different features for each split")
+    prompt_parts.append("5. Each rule must be complete from root to leaf")
+    prompt_parts.append("6. Rules must follow this exact format:")
     prompt_parts.append("   (N) IF condition [AND condition]* THEN label_1")
-    prompt_parts.append("5. All split conditions must use only '<' and '>=' operators. Do NOT use '=', '!=', '>', '<=', or any other operators.")
-    prompt_parts.append("6. If you are highly confident (e.g. >0.95) that a simple rule or shallow tree is sufficient, you may generate a tree with less than the maximum depth. Otherwise, try to reach the maximum depth and make the splits as full as possible.")
+    prompt_parts.append("7. All split conditions must use only '<' and '>=' operators. Do NOT use '=', '!=', '>', '<=', or any other operators.")
+    prompt_parts.append("8. If you are highly confident (e.g. >0.95) that a simple rule or shallow tree is sufficient, you may generate a tree with less than the maximum depth. Otherwise, try to reach the maximum depth and make the splits as full as possible.")
     prompt_parts.append("")
 
     # ------ 规则格式示例 ------
     prompt_parts.append("# Rule Format Examples")
     prompt_parts.append("Correct examples:")
-    prompt_parts.append("(1) IF size < 50 AND length >= 50 THEN yes")
-    prompt_parts.append("(2) IF size < 50 AND length < 50 THEN no")
-    prompt_parts.append("(3) IF size >= 50 AND length < 50 THEN yes")
-    prompt_parts.append("(4) IF size >= 50 AND length >= 50 THEN no")
+    prompt_parts.append("(1) IF size < .. AND length >= .. THEN yes")
+    prompt_parts.append("(2) IF size < .. AND length < .. THEN no")
+    prompt_parts.append("(3) IF size >= .. AND length <.. THEN yes")
+    prompt_parts.append("(4) IF size >= .. AND length >= .. THEN no")
     prompt_parts.append("...")
-    prompt_parts.append("")
-    prompt_parts.append("Incorrect formats:")
-    prompt_parts.append("× Rule 1: IF age > 50 Then old (wrong format)")
-    prompt_parts.append("× IF age > 50 OR gender = male THEN old (missing number)")
-    prompt_parts.append("× (1) age > 50 -> old, young  (wrong format)")
-    prompt_parts.append("")
 
     # ------ 决策树大师引导与英文推理要求 ------
     prompt_parts.append("# Instructions for LLM")
     prompt_parts.append("You are a Decision Tree Generation Master. Your task is to analyze the following data features and generate a decision tree for classification.")
+    prompt_parts.append("For each decision tree you construct, you must leverage your domain knowledge and expertise in this field to guide the feature selection, splitting, and rule generation process.")
     prompt_parts.append("Let's think step by step. First, select the best root feature and explain why. Then, based on this feature, describe how to split the dataset. For each subset, explain how to proceed. Please provide a detailed reasoning process in English.")
     prompt_parts.append("")
     prompt_parts.append("After your reasoning, please output the final decision rules in the following format, and only put the rules between BEGIN_TREE and END_TREE:")
     prompt_parts.append("BEGIN_TREE")
-    prompt_parts.append("(1) IF price < 10000 THEN unacceptable")
-    prompt_parts.append("(2) IF price >= 10000 THEN good")
+    prompt_parts.append("1. IF ... THEN ...")
+    prompt_parts.append("2. IF ... THEN ...")
     prompt_parts.append("END_TREE")
     prompt_parts.append("Each rule must be a single line, start with a number in parentheses, and follow the format: (N) IF ... THEN ... Only use this format. Do NOT use any format like 'Rule N: ...' or with ELSE or jumps. All rules must be complete and mutually exclusive if needed.")
     prompt_parts.append("")
