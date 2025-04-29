@@ -7,5 +7,5 @@ base_configs:
 
 config:
   exp_name: llm_gen_tree-abalone-baseline
-  template: template/evaluate/llm_decision_tree.jinja
+  template: template/basic.jinja
   tree_only: False

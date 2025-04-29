@@ -1,3 +1,4 @@
+from tree_prompt.logger import log as global_log
 import sklearn.datasets
 import sklearn.metrics
 from pathlib import Path
@@ -70,14 +71,18 @@ class SimpleTreeArgs:
     def __repr__(self):
         return str(self.__dict__)
 
+
 class LLMTreeArgs:
     def __init__(self):
         self.max_depth = 3  # 默认最大深度
-        
+
         self.temperature = 0.7
         #      self.num_rules = 10
+
     def __repr__(self):
         return str(self.__dict__)
+
+
 class XGBoostArgs:
     def __init__(self) -> None:
         self.max_depth: int = None
@@ -112,7 +117,7 @@ class EvaluateArgs:
         self.exp_id: str = ""
         self.print_only: bool = False
         self.with_llm: bool = True
-    
+
     def get_missing_fields(self) -> list[str]:
         missing_fields = _get_missing_fields(self)
 
@@ -211,10 +216,10 @@ class EvaluateArgs:
             self.tree_args = XGBoostArgs()
         elif self.tree_type == "random_forest" or self.tree_type == "federated":
             self.tree_args = RandomForestArgs()
-        elif self.tree_type == "CoT":  
-            self.tree_args = LLMTreeArgs()  
-        elif self.tree_type == "llm_gen_tree":  
-            self.tree_args = LLMTreeArgs()  
+        elif self.tree_type == "CoT":
+            self.tree_args = LLMTreeArgs()
+        elif self.tree_type == "LLM":
+            self.tree_args = LLMTreeArgs()
         else:
             raise ValueError("Unknown tree type: {}".format(self.tree_type))
 
@@ -248,7 +253,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'llm_gen_tree','CoT'], 
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'LLM','CoT'], 
                        default='simple')
     parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
                        help='Use LLM for final prediction (1) or use rules directly (0)')
@@ -459,6 +464,7 @@ def gen_prompt(
     y_test,
     tree_rules,
     num_tests_per_round,
+    
 ) -> tuple[list[str], list[tuple[int, int]], list[str]]:
     prompts, test_splits = prompt.gen_prompt(
         master_template,
@@ -468,6 +474,7 @@ def gen_prompt(
         x_test,
         tree_rules,
         num_tests_per_round,
+        
     )
 
     test_labels = []
@@ -491,6 +498,42 @@ def calc_accuracy(labels: list, results: list) -> float:
     return correct_count / len(labels)
 
 
+def cot_calc_accuracy_auc(y_true, y_pred, meta):
+    """
+    专用于CoT字符串标签输出的准确率和AUC计算。
+    y_true, y_pred: 均为字符串标签
+    meta: DatasetMeta, 用于标签到数值的映射
+    返回: (accuracy, auc)
+    """
+    # 准确率
+    correct = 0
+    for yt, yp in zip(y_true, y_pred):
+        if isinstance(yt, str) and isinstance(yp, str):
+            if yt.lower() == yp.lower():
+                correct += 1
+        else:
+            if yt == yp:
+                correct += 1
+    accuracy = correct / len(y_true)
+    # AUC
+    y_true_num = [meta.get_label_value(y) for y in y_true]
+    y_pred_num = [meta.get_label_value(y) for y in y_pred]
+    if len(set(y_pred_num)) < 2:
+        auc = float('nan')
+    else:
+        import sklearn.metrics
+        try:
+            auc = sklearn.metrics.roc_auc_score(y_true_num, y_pred_num)
+        except ValueError as e:
+            if 'unknown format is not supported' in str(e):
+                import warnings
+                warnings.warn(f"roc_auc_score failed: {e}. Returning NaN.")
+                auc = float('nan')
+            else:
+                raise
+    return accuracy, auc
+
+
 def evaluate(
     x_train: np.ndarray,
     y_train: np.ndarray,
@@ -506,89 +549,208 @@ def evaluate(
     num_tests_per_round: int,
     with_llm: bool = True,
 ):
+    rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
-    if use_tree_rules or tree_only:
-        if isinstance(tree_model, FederatedDecisionTree):
-            all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
-            tree_aucs, tree_accuracies = [], []
-            for tree_predict in all_tree_predict:
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                tree_accuracy = calc_accuracy(y_test, tree_predict)
-                tree_aucs.append(tree_auc)
-                tree_accuracies.append(tree_accuracy)
-            tree_auc = tree_aucs
-            tree_accuracy = tree_accuracies
-        elif isinstance(tree_model, LLMDecisionTree):
-            # 确保在调用 predict 之前调用 fit 方法
-            tree_model.fit(x_train, y_train)
-            
-            rules = tree_model.get_rules()
-            tree_model.rules = rules
-            logger.log("=== Parsed Decision Tree Rules ===")
-            if isinstance(tree_model.rules, list):
-                rules_str = "\n".join(str(rule) for rule in tree_model.rules)
-                logger.log(rules_str)  # Print the full rule chain as a string
-            else:
-                logger.log(str(tree_model.rules))  # Fallback for non-list types
-            logger.log("====================================")
-            if with_llm:
-                # 使用LLM进行预测
-                prompts, test_splits, labels = gen_prompt(
-                    meta,
-                    master_template,
-                    serializer,
-                    x_train,
-                    y_train,
-                    x_test,
-                    y_test,
-                    rules,
-                    num_tests_per_round,
-                )
-                
-                raw_results = []
-                results = []
-                for idx, responses in enumerate(runner.run(prompts)):
-                    expected_len = test_splits[idx][1] - test_splits[idx][0]
-                    found = False
-                    for response in responses:
-                        results_batch = serializer.answer_decoder.decode(response)
-                        if len(results_batch) == expected_len:
-                            found = True
-                            results += results_batch
-                            raw_results.append(response)
-                            break
-                        else:
-                            logger.log(
-                                "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                                    expected_len, len(results_batch), response
-                                )
-                            )
-                    if not found:
-                        logger.log("Failed to find any valid response, skipping...")
-                        result_dict = {
-                            "record": prompts[0],
-                            "failed_raw_output": responses,
-                        }
-                        return result_dict
-                
-                tree_accuracy = calc_accuracy(labels, results)
-                tree_auc = sklearn.metrics.roc_auc_score(
-                    y_test,
-                    [meta.get_label_value(r) for r in results],
-                )
-                tree_predict = results
-            else:
-                # 直接应用规则进行预测
-                tree_predict = tree_model.predict(x_test)
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                tree_accuracy = calc_accuracy(y_test, tree_predict)
+    # --- 强制CoTDecisionTree二次LLM交互始终被执行 ---
+    if isinstance(tree_model, LLMDecisionTree) and with_llm:
+        global_log(f"[DEBUG][LLM] >>> 进入LLMDecisionTree二次LLM推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
+        # 第一次：用LLM prompt生成规则
+        global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+        tree_model.fit(x_train, y_train)
+        rules = tree_model.get_rules()
+        tree_model.rules = rules
+        global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
+        if isinstance(tree_model.rules, list):
+            rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+            global_log(rules_str)
         else:
-            # 其他类型的决策树
-            tree_predict, rules = tree_model.predict(
-                x_train, y_train, x_test, export_rules=True
-            )
-            tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-            tree_accuracy = calc_accuracy(y_test, tree_predict)
+            global_log(str(tree_model.rules))
+        global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
+        prompts, test_splits, labels = gen_prompt(
+            meta,
+            master_template,
+            serializer,
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            rules,
+            num_tests_per_round,
+        )
+        global_log(f"[DEBUG][LLM] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
+        if prompts and len(prompts) > 0:
+            global_log("[DEBUG][LLM] basic.jinja prompt内容如下：")
+            global_log(prompts[0])
+            global_log("[DEBUG][LLM] ===== end of basic.jinja prompt =====")
+        if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
+            global_log("[ERROR][LLM] basic.jinja prompt未能成功生成或内容为空！")
+            global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
+            global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
+            global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
+            global_log(f"meta: {getattr(meta, 'name', None)} features: {getattr(meta, 'features', None)}")
+            raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
+        raw_results = []
+        results = []
+        for idx, responses in enumerate(runner.run(prompts)):
+            global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
+            global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
+            expected_len = test_splits[idx][1] - test_splits[idx][0]
+            found = False
+            for response in responses:
+                global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
+                results_batch = serializer.answer_decoder.decode(response)
+                global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
+                if len(results_batch) == expected_len:
+                    found = True
+                    results += results_batch
+                    raw_results.append(response)
+                    break
+                else:
+                    global_log(
+                        "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                            expected_len, len(results_batch), response
+                        )
+                    )
+            if not found:
+                global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
+                result_dict = {
+                    "record": prompts[0],
+                    "failed_raw_output": responses,
+                }
+                return result_dict
+        global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
+        global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
+        tree_accuracy = calc_accuracy(labels, results)
+        # 转换为01标签
+        results_num = [meta.get_label_value(r) for r in results]
+        y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+        # 只有预测结果有两个类别时才计算AUC，否则返回NaN
+        if len(set(results_num)) < 2:
+            global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+            tree_auc = float('nan')
+        else:
+            tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+        tree_predict = results_num
+        acc = tree_accuracy
+        auc = tree_auc
+        global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
+    else:
+        # 其它树类型和本地推理逻辑保持不变
+        if use_tree_rules or tree_only:
+            if isinstance(tree_model, FederatedDecisionTree):
+                all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
+                tree_aucs, tree_accuracies = [], []
+                for tree_predict in all_tree_predict:
+                    tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+                    tree_accuracy = calc_accuracy(y_test, tree_predict)
+                    tree_aucs.append(tree_auc)
+                    tree_accuracies.append(tree_accuracy)
+                tree_auc = tree_aucs
+                tree_accuracy = tree_accuracies
+            elif isinstance(tree_model, LLMDecisionTree):
+                # 确保在调用 predict 之前调用 fit 方法
+                if with_llm:
+                    # 第一次：用LLM prompt生成规则
+                    global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+                    tree_model.fit(x_train, y_train)
+                    rules = tree_model.get_rules()
+                    tree_model.rules = rules
+                    global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
+                    if isinstance(tree_model.rules, list):
+                        rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                        global_log(rules_str)
+                    else:
+                        global_log(str(tree_model.rules))
+                    global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
+                    prompts, test_splits, labels = gen_prompt(
+                        meta,
+                        master_template,
+                        serializer,
+                        x_train,
+                        y_train,
+                        x_test,
+                        y_test,
+                        rules,
+                        num_tests_per_round,
+                
+                    )
+                    global_log(f"[DEBUG][LLM] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
+                    if prompts and len(prompts) > 0:
+                        global_log("[DEBUG][LLM] basic.jinja prompt内容如下：")
+                        global_log(prompts[0])
+                        global_log("[DEBUG][LLM] ===== end of basic.jinja prompt =====")
+                    if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
+                        global_log("[ERROR][LLM] basic.jinja prompt未能成功生成或内容为空！")
+                        global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
+                        global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
+                        global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
+                        global_log(f"meta: {getattr(meta, 'name', None)} features: {getattr(meta, 'features', None)}")
+                        raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
+                    raw_results = []
+                    results = []
+                    for idx, responses in enumerate(runner.run(prompts)):
+                        global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
+                        global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
+                        expected_len = test_splits[idx][1] - test_splits[idx][0]
+                        found = False
+                        for response in responses:
+                            global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
+                            results_batch = serializer.answer_decoder.decode(response)
+                            global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
+                            if len(results_batch) == expected_len:
+                                found = True
+                                results += results_batch
+                                raw_results.append(response)
+                                break
+                            else:
+                                global_log(
+                                    "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                        expected_len, len(results_batch), response
+                                    )
+                                )
+                        if not found:
+                            global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
+                            result_dict = {
+                                "record": prompts[0],
+                                "failed_raw_output": responses,
+                            }
+                            return result_dict
+                    global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
+                    global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
+                    tree_accuracy = calc_accuracy(labels, results)
+                    # 转换为01标签
+                    results_num = [meta.get_label_value(r) for r in results]
+                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+                    # 只有预测结果有两个类别时才计算AUC，否则返回NaN
+                    if len(set(results_num)) < 2:
+                        global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+                        tree_auc = float('nan')
+                    else:
+                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+                    tree_predict = results_num
+                    acc = tree_accuracy
+                    auc = tree_auc
+                    global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
+                else:
+                    # 直接应用规则进行预测（with_llm=0时）
+                    global_log("[DEBUG][LLM] 直接用规则本地推理，无LLM参与")
+                    tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
+                    tree_predict = tree_model.predict(x_test)
+                    # LLM输出为字符串，专用评测函数
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_predict, meta)
+                    global_log("[LLMDecisionTree] 直接用规则推理（未调用LLM）")
+                    global_log(f"规则数量: {len(tree_model.rules)}")
+                    global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
+                    results = tree_predict
+                    acc = tree_accuracy
+                    auc = tree_auc
+            else:
+                # 其他类型的决策树
+                tree_predict, rules = tree_model.predict(
+                    x_train, y_train, x_test, export_rules=True
+                )
+                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+                tree_accuracy = calc_accuracy(y_test, tree_predict)
 
     if tree_only:
         return {
@@ -619,7 +781,7 @@ def evaluate(
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
-                logger.log(f"Full LLM response:\n{response}")
+                global_log(f"Full LLM response:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
                 if len(results_batch) == expected_len:
                     found = True
@@ -627,13 +789,13 @@ def evaluate(
                     raw_results.append(response)
                     break
                 else:
-                    logger.log(
+                    global_log(
                         "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
                             expected_len, len(results_batch), response
                         )
                     )
             if not found:
-                logger.log("Failed to find any valid response, skipping...")
+                global_log("Failed to find any valid response, skipping...")
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
@@ -646,12 +808,12 @@ def evaluate(
             [meta.get_label_value(r) for r in results],
         )
 
-        logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
+        global_log("Accuracy/AUC: {}/{}".format(acc, auc))
 
     result_dict = {
         "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
-        "labels": [int(y) for y in y_test],
-        "results": [meta.get_label_value(r) for r in (results if 'results' in locals() else tree_predict)],
+        "labels": [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test],
+        "results": [meta.get_label_value(r) if isinstance(r, str) else int(r) for r in (results if 'results' in locals() else tree_predict)],
         "auc": auc if 'auc' in locals() else tree_auc,
         "accuracy": acc if 'acc' in locals() else tree_accuracy,
     }
@@ -666,26 +828,24 @@ def evaluate(
 
     return result_dict
 
+
 def main():
     args = parse_args()
     log_dir = Path("output") / "evaluate" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name = getattr(args.runner_args, "model_name", args.runner)  # 兼容不同runner
-    file_name = f"{args.exp_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    output_file = log_dir / file_name
-    log_path = log_dir / file_name
+    # 统一文件名主干
+    file_name = f"{args.exp_name}_with_llm_{timestamp}" if getattr(args, 'with_llm', False) else f"{args.exp_name}_{timestamp}"
+    log_file_path = log_dir / (file_name + ".log")
+    output_file = Path(args.output_dir) / (file_name + ".json")
+    from tree_prompt.logger import Logger, add_logger
+    add_logger(Logger(open(log_file_path, "a", encoding="utf-8", buffering=1)))
 
-    logger.log("Saving results to {}...".format(output_file))
-    if not output_file.parent.exists():
-        output_file.parent.mkdir(parents=True)
-    
-    if args.exp_id:
-        logger.DEFAULT_LOGGERS[0].prefix = "[{}] ".format(args.exp_id)
-
-    logger.log("Arguments:")
+    global_log("Arguments:")
     for k, v in args.__dict__.items():
-        logger.log(" - {}: {}".format(k, v))
+        global_log(" - {}: {}".format(k, v))
+
+    global_log(f"最终 max_depth: {args.tree_args.max_depth}")
 
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
@@ -726,9 +886,7 @@ def main():
     
         
 
-   
 
-    
     if not args.tree_only:
         if args.runner == "openai_api":
             from tree_prompt.runner.openai_api import OpenAIAPIParallelRunner
@@ -741,7 +899,7 @@ def main():
                 args.runner_args.timeout,
                 args.runner_args.parallel_batch_size,
             )
-            logger.log(f"OpenAIAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
+            global_log(f"OpenAIAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
 
         elif args.runner == "huggingchat":
             from tree_prompt.runner.huggingchat import HuggingChatParallelRunner
@@ -753,7 +911,7 @@ def main():
                 args.runner_args.request_interval,
                 args.runner_args.timeout,
             )
-            logger.log("HuggingChatParallelRunner initialized")
+            global_log("HuggingChatParallelRunner initialized")
         elif args.runner == "together_api":
             from tree_prompt.runner.together_api import TogetherAPIParallelRunner
 
@@ -765,62 +923,55 @@ def main():
                 args.runner_args.timeout,
                 args.runner_args.parallel_batch_size,
             )
-            logger.log(f"TogetherAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
+            global_log(f"TogetherAPIParallelRunner initialized with model={args.runner_args.model_name}, batch_size={args.runner_args.parallel_batch_size}")
         else:
-            logger.log(f"Unknown runner type: {args.runner}")
+            global_log(f"Unknown runner type: {args.runner}")
             raise ValueError("Unknown runner type: {}".format(args.runner))
 
         if args.serializer_type == "tabular":
             serializer = TabularSerializer(meta)
-            logger.log("Using TabularSerializer")
+            global_log("Using TabularSerializer")
         elif args.serializer_type == "list":
             serializer = ListSerializer(meta)
-            logger.log("Using ListSerializer")
+            global_log("Using ListSerializer")
         elif args.serializer_type == "text":
             serializer = TextSerializer(meta)
-            logger.log("Using TextSerializer")
+            global_log("Using TextSerializer")
         else:
-            logger.log(f"Unknown serializer type: {args.serializer_type}")
+            global_log(f"Unknown serializer type: {args.serializer_type}")
             raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
         
         master_template_path = Path(args.template)
-        if not master_template_path.exists():
-            logger.log(f"Template file not found: {master_template_path}, falling back to basic.jinja")
-            master_template_path = Path("template/basic.jinja")
-        
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
         )
-        try:
-            master_template = env.get_template(master_template_path.name)
-            logger.log(f"Template loaded from: {master_template_path}")
-        except jinja2.TemplateNotFound:
-            logger.log(f"Template not found: {master_template_path.name}")
-            raise
-    if args.tree_type == "llm_gen_tree":
+        master_template = env.get_template(master_template_path.name)
+        global_log(f"Template loaded from: {master_template_path}")
+    if args.tree_type == "LLM":
         template_dir = Path("C:/Users/chenx/git/tree/template")
-        tree_template_path = template_dir / "basic.jinja" 
+        tree_template_path = template_dir / "basic.jinja"
+        # 这里log_file_path和主日志文件一致
         tree_model = LLMDecisionTree(
             meta=meta,
             max_depth=args.tree_args.max_depth,
             runner=runner,
-            log_file=log_path,
+            log_file=log_file_path,
         )
-        logger.log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth}")
+        global_log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth}")
     
 
     results: dict[int, list[dict]] = {}
 
     test_x, test_y = x[: args.test_size], y[: args.test_size]
     avail_x, avail_y = x[args.test_size :], y[args.test_size :]
-    logger.log(f"Test set size: {len(test_x)}, Available set size: {len(avail_x)}")
+    global_log(f"Test set size: {len(test_x)}, Available set size: {len(avail_x)}")
 
     bar = tqdm(desc="Total", total=len(args.train_sizes) * args.num_tests_per_set)
-    logger.log(f"Starting evaluation with train sizes: {args.train_sizes}")
+    global_log(f"Starting evaluation with train sizes: {args.train_sizes}")
 
     for train_size in args.train_sizes:
-        logger.log(f"Processing train size: {train_size}")
+        global_log(f"Processing train size: {train_size}")
         train_cases = sample_balanced(
             avail_x,
             avail_y,
@@ -828,7 +979,7 @@ def main():
             train_size,
             args.random_seed,
         )
-        logger.log(f"Generated {len(train_cases)} balanced training cases")
+        global_log(f"Generated {len(train_cases)} balanced training cases")
 
         for train_x, train_y in train_cases:
             result = evaluate(
@@ -852,7 +1003,7 @@ def main():
 
     
 
-    logger.log("Saving results to {}...".format(output_file))
+    global_log("Saving results to {}...".format(output_file))
 
     if not output_file.parent.exists():
         output_file.parent.mkdir(parents=True)
@@ -862,12 +1013,11 @@ def main():
         target = output_file.rename(
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
-        logger.log("Output file already exists, renamed to {}".format(target))
+        global_log("Output file already exists, renamed to {}".format(target))
     file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
-    output_file = Path(args.output_dir) / file_name
+    output_file = Path(args.output_dir) / (file_name + ".json")
 
-    logger.log(f"Saving results to {output_file}...")
-  
+    global_log(f"Saving results to {output_file}...")
     if not output_file.parent.exists():
         output_file.parent.mkdir(parents=True)
     def json_default_decode(obj):
@@ -879,10 +1029,9 @@ def main():
             return obj.tolist()
         else:
             return obj.__dict__
-
-    with open(output_file, "w") as output_file:
+    with open(output_file, "w") as output_file_fp:
         output = {"args": args.__dict__, "results": results}
-        json.dump(output, output_file, indent=2, default=json_default_decode)
+        json.dump(output, output_file_fp, indent=2, default=json_default_decode)
 
 
 if __name__ == "__main__":

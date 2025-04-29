@@ -380,7 +380,17 @@ def generate_LLM_tree_prompt(
     # ------ 特征定义 ------
     prompt_parts.append("# Feature Definitions")
     for feat in meta.features:
-        prompt_parts.append(f"- {feat.name}: {getattr(feat, 'desc', 'No description')}")
+        # 自动提取单位（如desc中有括号）
+        desc = getattr(feat, 'desc', 'No description')
+        unit = ''
+        import re
+        m = re.search(r'\(([^)]+)\)', desc)
+        if m:
+            unit = m.group(1)
+        if unit:
+            prompt_parts.append(f"- {feat.name}: {desc} [unit: {unit}]")
+        else:
+            prompt_parts.append(f"- {feat.name}: {desc}")
         if feat.is_categorical:
             categories = [f"{k}({v})" for k, v in feat.categories.items()]
             prompt_parts.append(f"  Categories: {', '.join(categories)}")
@@ -395,45 +405,43 @@ def generate_LLM_tree_prompt(
 
     # ------ 决策树要求 ------
     prompt_parts.append("# Decision Tree Requirements")
-    prompt_parts.append("1. Generate a complete decision tree with depth=3")
-    prompt_parts.append("2. Use different features for each split")
-    prompt_parts.append("3. Each rule must be complete from root to leaf")
-    prompt_parts.append("4. Rules must follow this exact format:")
-    prompt_parts.append("   (N) IF condition [AND condition]* THEN label_1 ELSE label_2")
+    prompt_parts.append(f"IMPORTANT: The decision tree you generate MUST have a maximum depth(include the root) of {max_depth}. If any rule has more than {max_depth-2} conditions, the output is INVALID.")
+    prompt_parts.append(f"1. The tree must be a binary tree with at most {max_depth-1} levels (root and one split below). No rule can have more than {max_depth-2} conditions (features joined by AND). This is a HARD constraint.")
+    prompt_parts.append("2. Type Matching: Use integers for int features and floating-point numbers for float features.")
+    prompt_parts.append("3. Decimal Precision: Use precision suited to each feature's scale - typically up to 3 decimals. Avoid overly precise thresholds (e.g., 0.165) when simpler ones (e.g., 0.22) better match value ranges.")
+    prompt_parts.append("4. Use different features for each split.")
+    prompt_parts.append("5. Each rule must be complete from root to leaf.")
+    prompt_parts.append("6. Rules must follow this exact format:")
+    prompt_parts.append("   (N) IF condition [AND condition] THEN label_1")
+    prompt_parts.append("7. All split conditions must use only '<' and '>=' operators. Do NOT use '=', '!=', '>', '<=', or any other operators.")
+    prompt_parts.append("8. If you are highly confident (e.g. >0.95) that a simple rule or shallow tree is sufficient, you may generate a tree with only 1 level. Otherwise, try to use 2 levels and make the splits as full as possible.")
     prompt_parts.append("")
 
     # ------ 规则格式示例 ------
-    prompt_parts.append("# Rule Format Examples")
+    prompt_parts.append("# Rule Format Examples (for level=2)")
     prompt_parts.append("Correct examples:")
-    if len(meta.features) > 1 and len(meta.labels) > 1:
-        feat1 = meta.features[0]
-        feat2 = meta.features[1]
-        label1 = meta.labels[0].name
-        label2 = meta.labels[1].name
-
-        if feat1.is_categorical and feat2.is_categorical:
-            cat1 = list(feat1.categories.keys())[0]
-            cat2 = list(feat2.categories.keys())[0]
-            prompt_parts.append(f"(1) IF {feat1.name} = {cat1} AND {feat2.name} = {cat2} THEN {label1} ELSE {label2}")
-        else:
-            prompt_parts.append(f"(1) IF {feat1.name} >= 0.5 AND {feat2.name} >= 1.2 THEN {label1} ELSE {label2}")
-    prompt_parts.append("")
-    
-    prompt_parts.append("Incorrect formats:")
-    prompt_parts.append("× Rule 1: IF age > 50 Then old Else young  (wrong format)")
-    prompt_parts.append("× IF age > 50 OR gender = male THEN old ELSE young  (missing number)")
-    prompt_parts.append("× (1) age > 50 -> old, young  (wrong format)")
-    prompt_parts.append("")
+    prompt_parts.append("(1) IF feat1 >= ... AND feat2 < ... THEN label")
+    prompt_parts.append("(2) IF feat1 >= ... AND feat2 >= ... THEN label")
+    prompt_parts.append("(3) IF feat1 < ... AND feat2 >= ... THEN label")
+    prompt_parts.append("(4) IF feat1 < ... AND feat2 < ... THEN label")
+    prompt_parts.append("...")
+    prompt_parts.append("All rules above have at most 2 conditions. Do NOT generate rules with more than 2 conditions. If you do, the output will be rejected.")
 
     # ------ 决策树大师引导与英文推理要求 ------
     prompt_parts.append("# Instructions for LLM")
-    prompt_parts.append("After your reasoning, please output the final decision rules in the following format, and only put the rules between BEGIN_TREE and END_TREE:")
+    prompt_parts.append("You are a Decision Tree Generation Master. Your task is to analyze the following data features and generate a decision tree for classification.")
+    prompt_parts.append("For each decision tree you construct, you must leverage your domain knowledge and expertise in this field to guide the feature selection, splitting, and rule generation process.")
+    prompt_parts.append("please don't explain the rules or the tree. Just output the rules in the required format.")
+    prompt_parts.append("make sure use the correct format I provided before.")
     prompt_parts.append("BEGIN_TREE")
-    prompt_parts.append("(1) IF price = vhigh THEN unacceptable")
-    prompt_parts.append("(2) IF price != vhigh THEN good")
+    prompt_parts.append("(1) IF feat1 >= ... AND feat2 < ... THEN label")
+    prompt_parts.append("(2) IF feat1 >= ... AND feat2 >= ... THEN label")
+    prompt_parts.append("(3) IF feat1 < ... AND feat2 >= ... THEN label")
+    prompt_parts.append("(4) IF feat1 < ... AND feat2 < ... THEN label")
+    prompt_parts.append("...")
     prompt_parts.append("END_TREE")
     prompt_parts.append("Each rule must be a single line, start with a number in parentheses, and follow the format: (N) IF ... THEN ... Only use this format. Do NOT use any format like 'Rule N: ...' or with ELSE or jumps. All rules must be complete and mutually exclusive if needed.")
- 
+    prompt_parts.append("")
 
     # ============== 最终组装 ==============
     full_prompt = "\n".join(prompt_parts)
