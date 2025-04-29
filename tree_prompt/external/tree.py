@@ -5,8 +5,8 @@ import sklearn.ensemble
 import numpy as np
 import jinja2
 from pathlib import Path
-from .. import dataset
-from ..dataset import DatasetMeta
+from tree_prompt import dataset
+from tree_prompt.dataset import DatasetMeta
 from jinja2 import Environment, FileSystemLoader
 from sklearn.utils import check_array
 import warnings
@@ -76,6 +76,8 @@ class CoTDecisionTree:
         self.log_file = log_file  # Log file path
         self.rules = []           # List to store parsed rules
         self.feature_names = [f.name for f in meta.features]  # Get feature names from metadata features
+        # 新增：原始特征名到当前数据列idx的映射
+        self.feature_name_to_col = {f.name: idx for idx, f in enumerate(meta.features)}
         # Open log file in append mode with line buffering for real-time writing
         log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)  # 1 means line buffering
         self.logger = Logger(log_file_obj)  # Initialize logger with file object
@@ -150,12 +152,14 @@ class CoTDecisionTree:
                 self.label = None
         root = Node("root")
         for rule in rules:
-            m = re.match(r"^\(\d+\) IF (.+) THEN (.+)$", rule.strip(), re.IGNORECASE)
+            # 兼容各种编号格式
+            m = re.match(r"^\s*(?:\(?\d+\)?[\.)]?)?\s*IF (.+) THEN (.+)$", rule.strip(), re.IGNORECASE)
             if not m:
                 self.logger.log(f"[ERROR] to_graphviz_source_from_rules: 跳过无法解析的rule: {rule}")
                 continue
             try:
-                conds = [c.strip() for c in m.group(1).split("AND")]
+                # 更健壮地分割AND
+                conds = [c.strip() for c in re.split(r'\s+AND\s+', m.group(1), flags=re.IGNORECASE)]
                 label = m.group(2)
             except IndexError as e:
                 self.logger.log(f"[FATAL] 正则分组失败: {e}, rule: {rule}, m.groups: {m.groups()}")
@@ -192,6 +196,95 @@ class CoTDecisionTree:
         lines.append("}")
         return "\n".join(lines)
 
+    def _parse_llm_response(self, response: str) -> list[dict]:
+        """解析LLM返回的决策树规则文本，支持BEGIN_TREE/END_TREE块和标准规则格式。
+        Args:
+            response: LLM返回的原始文本响应
+        Returns:
+            解析后的规则列表，每条规则是一个字典，包含conditions和label字段
+        """
+        import re
+        self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
+        
+        if not response or not isinstance(response, str):
+            self.logger.log("Error: Invalid or empty LLM response")
+            return []
+            
+        # 提取BEGIN_TREE/END_TREE之间的内容
+        begin_pat = re.compile(r'BEGIN[_ ]?TREE', re.IGNORECASE)
+        end_pat = re.compile(r'END[_ ]?TREE', re.IGNORECASE)
+        lines = response.split('\n')
+        begin_idx = end_idx = None
+        
+        for i, line in enumerate(lines):
+            if begin_pat.search(line):
+                begin_idx = i
+            if end_pat.search(line):
+                end_idx = i
+                break
+                
+        if begin_idx is not None and end_idx is not None and end_idx > begin_idx:
+            tree_block = '\n'.join(lines[begin_idx+1:end_idx])
+            self.logger.log(f"Found BEGIN_TREE/END_TREE block (lines {begin_idx+1}-{end_idx})")
+        else:
+            tree_block = response
+            self.logger.log("No BEGIN_TREE/END_TREE block found, using full response")
+            
+        rules = []
+        rule_pattern = re.compile(r'^\s*(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
+        
+        for line in tree_block.split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#') or line.lower().startswith('note:'):
+                continue
+                
+            match = rule_pattern.match(line)
+            if not match:
+                continue
+                
+            condition, label = match.groups()
+            conditions = []
+            
+            # 解析条件(支持AND连接的多个条件)
+            for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
+                cond = cond.strip()
+                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=)\s*([\-]?[\d.]+|\w+)$', cond)
+                if not cond_match:
+                    self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
+                    continue
+                    
+                feature, operator, value = cond_match.groups()
+                feature = feature.strip()
+                if feature not in self.feature_name_to_col:
+                    self.logger.log(f"[ERROR] Unknown feature '{feature}'")
+                    continue
+                    
+                try:
+                    if '.' in value:
+                        value = float(value)
+                    else:
+                        value = int(value)
+                except ValueError:
+                    pass
+                    
+                conditions.append({
+                    'feature': feature,
+                    'operator': operator,
+                    'value': value
+                })
+                
+            if conditions:  # 只添加有效的规则
+                rules.append({
+                    'conditions': conditions,
+                    'label': label.strip()
+                })
+                
+        self.logger.log(f"Successfully parsed {len(rules)} rules")
+        if not rules:
+            self.logger.log("[ERROR] Failed to parse any valid rules!")
+            
+        return rules
+
     def _expand_jump_tree_rules(self, lines):
         """将(编号) IF ... THEN (编号/类别) ELSE (编号/类别)格式的规则，递归展开为所有路径规则，避免重复和漏掉分支"""
         node_map = {}
@@ -212,6 +305,7 @@ class CoTDecisionTree:
             else:
                 results.append((conds + [node['cond']], node['then']))
             # ELSE分支
+            
             if node['else'].isdigit() and node['else'] in node_map:
                 dfs(node['else'], conds + [f'NOT ({node["cond"]})'])
             else:
@@ -264,139 +358,40 @@ class CoTDecisionTree:
         return formatted_rules
 
     def predict(self, x_test):
-        """Predict using the generated rules"""
+        """Predict using the generated rules, 并统计每条规则命中样本数"""
         if not self.rules:
             raise ValueError("No rules available. Call fit() first.")
-            
         predictions = []
+        rule_hit_count = [0 for _ in self.rules]
         for sample in x_test:
-            prediction = self._apply_rules(sample)
-            predictions.append(prediction)
+            matched_rule_idx = None
+            prediction = None
+            for idx, rule in enumerate(self.rules):
+                if self._apply_rules(sample, rule=rule):
+                    matched_rule_idx = idx
+                    prediction = rule['label']
+                    break
+            if matched_rule_idx is not None:
+                rule_hit_count[matched_rule_idx] += 1
+                predictions.append(prediction)
+            else:
+                predictions.append(self.meta.get_default_label())
+        # 输出每条规则命中数
+        for idx, count in enumerate(rule_hit_count):
+            self.logger.log(f"[规则{idx+1}] 命中样本数: {count}")
         return np.array(predictions)
 
-    def _parse_llm_response(self, response):
-        """只支持 (N) IF ... THEN ... 格式的规则解析，不再处理 else 分支"""
-        self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
-        import re
-        rules = []
-        if not response:
-            self.logger.log("Error: Empty LLM response received")
-            return []
-        response = str(response).strip()
-        if not response:
-            self.logger.log("Error: Response is empty after conversion")
-            return []
-
-        # 1. 提取BEGIN_TREE/END_TREE壳子内容
-        tree_block = None
-        begin_pat = re.compile(r'BEGIN[_ ]?TREE', re.IGNORECASE)
-        end_pat = re.compile(r'END[_ ]?TREE', re.IGNORECASE)
-        begin_idx = None
-        end_idx = None
-        lines = response.split('\n')
-        for i, line in enumerate(lines):
-            if begin_pat.search(line):
-                begin_idx = i
-            if end_pat.search(line):
-                end_idx = i
-                break
-        if begin_idx is not None and end_idx is not None and end_idx > begin_idx:
-            tree_block = '\n'.join(lines[begin_idx+1:end_idx])
-            self.logger.log(f"Detected BEGIN_TREE/END_TREE block, extracting rules from block (lines {begin_idx+1}-{end_idx-1})")
-        else:
-            tree_block = response
-            self.logger.log("No BEGIN_TREE/END_TREE block found, using full response for rule extraction.")
-
-        # 2. 只解析 (N) IF ... THEN ... 格式的规则
-        lines = tree_block.split('\n')
-        rule_pattern = re.compile(
-            r'^\s*(?:\((\d+)\))?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$',
-            re.IGNORECASE
-        )
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#') or line.lower().startswith('note:'):
-                continue  # 跳过空行和注释
-            match = rule_pattern.match(line)
-            if match:
-                # rule_id = match.group(1)  # 可选编号
-                condition = match.group(2)
-                consequence = match.group(3)
-                if not isinstance(condition, str) or not isinstance(consequence, str):
-                    self.logger.log(f"Invalid rule type - condition: {type(condition)}, consequence: {type(consequence)}")
-                    continue
-                condition = condition.strip()
-                consequence = consequence.strip()
-                if not condition or not consequence:
-                    self.logger.log(f"Empty rule condition or consequence")
-                    continue
-                # 解析多条件
-                # 修正正则表达式，支持下划线、负号、浮点数、空格等
-                condition_pattern = re.compile(
-                    r'^\s*([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=)\s*([\-]?[\d.]+|\".+?\"|\'.+?\'|[\w_]+)\s*$'
-                )
-                parsed_conditions = []
-                valid = True
-                for cond in condition.split(' AND '):
-                    cond = cond.strip()
-                    cond_match = condition_pattern.match(cond)
-                    if not cond_match:
-                        self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
-                        self.logger.log(f"[DEBUG] All feature_names: {self.feature_names}")
-                        valid = False
-                        break
-                    feature, operator, value = cond_match.groups()
-                    feature = ' '.join(feature.split())
-                    matched_feature = next((f for f in self.feature_names if f.lower() == feature.lower()), None)
-                    if not matched_feature:
-                        self.logger.log(f"[DEBUG] Unknown feature '{feature}', skipping condition. All feature_names: {self.feature_names}")
-                        valid = False
-                        break
-                    try:
-                        value = value.strip('\'\"')
-                        numeric_value = float(value) if '.' in value else int(value)
-                        value = numeric_value
-                    except:
-                        pass
-                    parsed_conditions.append({
-                        'feature': matched_feature,
-                        'operator': operator,
-                        'value': value
-                    })
-                if valid and parsed_conditions:
-                    rule_entry = {
-                        'conditions': parsed_conditions,
-                        'label': consequence
-                    }
-                    if not parsed_conditions:
-                        self.logger.log(f"[ERROR] 解析到的rule条件为空，原始line: {line}")
-                    rules.append(rule_entry)
-            else:
-                self.logger.log(f"[DEBUG] Skipped non-rule line: {line}")
-        self.logger.log(f"Successfully parsed {len(rules)} valid rules")
-        if not rules:
-            self.logger.log("LLM规则解析失败，未能提取到任何有效规则，请检查LLM输出格式！")
-        return rules
-
-    def _apply_rules(self, sample):
-        """应用规则时支持多条件 AND 结构"""
+    def _apply_rules(self, sample, rule=None):
+        """应用规则时支持多条件 AND 结构，修正特征名到列的映射"""
         if not self.rules:
             self.logger.log("[ERROR] _apply_rules: self.rules为空，直接返回默认label！")
-            return self.meta.get_default_label()
-        sample_dict = {self.feature_names[i]: val for i, val in enumerate(sample)}
-        for rule in self.rules:
-            # 类型安全检查
+            return False
+        # 用映射保证特征名和数据列一致
+        sample_dict = {name: sample[idx] for name, idx in self.feature_name_to_col.items()}
+        rules_to_check = [rule] if rule is not None else self.rules
+        for rule in rules_to_check:
             if not isinstance(rule, dict):
-                if not hasattr(self, '_reported_invalid_rule_types'):
-                    self._reported_invalid_rule_types = set()
-                rule_type = str(type(rule))
-                if rule_type not in self._reported_invalid_rule_types:
-                    self.logger.log(f"发现无效规则类型: {rule_type}")
-                    self.logger.log(f"示例无效规则内容: {str(rule)[:100]}...")
-                    self.logger.log("规则应包含condition, feature, operator, value等键")
-                    self._reported_invalid_rule_types.add(rule_type)
                 continue
-            # 支持多条件结构
             if 'conditions' in rule and isinstance(rule['conditions'], list):
                 all_match = True
                 for cond in rule['conditions']:
@@ -430,41 +425,9 @@ class CoTDecisionTree:
                         all_match = False
                         break
                 if all_match:
-                    return rule['label']
-                continue
-            # 兼容旧结构
-            required_keys = ['feature', 'operator', 'value', 'label']
-            if all(k in rule for k in required_keys):
-                feature = rule['feature']
-                operator = rule['operator']
-                value = rule['value']
-                label = rule['label']
-                sample_value = sample_dict.get(feature, None)
-                if sample_value is None:
-                    continue
-                try:
-                    num_sample = float(sample_value)
-                    num_value = float(value)
-                    comparison_type = 'numeric'
-                except (ValueError, TypeError):
-                    str_sample = str(sample_value).lower()
-                    str_value = str(value).lower()
-                    comparison_type = 'string'
-                match = False
-                if comparison_type == 'numeric':
-                    if operator == '>=': match = num_sample >= num_value
-                    elif operator == '<=': match = num_sample <= num_value
-                    elif operator == '>': match = num_sample > num_value
-                    elif operator == '<': match = num_sample < num_value
-                    elif operator == '=': match = abs(num_sample - num_value) < 1e-6
-                else:
-                    if operator == '=': match = str_sample == str_value
-                    elif operator in ['>', '<']:
-                        match = str_sample == str_value
-                if match:
-                    return label
-        self.logger.log("[ERROR] _apply_rules: 所有规则都未命中，返回默认label！")
-        return self.meta.labels[0].value
+                    return True
+        return False
+
 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
@@ -736,15 +699,10 @@ class TreeModel:
         self.rules = parsed_rules
 
     def _parse_llm_response(self, response):
-        """支持嵌套规则结构的解析方法，增强对 LLM 输出格式的健壮性，支持BEGIN_TREE/END_TREE壳子"""
-        self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
+        """解析LLM返回的决策树规则文本，支持BEGIN_TREE/END_TREE壳子和标准规则格式"""
         import re
+        self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
         rules = []
-        rule_map = {}
-        terminal_rules = []
-        rule_groups = {}
-        group_id = 1
-
         if not response:
             self.logger.log("Error: Empty LLM response received")
             return []
@@ -752,13 +710,10 @@ class TreeModel:
         if not response:
             self.logger.log("Error: Response is empty after conversion")
             return []
-
-        # 1. 提取BEGIN_TREE/END_TREE壳子内容
-        tree_block = None
+        # 提取BEGIN_TREE/END_TREE之间内容
         begin_pat = re.compile(r'BEGIN[_ ]?TREE', re.IGNORECASE)
         end_pat = re.compile(r'END[_ ]?TREE', re.IGNORECASE)
-        begin_idx = None
-        end_idx = None
+        begin_idx = end_idx = None
         lines = response.split('\n')
         for i, line in enumerate(lines):
             if begin_pat.search(line):
@@ -772,69 +727,29 @@ class TreeModel:
         else:
             tree_block = response
             self.logger.log("No BEGIN_TREE/END_TREE block found, using full response for rule extraction.")
-
-        # 2. 只解析 (N) IF ... THEN ... 格式的规则
-        lines = tree_block.split('\n')
-        rule_pattern = re.compile(
-            r'^\s*(?:\((\d+)\))?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$',
-            re.IGNORECASE
-        )
-        for line in lines:
+        # 只解析 N. IF ... THEN ... 格式的规则
+        rule_pattern = re.compile(r'^\s*(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
+        for line in tree_block.split('\n'):
             line = line.strip()
             if not line or line.startswith('#') or line.lower().startswith('note:'):
-                continue  # 跳过空行和注释
+                continue
             match = rule_pattern.match(line)
             if match:
-                # rule_id = match.group(1)  # 可选编号
-                condition = match.group(2)
-                consequence = match.group(3)
-                if not isinstance(condition, str) or not isinstance(consequence, str):
-                    self.logger.log(f"Invalid rule type - condition: {type(condition)}, consequence: {type(consequence)}")
-                    continue
-                condition = condition.strip()
-                consequence = consequence.strip()
-                if not condition or not consequence:
-                    self.logger.log(f"Empty rule condition or consequence")
-                    continue
-                # 解析多条件
-                # 修正正则表达式，支持下划线、负号、浮点数、空格等
-                condition_pattern = re.compile(
-                    r'^\s*([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=)\s*([\-]?[\d.]+|\".+?\"|\'.+?\'|[\w_]+)\s*$'
-                )
+                condition = match.group(1)
+                consequence = match.group(2)
+                # 多条件分割
+                conds = [c.strip() for c in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)]
                 parsed_conditions = []
-                valid = True
-                for cond in condition.split(' AND '):
-                    cond = cond.strip()
-                    cond_match = condition_pattern.match(cond)
+                for cond in conds:
+                    cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>)\s*([\-]?[\d.]+|\w+)$', cond)
                     if not cond_match:
                         self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
-                        self.logger.log(f"[DEBUG] All feature_names: {self.feature_names}")
-                        valid = False
-                        break
+                        continue
                     feature, operator, value = cond_match.groups()
                     feature = ' '.join(feature.split())
-                    matched_feature = next((f for f in self.feature_names if f.lower() == feature.lower()), None)
-                    if not matched_feature:
-                        self.logger.log(f"[DEBUG] Unknown feature '{feature}', skipping condition. All feature_names: {self.feature_names}")
-                        valid = False
-                        break
-                    try:
-                        value = value.strip('\'\"')
-                        numeric_value = float(value) if '.' in value else int(value)
-                        value = numeric_value
-                    except:
-                        pass
-                    parsed_conditions.append({
-                        'feature': matched_feature,
-                        'operator': operator,
-                        'value': value
-                    })
-                if valid and parsed_conditions:
-                    rule_entry = {
-                        'conditions': parsed_conditions,
-                        'label': consequence
-                    }
-                    rules.append(rule_entry)
+                    parsed_conditions.append({'feature': feature, 'operator': operator, 'value': value})
+                if parsed_conditions:
+                    rules.append({'conditions': parsed_conditions, 'label': consequence})
             else:
                 self.logger.log(f"[DEBUG] Skipped non-rule line: {line}")
         self.logger.log(f"Successfully parsed {len(rules)} valid rules")

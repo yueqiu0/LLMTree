@@ -498,6 +498,42 @@ def calc_accuracy(labels: list, results: list) -> float:
     return correct_count / len(labels)
 
 
+def cot_calc_accuracy_auc(y_true, y_pred, meta):
+    """
+    专用于CoT字符串标签输出的准确率和AUC计算。
+    y_true, y_pred: 均为字符串标签
+    meta: DatasetMeta, 用于标签到数值的映射
+    返回: (accuracy, auc)
+    """
+    # 准确率
+    correct = 0
+    for yt, yp in zip(y_true, y_pred):
+        if isinstance(yt, str) and isinstance(yp, str):
+            if yt.lower() == yp.lower():
+                correct += 1
+        else:
+            if yt == yp:
+                correct += 1
+    accuracy = correct / len(y_true)
+    # AUC
+    y_true_num = [meta.get_label_value(y) for y in y_true]
+    y_pred_num = [meta.get_label_value(y) for y in y_pred]
+    if len(set(y_pred_num)) < 2:
+        auc = float('nan')
+    else:
+        import sklearn.metrics
+        try:
+            auc = sklearn.metrics.roc_auc_score(y_true_num, y_pred_num)
+        except ValueError as e:
+            if 'unknown format is not supported' in str(e):
+                import warnings
+                warnings.warn(f"roc_auc_score failed: {e}. Returning NaN.")
+                auc = float('nan')
+            else:
+                raise
+    return accuracy, auc
+
+
 def evaluate(
     x_train: np.ndarray,
     y_train: np.ndarray,
@@ -701,19 +737,12 @@ def evaluate(
                     global_log("[DEBUG][CoT] 直接用规则本地推理，无LLM参与")
                     tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
                     tree_predict = tree_model.predict(x_test)
-                    # 转换为01标签
-                    tree_predict_num = [meta.get_label_value(r) for r in tree_predict]
-                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
-                    if len(set(tree_predict_num)) < 2:
-                        global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
-                        tree_auc = float('nan')
-                    else:
-                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, tree_predict_num)
-                    tree_accuracy = calc_accuracy(y_test_num, tree_predict_num)
+                    # CoT输出为字符串，专用评测函数
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_predict, meta)
                     global_log("[CoTDecisionTree] 直接用规则推理（未调用LLM）")
                     global_log(f"规则数量: {len(tree_model.rules)}")
                     global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
-                    results = tree_predict_num
+                    results = tree_predict
                     acc = tree_accuracy
                     auc = tree_auc
             else:
