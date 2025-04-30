@@ -405,13 +405,14 @@ def generate_CoT_tree_prompt(
 
     # ------ 决策树要求 ------
     prompt_parts.append("# Decision Tree Requirements")
-    prompt_parts.append(f"MOST IMPORTANT: The decision tree MUST satisfy: ∀rule∈Tree, len(conditions) = {max_depth-1}. Mathematical proof required: depth={max_depth} ⇒ each path has exactly {max_depth-1} splits ⇒ {max_depth-1} conditions per rule")
+    prompt_parts.append(f"please generate a decision tree with a maximum depth of {max_depth} (which means {max_depth-1} levels because the max_depth includes the root node).")
     prompt_parts.append("1. Type Matching: Use integers for int features and floating-point numbers for float features.")
     prompt_parts.append("2. Decimal Precision: Use precision suited to each feature's scale - typically up to 3 decimals. Avoid overly precise thresholds (e.g., 0.165) when simpler ones (e.g., 0.22) better match value ranges.")
     prompt_parts.append("3. Use different features for each split.")
     prompt_parts.append("4. Rules must follow this exact format:")
     prompt_parts.append(f"4.1 Mathematical Formalism: Let depth d ∈ [1, {max_depth}], for any rule r, |r.conditions| = d-1. Therefore when d=3: ∀r, |r.conditions|=2") 
     prompt_parts.append("   (N) IF condition [AND condition] THEN label_1")
+    prompt_parts.append(f"MOST IMPORTANT: The decision tree MUST satisfy: ∀rule∈Tree, len(conditions) = {max_depth-1}. Mathematical proof required: depth={max_depth} ⇒ each path has exactly {max_depth-1} splits ⇒ {max_depth-1} conditions per rule")
     prompt_parts.append("5. If you are highly confident (e.g. >0.95) that a simple rule or shallow tree is sufficient, you may generate a tree with only 1 level. Otherwise, try to use 2 levels and make the splits as full as possible.")
     prompt_parts.append("6. You must analyse the features about wether they have categories and use the proper way to generate the rules.")
     prompt_parts.append("7. For features without Categories:you can only use '>=' and '<' conditions,Example: persons >= 5 ")
@@ -426,7 +427,6 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("You are a Decision Tree Generation Master. Your task is to analyze the following data features and generate a decision tree for classification.")
     prompt_parts.append("For each decision tree you construct, you must leverage your domain knowledge and expertise in this field to guide the feature selection, splitting, and rule generation process.")
     prompt_parts.append("Let's think step by step. First, select the best root feature and explain why. Then, based on this feature, describe how to split the dataset. For each subset, explain how to proceed. Please provide a detailed reasoning process in English.")
-    prompt_parts.append(f"After that, generate the decision tree rules. and ensure the number of conditions in each rule is less than or equal to {max_depth-1}.ensure the number of rules is less than or equal to {pow(2, max_depth-1)}.ensure that the tree ca cover all the data point and None-redundant Coverage: The decision tree must not contain rules with logically overlapping conditions. Example violation: Having both 'gender != male' and 'gender = female' conditions in different rules.")
     prompt_parts.append("")
     prompt_parts.append("BEGIN_TREE")
     prompt_parts.append("(1) IF condition1 AND condition2 THEN no")
@@ -437,9 +437,9 @@ def generate_CoT_tree_prompt(
     # Example Rules
     prompt_parts.append("# Example Rules")
 
-    prompt_parts.append("(1) IF temperature >= .. THEN high_fever")
-    prompt_parts.append("(2) IF temperature < .. AND cough = True THEN suspect_infection")
-    prompt_parts.append("(3) IF temperature < .. AND cough != True THEN normal")
+    prompt_parts.append("(1) IF temperature >= 38 THEN high_fever")
+    prompt_parts.append("(2) IF temperature < 38 AND cough = True THEN suspect_infection")
+    prompt_parts.append("(3) IF temperature < 38 AND cough != True THEN normal")
     prompt_parts.append("...")
     
     prompt_parts.append("(1) IF gender = 'male' AND age_group = 'senior' THEN high_risk")
@@ -447,10 +447,10 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("(3) IF gender != 'male' THEN low_risk")
     prompt_parts.append("...")
     
-    prompt_parts.append("(1) IF income >= .. AND credit_score >= .. THEN approve")
-    prompt_parts.append("(2) IF income >= .. AND credit_score >= .. THEN review")
-    prompt_parts.append("(3) IF income < .. AND credit_score < .. THEN reject")
-    prompt_parts.append("(4) IF income < .. AND credit_score >= .. THEN review")
+    prompt_parts.append("(1) IF income >= 50000.50 AND credit_score >= 700 THEN approve")
+    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score >= 600 THEN review")
+    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 600 THEN reject")
+    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 600 THEN review")
     prompt_parts.append("...")
     prompt_parts.append("# Example Rules")
 
