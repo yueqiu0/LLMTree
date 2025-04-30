@@ -248,7 +248,7 @@ class LLMDecisionTree:
             # 解析条件(支持AND连接的多个条件)
             for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
                 cond = cond.strip()
-                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=)\s*([\-]?[\d.]+|\w+)$', cond)
+                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|\w+)$', cond)
                 if not cond_match:
                     self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                     continue
@@ -416,9 +416,11 @@ class LLMDecisionTree:
                         elif operator == '<=': match = num_sample <= num_value
                         elif operator == '>': match = num_sample > num_value
                         elif operator == '<': match = num_sample < num_value
-                        elif operator == '=': match = abs(num_sample - num_value) < 1e-6
+                        elif operator in ['=', '==']: match = abs(num_sample - num_value) < 1e-6
+                        elif operator == '!=': match = abs(num_sample - num_value) >= 1e-6
                     else:
-                        if operator == '=': match = str_sample == str_value
+                        if operator in ['=', '==']: match = str_sample == str_value
+                        elif operator == '!=': match = str_sample != str_value
                         elif operator in ['>', '<']:
                             match = str_sample == str_value
                     if not match:

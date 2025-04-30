@@ -420,6 +420,7 @@ def generate_LLM_tree_prompt(
     prompt_parts.append("9. For categorical features: Every '=' condition must be followed by a complementary '!=' condition to ensure exhaustive coverage of all category possibilities. ")
     prompt_parts.append("10. After splitting on a categorical feature (using '=' in any rule), all subsequent rules for that feature must use '!=' conditions. Example: If rule (1) uses 'size = big', then other rules  cannot use 'size = small' - they must use 'size != big' for further splits.")
     prompt_parts.append("11. A categorical feature can only be assigned ONE specific '=' value in the ENTIRE tree. Once a value is chosen (e.g. price = vhigh), other rules must use '!=' for this value instead of creating new '=' conditions with different values.")
+    prompt_parts.append("12. IMPORTANT: If the rules are already able to cover all the labels,please stop generating rules and do not generate any other rules.Wrong examples:(1) IF shell_weight >= 0.5 THEN older(2) IF shell_weight < 0.5 THEN younger(3) IF length >= 0.5 THEN older(4) IF length < 0.5 THEN younger(the later two rules are redundant)")
     prompt_parts.append("")
 
     # ------ 决策树大师引导与英文推理要求 ------
