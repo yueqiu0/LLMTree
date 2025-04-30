@@ -6,6 +6,6 @@ base_configs:
   - ./common.yml
 
 config:
-  exp_name: CoT_tree-diabetes-baseline
+  exp_name: CoT-diabetes-baseline
   template: template/basic.jinja
   tree_only: False
