@@ -427,20 +427,7 @@ class DecisionTree(TreeBase):
         logger.log(f"总共收集了 {len(rules)} 条规则")
         return rules
 
-        def find_non_leaf_nodes(self):
-        """返回所有非叶子节点"""
-        nodes = []
-        
-        def traverse(node):
-            if node is None:
-                return
-            if not node.is_leaf:
-                nodes.append(node)
-                traverse(node.left_child)  # 使用正确的属性名
-                traverse(node.right_child)  # 使用正确的属性名
-        
-        traverse(self.root_node)
-        return nodes
+
 
     def export_nodes_dict(self) -> dict:
         """导出节点字典，供序列化使用"""
@@ -564,6 +551,21 @@ class DecisionTree(TreeBase):
             logger.log(f"节点分配标签: {majority_label}, 样本标签分布: {label_counts}")
         else:
             logger.log("警告: 节点没有样本，无法分配标签")
+
+    def find_non_leaf_nodes(self):
+        """返回所有非叶子节点"""
+        nodes = []
+        
+        def traverse(node):
+                if node is None:
+                    return
+                if not node.is_leaf:
+                    nodes.append(node)
+                    traverse(node.left_child)  # 使用正确的属性名
+                    traverse(node.right_child)  # 使用正确的属性名
+        
+        traverse(self.root_node)
+        return nodes
 
 
 class RandomForest(TreeBase):

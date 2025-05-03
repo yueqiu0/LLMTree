@@ -42,6 +42,9 @@ from tree_prompt.model.strategy import clean_llm_response
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
     missing_fields = []
     for k, v in instance.__dict__.items():
+        # 检查是否为tree_only模式，如果是则跳过检查特定字段
+        if hasattr(instance, 'tree_only') and instance.tree_only and k in ["runner", "use_tree_rules", "template", "serializer_type"]:
+            continue
         if v is None:
             missing_fields.append(k if not prefix else f"{prefix}.{k}")
     return missing_fields
@@ -104,27 +107,35 @@ class EvaluateArgs:
         self.print_only: bool = False
 
     def get_missing_fields(self) -> list[str]:
-        missing_fields = _get_missing_fields(self)
+        # 先获取所有缺失字段
+        missing_fields = []
+        for k, v in self.__dict__.items():
+            # 只有在非tree_only模式下才检查runner和use_tree_rules字段
+            if v is None and not (self.tree_only and k in ["runner", "use_tree_rules", "template", "serializer_type"]):
+                missing_fields.append(k)
+        
+        # 只有在非tree_only模式下才检查runner_args
+        if not self.tree_only:
+            if (
+                (
+                    self.runner == "openai_api"
+                    and not isinstance(self.runner_args, OpenAIAPIArgs)
+                )
+                or (
+                    self.runner == "huggingchat"
+                    and not isinstance(self.runner_args, HuggingChatArgs)
+                )
+                or (
+                    self.runner == "together_api"
+                    and not isinstance(self.runner_args, TogetherAPIArgs)
+                )
+            ):
+                missing_fields.append("runner_args")
 
-        if (
-            (
-                self.runner == "openai_api"
-                and not isinstance(self.runner_args, OpenAIAPIArgs)
-            )
-            or (
-                self.runner == "huggingchat"
-                and not isinstance(self.runner_args, HuggingChatArgs)
-            )
-            or (
-                self.runner == "together_api"
-                and not isinstance(self.runner_args, TogetherAPIArgs)
-            )
-        ):
-            missing_fields.append("runner_args")
+            elif self.runner_args and not isinstance(self.runner_args, dict):
+                missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
-        elif self.runner_args:
-            missing_fields += _get_missing_fields(self.runner_args, "runner_args")
-
+        # 检查tree_args
         if (
             (
                 self.tree_type == "simple"
@@ -140,38 +151,24 @@ class EvaluateArgs:
             )
         ):
             missing_fields.append("tree_args")
-        elif self.tree_args:
+        elif self.tree_args and not isinstance(self.tree_args, dict):
             missing_fields += _get_missing_fields(self.tree_args, "tree_args")
 
-        if self.dataset_args:
-            missing_fields += _get_missing_fields(self.dataset_args, "dataset")
+        # 检查dataset_args
+        if not isinstance(self.dataset_args, DatasetArgs) and not isinstance(self.dataset_args, dict):
+            missing_fields.append("dataset_args")
+        elif self.dataset_args and not isinstance(self.dataset_args, dict):
+            missing_fields += _get_missing_fields(self.dataset_args, "dataset_args")
 
         return missing_fields
 
     def get_missing_fields_tree_only(self) -> list[str]:
-        missing_fields = self.get_missing_fields()
-        required_fields = [
-            "exp_name",
-            "tree_type",
-            "tree_args",
-            "output_dir",
-            "random_seed",
-            "dataset_args",
-            "train_sizes",
-            "num_tests_per_set",
-            "test_size",
-            "test_batch",
-            "shuffle",
-            "shuffle_column",
-        ]
-        tree_only_missing_fields = []
-
-        for field in required_fields:
-            for missing_field in missing_fields:
-                if missing_field.startswith(field):
-                    tree_only_missing_fields.append(missing_field)
-
-        return tree_only_missing_fields
+        # 避免检查runner_args
+        self_copy = EvaluateArgs()
+        self_copy.__dict__ = self.__dict__.copy()
+        self_copy.tree_only = True  # 强制设置为tree_only模式
+        
+        return self_copy.get_missing_fields()
 
     def load_sub_args(self):
         assert isinstance(self.tree_args, dict)
@@ -181,6 +178,9 @@ class EvaluateArgs:
             assert isinstance(self.runner_args, dict)
             runner_args_dict = self.runner_args
 
+            if self.runner is None:
+                raise ValueError("当tree_only为False时，必须指定runner类型")
+            
             if self.runner == "openai_api":
                 self.runner_args = OpenAIAPIArgs()
             elif self.runner == "huggingchat":
@@ -404,12 +404,9 @@ def parse_args() -> EvaluateArgs:
 
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
-    if (
-        openai_api_key
-        and not runner_args_dict.get("openai_api_key")
-        and not args.runner_args.get("openai_api_key")
-    ):
-        runner_args_dict["openai_api_key"] = openai_api_key
+    if openai_api_key and not runner_args_dict.get("openai_api_key"):
+        if args.runner_args is None or not args.runner_args.get("openai_api_key"):
+            runner_args_dict["openai_api_key"] = openai_api_key
 
     if args.runner_args is None:
         args.runner_args = {}
@@ -476,95 +473,79 @@ def calc_accuracy(labels: list, results: list) -> float:
 
 
 def evaluate(
-    x_train: np.ndarray,
-    y_train: np.ndarray,
-    x_test: np.ndarray,
-    y_test: np.ndarray,
-    runner: Runner,
-    master_template: jinja2.Template,
-    serializer: Serializer,
-    meta: DatasetMeta,
-    tree_model: DecisionTree,
-    use_tree_rules: bool,
-    tree_only: bool,
-    num_tests_per_round: int,
+    train_x,
+    train_y,
+    test_x,
+    test_y,
+    runner,
+    master_template,
+    serializer,
+    meta,
+    tree_model,
+    use_tree_rules,
+    tree_only,
+    test_batch,
 ):
-    # get tree's prediction rules & results
-    if use_tree_rules or tree_only:
-        if type(tree_model) == FederatedDecisionTree:
-            all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
-            tree_aucs, tree_accuracies = [], []
-            for tree_predict in all_tree_predict:
-                n_classes = len(np.unique(y_test))
-                if n_classes > 2:
-                    from sklearn.preprocessing import label_binarize
-                    classes = np.unique(y_test)
-                    
-                    # 二进制化处理
-                    y_test_bin = label_binarize(y_test, classes=classes)
-                    if np.array(tree_predict).ndim == 1:  # 如果预测是一维的
-                        tree_predict_bin = label_binarize(tree_predict, classes=classes)
-                        # 计算宏平均AUC和微平均AUC
-                        tree_auc = {
-                            'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
-                            'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
-                        }
-                    else:  # 如果已经是二维的
-                        tree_auc = {
-                            'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='macro'),
-                            'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='micro')
-                        }
-                else:
-                    tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                tree_accuracy = calc_accuracy(y_test, tree_predict)
-                tree_aucs.append(tree_auc)
-                tree_accuracies.append(tree_accuracy)
-            tree_auc = tree_aucs
-            tree_accuracy = tree_accuracies
-        else:
-            tree_predict, rules = tree_model.predict(
-                x_train, y_train, x_test, export_rules=True
-            )
-            n_classes = len(np.unique(y_test))
-            if n_classes > 2:
-                from sklearn.preprocessing import label_binarize
-                classes = np.unique(y_test)
-                
-                # 二进制化处理
-                y_test_bin = label_binarize(y_test, classes=classes)
-                if np.array(tree_predict).ndim == 1:  # 如果预测是一维的
-                    tree_predict_bin = label_binarize(tree_predict, classes=classes)
-                    # 计算宏平均AUC和微平均AUC
-                    tree_auc = {
-                        'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
-                        'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
-                    }
-                else:  # 如果已经是二维的
-                    tree_auc = {
-                        'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='macro'),
-                        'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='micro')
-                    }
-            else:
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-            tree_accuracy = calc_accuracy(y_test, tree_predict)
+    # 检查模型类型，只有在简单决策树时才尝试导出规则
+    export_rules = use_tree_rules
+    if isinstance(tree_model, (RandomForestDecisionTree, XGBoostDecisionTree, FederatedDecisionTree)):
+        export_rules = False
+    
+    # 调用预测时捕获NotImplementedError
+    try:
+        tree_predict, rules = tree_model.predict(
+            train_x, train_y, test_x, export_rules
+        )
+    except NotImplementedError:
+        # 如果规则导出不被支持，重新调用但禁用规则导出
+        tree_predict, rules = tree_model.predict(
+            train_x, train_y, test_x, False
+        )
+        rules = []  # 提供空规则列表
+    
+    # 计算树模型的AUC和准确率
+    tree_accuracy = calc_accuracy(test_y, tree_predict)
+    
+    # 计算树模型的AUC，处理多分类情况
+    n_classes = len(np.unique(test_y))
+    if n_classes > 2:
+        from sklearn.preprocessing import label_binarize
+        classes = np.unique(test_y)
+        
+        # 二进制化处理
+        y_test_bin = label_binarize(test_y, classes=classes)
+        if np.array(tree_predict).ndim == 1:  # 如果预测是一维的
+            tree_predict_bin = label_binarize(tree_predict, classes=classes)
+            # 计算宏平均AUC和微平均AUC
+            tree_auc = {
+                'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
+                'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
+            }
+        else:  # 如果已经是二维的
+            tree_auc = {
+                'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='macro'),
+                'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='micro')
+            }
+    else:
+        tree_auc = sklearn.metrics.roc_auc_score(test_y, tree_predict)
 
     if tree_only:
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
+            "tree_results": tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict,
         }
 
     prompts, test_splits, labels = gen_prompt(
         meta,
         master_template,
         serializer,
-        x_train,
-        y_train,
-        x_test,
-        y_test,
+        train_x,
+        train_y,
+        test_x,
+        test_y,
         rules if use_tree_rules else [],
-        num_tests_per_round,
+        test_batch,
     )
 
     raw_results = []
@@ -614,10 +595,10 @@ def evaluate(
     n_classes = len(meta.labels)
     if n_classes > 2:
         from sklearn.preprocessing import label_binarize
-        classes = np.unique(y_test)
+        classes = np.unique(test_y)
         
         # 二进制化处理
-        y_test_bin = label_binarize(y_test, classes=classes)
+        y_test_bin = label_binarize(test_y, classes=classes)
         if np.array(results_values).ndim == 1:  # 如果预测是一维的
             results_bin = label_binarize(results_values, classes=classes)
             # 计算宏平均AUC和微平均AUC
@@ -631,7 +612,7 @@ def evaluate(
                 'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='micro')
             }
     else:
-        auc = sklearn.metrics.roc_auc_score(y_test, results_values)
+        auc = sklearn.metrics.roc_auc_score(test_y, results_values)
 
     if isinstance(auc, dict):
         logger.log("Accuracy/AUC (macro/micro): {}/{}/{}".format(acc, auc['macro'], auc['micro']))
@@ -639,16 +620,16 @@ def evaluate(
         logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
 
     if use_tree_rules:
-        if isinstance(tree_auc, dict):
+        if isinstance(tree_predict, dict):
             logger.log("Tree accuracy/AUC (macro/micro): {}/{}/{}".format(
-                tree_accuracy, tree_auc['macro'], tree_auc['micro']
+                calc_accuracy(test_y, tree_predict), tree_predict['macro'], tree_predict['micro']
             ))
         else:
-            logger.log("Tree accuracy/AUC: {}/{}".format(tree_accuracy, tree_auc))
+            logger.log("Tree accuracy/AUC: {}/{}".format(calc_accuracy(test_y, tree_predict), tree_predict))
 
     result_dict = {}
     result_dict["record"] = {"prompt": prompts[0]}
-    result_dict["labels"] = [int(y) for y in y_test]
+    result_dict["labels"] = [int(y) for y in test_y]
     result_dict["results"] = [meta.get_label_value(r) for r in results]
     result_dict["auc"] = auc
     result_dict["accuracy"] = acc
@@ -656,7 +637,7 @@ def evaluate(
     if use_tree_rules:
         result_dict["tree_auc"] = tree_auc
         result_dict["tree_accuracy"] = tree_accuracy
-        result_dict["tree_results"] = tree_predict
+        result_dict["tree_results"] = tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict
 
     return result_dict
 

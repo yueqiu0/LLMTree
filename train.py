@@ -448,7 +448,7 @@ def evaluate(
         tree_results += results[1]
         tree_raw_results += results[2]
 
-        if len(tree_results) > 0:
+    if len(tree_results) > 0:
         n_classes = len(np.unique(y_test))
         if n_classes > 2:
             from sklearn.preprocessing import label_binarize
