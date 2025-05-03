@@ -1,0 +1,86 @@
+name: nursery
+target: evaluate nursery school applications
+desc: |
+  This dataset was derived from a hierarchical decision model originally 
+  developed to rank applications for nursery schools. It was used during 
+  several years in 1980s when there was excessive enrollment to these schools 
+  in Ljubljana, Slovenia, and the rejected applications frequently needed an 
+  objective explanation.
+label_meaning: application evaluation
+features:
+- name: parents
+  desc: Status of parents
+  type: categorical
+  categories:
+    usual: usual parental status
+    pretentious: pretentious parental status
+    great_pret: great pretentious parental status
+- name: has_nurs
+  desc: Nursery availability
+  type: categorical
+  categories:
+    proper: proper nursery
+    less_proper: less proper nursery
+    improper: improper nursery
+    critical: critical nursery availability
+    very_crit: very critical nursery availability
+- name: form
+  desc: Form of the family
+  type: categorical
+  categories:
+    complete: complete family
+    completed: completed family
+    incomplete: incomplete family
+    foster: foster family
+- name: children
+  desc: Number of children
+  type: categorical
+  categories:
+    "1": one child
+    "2": two children
+    "3": three children
+    more: more than three children
+- name: housing
+  desc: Housing conditions
+  type: categorical
+  categories:
+    convenient: convenient housing
+    less_conv: less convenient housing
+    critical: critical housing
+- name: finance
+  desc: Financial standing of the family
+  type: categorical
+  categories:
+    convenient: convenient financial standing
+    inconv: inconvenient financial standing
+- name: social
+  desc: Social conditions
+  type: categorical
+  categories:
+    nonprob: non-problematic social conditions
+    slightly_prob: slightly problematic social conditions
+    problematic: problematic social conditions
+- name: health
+  desc: Health conditions
+  type: categorical
+  categories:
+    recommended: recommended health conditions
+    priority: priority health conditions
+    not_recom: not recommended health conditions
+
+labels:
+- name: not_recommend
+  value: 0
+  desc: application is not recommended
+- name: recommend
+  value: 1
+  desc: application is recommended
+- name: very_recommend
+  value: 2
+  desc: application is very recommended
+# - name: priority
+#   value: 3
+#   desc: application is priority
+# - name: special_priority
+#   value: 4
+#   desc: application is special priority 

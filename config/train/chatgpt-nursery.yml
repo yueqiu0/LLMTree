@@ -1,0 +1,11 @@
+base_configs:
+- ../base/dataset/nursery.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./strategy/unknown_class.yml
+- ./common.yml
+
+config:
+  exp_name: chatgpt-nursery
+  train_args:
+    num_samples_per_group: 5  # 正好是类别数，确保能整除
