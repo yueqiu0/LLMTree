@@ -781,7 +781,7 @@ class TrainStrategy:
         if conditions:
             return f"IF {' AND '.join(conditions)} THEN {label_name}"
         else:
-            return f"{label_name} (无条件)"
+            return f"{label_name} (default)"
 
 
 class UnknownClassStrategy(TrainStrategy):
