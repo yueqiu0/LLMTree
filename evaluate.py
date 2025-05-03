@@ -36,6 +36,7 @@ from tree_prompt.common_args import (
     TogetherAPIArgs,
 )
 from tree_prompt.dataset import DatasetMeta, load_dataset, sample_balanced
+from tree_prompt.model.strategy import clean_llm_response
 
 
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
@@ -494,7 +495,27 @@ def evaluate(
             all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
             tree_aucs, tree_accuracies = [], []
             for tree_predict in all_tree_predict:
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+                n_classes = len(np.unique(y_test))
+                if n_classes > 2:
+                    from sklearn.preprocessing import label_binarize
+                    classes = np.unique(y_test)
+                    
+                    # 二进制化处理
+                    y_test_bin = label_binarize(y_test, classes=classes)
+                    if np.array(tree_predict).ndim == 1:  # 如果预测是一维的
+                        tree_predict_bin = label_binarize(tree_predict, classes=classes)
+                        # 计算宏平均AUC和微平均AUC
+                        tree_auc = {
+                            'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
+                            'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
+                        }
+                    else:  # 如果已经是二维的
+                        tree_auc = {
+                            'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='macro'),
+                            'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='micro')
+                        }
+                else:
+                    tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
                 tree_accuracy = calc_accuracy(y_test, tree_predict)
                 tree_aucs.append(tree_auc)
                 tree_accuracies.append(tree_accuracy)
@@ -504,7 +525,27 @@ def evaluate(
             tree_predict, rules = tree_model.predict(
                 x_train, y_train, x_test, export_rules=True
             )
-            tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
+            n_classes = len(np.unique(y_test))
+            if n_classes > 2:
+                from sklearn.preprocessing import label_binarize
+                classes = np.unique(y_test)
+                
+                # 二进制化处理
+                y_test_bin = label_binarize(y_test, classes=classes)
+                if np.array(tree_predict).ndim == 1:  # 如果预测是一维的
+                    tree_predict_bin = label_binarize(tree_predict, classes=classes)
+                    # 计算宏平均AUC和微平均AUC
+                    tree_auc = {
+                        'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
+                        'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
+                    }
+                else:  # 如果已经是二维的
+                    tree_auc = {
+                        'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='macro'),
+                        'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict, average='micro')
+                    }
+            else:
+                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
             tree_accuracy = calc_accuracy(y_test, tree_predict)
 
     if tree_only:
@@ -533,18 +574,33 @@ def evaluate(
         expected_len = test_splits[idx][1] - test_splits[idx][0]
         found = False
         for response in responses:
-            results_batch = serializer.answer_decoder.decode(response)
-            if len(results_batch) == expected_len:
-                found = True
-                results += results_batch
-                raw_results.append(response)
-                break
-            else:
-                logger.log(
-                    "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                        expected_len, len(results_batch), response
-                    )
-                )
+            # 清理响应中的<think>标签
+            response = clean_llm_response(response)
+            
+            # 预处理响应 - 分割每行并清理空白
+            try:
+                # 尝试不同的响应格式处理方法
+                # 方法1: 按行分割，清理每行的空白
+                lines = [line.strip() for line in response.strip().split('\n') if line.strip()]
+                if len(lines) == expected_len:
+                    found = True
+                    results += lines
+                    raw_results.append(response)
+                    break
+                
+                # 方法2: 使用原有解码器
+                results_batch = serializer.answer_decoder.decode(response)
+                if len(results_batch) == expected_len:
+                    found = True
+                    results += results_batch
+                    raw_results.append(response)
+                    break
+                
+
+                
+            except Exception as e:
+                logger.log(f"解析响应时出错: {e}")
+                logger.log(f"原始响应: {response}")
         if not found:
             logger.log("Failed to find any valid response, skipping...")
             result_dict = {
@@ -554,15 +610,41 @@ def evaluate(
             return result_dict
 
     acc = calc_accuracy(labels, results)
-    auc = sklearn.metrics.roc_auc_score(
-        y_test,
-        [meta.get_label_value(r) for r in results],
-    )
+    results_values = [meta.get_label_value(r) for r in results]
+    n_classes = len(meta.labels)
+    if n_classes > 2:
+        from sklearn.preprocessing import label_binarize
+        classes = np.unique(y_test)
+        
+        # 二进制化处理
+        y_test_bin = label_binarize(y_test, classes=classes)
+        if np.array(results_values).ndim == 1:  # 如果预测是一维的
+            results_bin = label_binarize(results_values, classes=classes)
+            # 计算宏平均AUC和微平均AUC
+            auc = {
+                'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='macro'),
+                'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='micro')
+            }
+        else:  # 如果已经是二维的
+            auc = {
+                'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='macro'),
+                'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='micro')
+            }
+    else:
+        auc = sklearn.metrics.roc_auc_score(y_test, results_values)
 
-    logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
+    if isinstance(auc, dict):
+        logger.log("Accuracy/AUC (macro/micro): {}/{}/{}".format(acc, auc['macro'], auc['micro']))
+    else:
+        logger.log("Accuracy/AUC: {}/{}".format(acc, auc))
 
     if use_tree_rules:
-        logger.log("Tree accuracy/AUC: {}/{}".format(tree_accuracy, tree_auc))
+        if isinstance(tree_auc, dict):
+            logger.log("Tree accuracy/AUC (macro/micro): {}/{}/{}".format(
+                tree_accuracy, tree_auc['macro'], tree_auc['micro']
+            ))
+        else:
+            logger.log("Tree accuracy/AUC: {}/{}".format(tree_accuracy, tree_auc))
 
     result_dict = {}
     result_dict["record"] = {"prompt": prompts[0]}

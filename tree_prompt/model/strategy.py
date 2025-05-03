@@ -12,6 +12,8 @@ from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializ
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
 from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
+import re
+
 
 
 def _get_feature_values(
@@ -1325,3 +1327,14 @@ class FeatureBaggingStrategy(TrainStrategy):
             
             logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
             return best_split
+
+
+# 添加处理LLM响应的函数
+def clean_llm_response(response):
+    """移除LLM响应中的<think>标签内容"""
+    if response is None:
+        return None
+    # 使用正则表达式去除所有<think>...</think>部分
+    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+    cleaned = cleaned.lstrip('\n')
+    return cleaned
