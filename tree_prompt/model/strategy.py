@@ -842,7 +842,7 @@ class TrainStrategy:
             # 如果传入的是节点对象，获取其路径规则
             path_rules = self._get_path_to_node(node_or_rules)
         
-        # 检查是否有空规则或"无条件"规则
+        # 检查是否有空规则或"default"规则
         if not path_rules:
             logger.log("无法获取节点路径规则，设置为未知类别(-1)")
             return -1  # 返回未知类别
