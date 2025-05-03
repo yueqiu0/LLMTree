@@ -185,12 +185,10 @@ labels:
   desc: Denial-of-service attacks (back, land, neptune, pod, smurf, teardrop)
 - name: probe
   value: 2
-  desc: Network surveillance and scanning attacks (ipsweep, nmap, portsweep, satan)[NOTE: This label accounts for LESS than 2% of the training dataset.]
+  desc: "Network surveillance and scanning attacks (ipsweep, nmap, portsweep, satan)[NOTE: This label accounts for LESS than 2% of the training dataset.]"
 - name: r2l
   value: 3
-  desc: Remote to Local attacks - unauthorized access from remote machine (ftp_write,
-    guess_passwd, imap, phf, warezclient)[NOTE: This label accounts for LESS than 2% of the training dataset.]
+  desc: "Remote to Local attacks - unauthorized access from remote machine (ftp_write, guess_passwd, imap, phf, warezclient)[NOTE: This label accounts for LESS than 2% of the training dataset.]"
 - name: u2r
   value: 4
-  desc: User to Root attacks - privilege escalation to superuser (buffer_overflow,
-    loadmodule, perl, rootkit)[NOTE: This label accounts for LESS than 0.02% of the training dataset.]
+  desc: "User to Root attacks - privilege escalation to superuser (buffer_overflow, loadmodule, perl, rootkit)[NOTE: This label accounts for LESS than 0.02% of the training dataset.]"
