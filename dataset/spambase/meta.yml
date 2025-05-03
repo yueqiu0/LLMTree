@@ -1,0 +1,67 @@
+name: spambase
+target: identify spam emails based on word frequency statistics
+desc: A dataset to classify emails as spam or non-spam based on word frequencies and
+  other characteristics
+label_meaning: spam classification
+features:
+- name: word_freq_your
+  desc: percentage of words in the email that match "your"
+  type: float
+- name: word_freq_000
+  desc: percentage of words in the email that match "000"
+  type: float
+- name: word_freq_remove
+  desc: percentage of words in the email that match "remove"
+  type: float
+- name: char_freq_dollar
+  desc: percentage of characters in the email that are dollar signs ($)
+  type: float
+- name: word_freq_you
+  desc: percentage of words in the email that match "you"
+  type: float
+- name: word_freq_free
+  desc: percentage of words in the email that match "free"
+  type: float
+- name: word_freq_business
+  desc: percentage of words in the email that match "business"
+  type: float
+- name: word_freq_hp
+  desc: percentage of words in the email that match "hp"
+  type: float
+- name: capital_run_length_total
+  desc: total number of capital letters in the email
+  type: int
+- name: word_freq_our
+  desc: percentage of words in the email that match "our"
+  type: float
+- name: char_freq_exclamation
+  desc: percentage of characters in the email that are exclamation points (!)
+  type: float
+- name: word_freq_receive
+  desc: percentage of words in the email that match "receive"
+  type: float
+- name: word_freq_hpl
+  desc: percentage of words in the email that match "hpl"
+  type: float
+- name: word_freq_over
+  desc: percentage of words in the email that match "over"
+  type: float
+- name: word_freq_order
+  desc: percentage of words in the email that match "order"
+  type: float
+- name: word_freq_money
+  desc: percentage of words in the email that match "money"
+  type: float
+- name: capital_run_length_longest
+  desc: length of longest uninterrupted sequence of capital letters
+  type: int
+- name: word_freq_internet
+  desc: percentage of words in the email that match "internet"
+  type: float
+labels:
+- name: non-spam
+  value: 0
+  desc: email is not spam (legitimate)
+- name: spam
+  value: 1
+  desc: email is spam (unsolicited commercial email)
