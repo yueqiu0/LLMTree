@@ -6,6 +6,7 @@ from .runner import Runner
 from .parallel import ParallelRunner
 
 from .. import logger
+from tree_prompt.model.strategy import clean_llm_response
 
 
 class OpenAIAPIRunner(Runner):
@@ -67,6 +68,8 @@ class OpenAIAPIRunner(Runner):
                     raise e
 
                 result = response["choices"][0]["message"]["content"]
+                # 清理<think>标签内容
+                result = clean_llm_response(result)
                 # usage = response["usage"]
                 # print(usage)
                 break

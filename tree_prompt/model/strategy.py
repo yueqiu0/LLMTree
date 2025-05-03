@@ -5,6 +5,7 @@ from functools import reduce
 import random
 from tqdm import tqdm
 from collections import Counter
+import re
 
 from ..dataset import DatasetMeta
 from ..runner import Runner
@@ -14,8 +15,9 @@ from .. import logger
 from .feature_selection import calculate_gini_impurity, calculate_meta_rule_gini
 from .meta_rule import MetaRule
 
+supervision_template = jinja2.Template(open("template/supervision.jinja").read())
 
-_delta = 2
+_mu = 2
 _threshold = 0.70  # 默认值
 
 def set_threshold(value: float):
@@ -25,9 +27,9 @@ def set_threshold(value: float):
     logger.log(f"叶子节点标签修改阈值设置为: {value}")
     
 
-def set_delta(delta: int):
-    global _delta
-    _delta = delta
+def set_mu(mu: int):
+    global _mu
+    _mu = mu
 
 def _get_feature_values(
     meta: DatasetMeta, x: np.ndarray, hist_nbins: int
@@ -874,42 +876,15 @@ class TrainStrategy:
                 
                 label_descriptions.append(f"Label {label.value}: {label.name} - {description}")
         
-        # 构建完整的prompt
-        prompt = f"""You are an expert who {self._get_domain_expertise()}.
-
-## Task
-Analyze whether the current prediction is reasonable based on rules, feature descriptions, and label meanings.
-
-Label context: {self._meta.label_meaning if hasattr(self._meta, 'label_meaning') else "Classification evaluation"}
-
-## Feature descriptions:
-{chr(10).join(feature_descriptions)}
-
-## Label meanings:
-{chr(10).join(label_descriptions)}
-
-## Instructions:
-- Assume the feature values used in rules are representative of the current sample.
-- You must respect all rules and treat them as hard constraints.
-- If there are multiple restrictions on the same attribute, consider them **together** (AND logic).
-- For **each possible label**, provide a **confidence score** between 0 and 1.
-  - 0 means you're completely confident this label is incorrect for samples matching these rules
-  - 0.5 means the probability of this label being correct is 
-roughly equal to it being incorrect (maximum uncertainty)
-  - 1 means you're completely confident this label is correct 
-for samples matching these rules
-- The scores must **sum to exactly 1.000** (representing a probability distribution).
-- Use float format with **3 decimal places**.
-
-## Note:
-- Remember also when there is little information do not give high probabilities (equal or higher than 0.9), unless you are very sure of them , because you may be overestimating.
-
-## Rules (must ALL be satisfied):
-{chr(10).join([f"- {r}" for r in path_rules])}
-
-## Output format (no additional explanation):
-{chr(10).join([f"Label {label.value}: <score> " for label in self._meta.labels])}
-"""
+        # 使用模板生成prompt
+        prompt = supervision_template.render(
+            domain_expertise=self._get_domain_expertise(),
+            label_meaning=self._meta.label_meaning if hasattr(self._meta, 'label_meaning') else "Classification evaluation",
+            feature_descriptions=feature_descriptions,
+            label_descriptions=label_descriptions,
+            path_rules=path_rules,
+            labels=self._meta.labels
+        )
         
         # 调用LLM
         logger.log(f"发送LLM验证请求，路径规则: {' AND '.join(path_rules)}")
@@ -1117,69 +1092,76 @@ class UnknownClassStrategy(TrainStrategy):
         # 计算需要的规则数量
         num_rules_required = 2**max_depth - 1
         
-        # 使用提供的模板，确保变量名一致
-        template = jinja2.Template("""## Role and Task:
-You are an expert data analyst specializing in {{ meta.target or "classification tasks" }}. 
-Your task is to generate high-quality meta-rules to build a decision tree predicting the target variable '{{ meta.label_meaning or "output" }}' using the features below.
-  
-## Dataset Information:  
-  
-### Features:  
-{% for feature in meta.features %}  
-{{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }}) 
-{% if feature.is_categorical and feature.categories %}
-   Possible values:
-{% for cat_value, cat_desc in feature.categories.items() %}
-   - {{ cat_value }}: {{ cat_desc }}
-{% endfor %}
-{% endif %}   
-{% endfor %}  
-
-### Target Variable: {{ meta.label_meaning or 'The output' }}  
-Possible values:  
-{% for label in meta.labels %}  
-- {{ label.name }}{% if label.desc %} ({{ label.desc }}){% endif %}  
-{% endfor %}  
-  
-## Task Requirements:  
-Generate exactly {{ num_rules_required }} distinct and important meta-rules for splitting the dataset into subsets with different values of the '{{ meta.label_meaning or "output" }}' label.
-
-  
-## Rule Format( Strict):  
-- For **numerical** features (int, float): `feature_name < value` 
-- For **categorical** features: `feature_name = category`  
-Note: We ONLY allow '<' and '=' as numerical and categorical operators respectively, '>' or '!=' is NOT allowed.
-  
-
-**Important Constraints & Guidelines:**
-
-1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
-2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
-3. **Decimal Precision**: Use precision suited to each feature's scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
-Precision reflects reasoning, not formatting.
-4. **Rule Quality**: Choose thresholds that create meaningful splits and align with typical value patterns. Avoid overfitting to noise; confidence < 5 only if necessary. 
-5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
-6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
-7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
-8. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
-9. **First Rule Matters**: Think carefully about the first rule — its feature and threshold should reflect your strongest, most confident split. It is often treated as the default decision.
-  
-## Output Format (Strict):  
-Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
-  
-Example:  
-study hours per week < 3.25 [ confidence: 10 ]
-attendance rate < 74.5 [ confidence: 9 ]
-assignment completion rate < 62.75 [ confidence: 8 ]
-study hours per week < 6.0 [ confidence: 7 ]
-participation = low [ confidence: 7 ]
-attendance rate < 85.000 [ confidence: 6 ]
-previous exam grade < 59.5 [ confidence: 6 ]
- 
-  
-## Generated Meta-Rules:""")
+        # 准备训练数据展示
+        train_examples = []
+        if self.train_x is not None and self.train_y is not None:
+            # 最多展示20个样本以避免提示词过长
+            sample_count = min(20, len(self.train_y))
+            
+            # 随机选择样本或使用所有样本
+            indices = list(range(len(self.train_y)))
+            if len(indices) > sample_count:
+                import random
+                random.shuffle(indices)
+                indices = indices[:sample_count]
+            
+            # 格式化样本为字符串
+            for idx in indices:
+                x_row = self.train_x[idx]
+                y_val = self.train_y[idx]
+                
+                # 生成特征值字符串
+                feature_str = []
+                for f_idx, f_val in enumerate(x_row):
+                    feature = self._meta.features[f_idx]
+                    if feature.is_categorical:
+                        # 改进分类特征处理逻辑
+                        if isinstance(f_val, str):
+                            # 如果已经是字符串，直接使用
+                            cat_value = f_val
+                        else:
+                            # 如果是数值，尝试查找对应类别
+                            try:
+                                # 直接使用值作为键查找
+                                if f_val in feature.categories:
+                                    cat_value = f_val
+                                # 如果是整数索引，尝试获取对应的类别键
+                                elif int(f_val) < len(feature.categories) and isinstance(feature.categories, dict):
+                                    cat_keys = list(feature.categories.keys())
+                                    cat_value = cat_keys[int(f_val)]
+                                else:
+                                    # 回退到字符串表示
+                                    cat_value = str(f_val)
+                            except (ValueError, IndexError, TypeError):
+                                # 任何错误情况下，回退到字符串表示
+                                cat_value = str(f_val)
+                        
+                        feature_str.append(f"{feature.name}={cat_value}")
+                    else:
+                        # 数值特征 - 保留原始值而不是强制3位小数
+                        feature_str.append(f"{feature.name}={f_val}")
+                
+                # 查找标签名称
+                label_name = "unknown"
+                for label in self._meta.labels:
+                    if label.value == y_val:
+                        label_name = label.name
+                        break
+                
+                train_examples.append(f"{', '.join(feature_str)} ⟶ {label_name}")
         
-        prompt = template.render(meta=self._meta, num_rules_required=num_rules_required)
+        # 从外部文件加载模板
+        template_loader = jinja2.FileSystemLoader('./template')
+        template_env = jinja2.Environment(loader=template_loader)
+        template = template_env.get_template('meta_rule.jinja')
+        
+        # 渲染模板
+        prompt = template.render(
+            meta=self._meta, 
+            num_rules_required=num_rules_required,
+            train_examples=train_examples
+        )
+
         return prompt
 
     def _get_meta_rules(self, max_depth: int, runner: Runner = None) -> list[MetaRule]:
@@ -1227,9 +1209,9 @@ previous exam grade < 59.5 [ confidence: 6 ]
     
 
 
-    def _select_meta_rule(self, node, meta_rules: list[MetaRule], delta: int = 2) -> tuple[MetaRule, float]:
+    def _select_meta_rule(self, node, meta_rules: list[MetaRule], mu: int = 2) -> tuple[MetaRule, float]:
         """为当前节点选择最佳元规则"""
-        delta = _delta
+        mu = _mu
         samples = node.get_samples()
         is_small_sample = len(samples) <= 5  # 设置小样本阈值
         
@@ -1242,8 +1224,7 @@ previous exam grade < 59.5 [ confidence: 6 ]
                 used_features.add(parent.split_feature)
             current = parent
         
-        # 筛选出可用的元规则
-        usable_rules = []
+
         
         # 如果所有元规则都已经被使用过，则返回None
         if len(meta_rules) == 0:
@@ -1252,18 +1233,7 @@ previous exam grade < 59.5 [ confidence: 6 ]
         # 获取最高置信度
         max_confidence = meta_rules[0].confidence
         
-        # 筛选出在可选置信度范围内，且特征未被使用的规则
-        for rule in meta_rules:
-            if rule.feature_idx in used_features:
-                continue
-            
-            if rule.confidence >= max_confidence - delta:
-                usable_rules.append(rule)
-        
-        if not usable_rules:
-            return None, 0.0
-        
-        # 计算每个规则的基尼增益
+        # 初始化查找结果
         best_gain = -1
         best_rule = None
         best_confidence = -1
@@ -1272,32 +1242,76 @@ previous exam grade < 59.5 [ confidence: 6 ]
         best_small_sample_rule = None
         best_small_sample_confidence = -1
         
-        for rule in usable_rules:
-            gain, left_gini, right_gini, left_mask, right_mask = calculate_meta_rule_gini(
-                rule, self.train_x, self.train_y, samples
-            )
+        # 逐步降低置信度范围直到找到有增益的规则或无规则可选
+        level = 0
+        while True:
+            # 计算当前迭代的置信度范围
+            min_confidence = max_confidence - mu - level * (mu + 1)
+            max_range = max_confidence - level * (mu + 1)
             
-            # 记录日志
-            logger.log(f"规则 '{rule}' 的基尼增益: {gain:.4f}")
-            logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
-            logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
-            
-            # 如果是小样本情况并且当前规则会导致一边为空，记录下来作为备选
-            if is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
-                if best_small_sample_rule is None or rule.confidence > best_small_sample_confidence:
-                    best_small_sample_rule = rule
-                    best_small_sample_confidence = rule.confidence
+            # 如果最小置信度小于0，停止查找
+            if min_confidence < 0:
+                break
                 
-            # 如果样本无法分裂，跳过（对于非小样本情况）
-            if not is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
-                continue
+            logger.log(f"置信度查找范围(第{level+1}轮): [{min_confidence}, {max_range}]")
             
-            # 更新最佳规则
-            # 如果有更高的增益，或者增益相同但置信度更高
-            if gain > best_gain or (gain == best_gain and rule.confidence > best_confidence):
-                best_gain = gain
-                best_rule = rule
-                best_confidence = rule.confidence
+            # 筛选出在当前可选置信度范围内，且特征未被使用的规则
+            usable_rules = []
+            for rule in meta_rules:
+                if rule.feature_idx in used_features:
+                    continue
+                
+                if min_confidence <= rule.confidence <= max_range:
+                    usable_rules.append(rule)
+            
+            # 如果当前范围没有可用规则，尝试下一个更低的范围
+            if not usable_rules:
+                level += 1
+                continue
+                
+            logger.log(f"找到{len(usable_rules)}条可用规则(置信度范围: [{min_confidence}, {max_range}])")
+            
+            # 计算当前范围内每个规则的基尼增益
+            has_non_zero_gain = False
+            
+            for rule in usable_rules:
+                gain, left_gini, right_gini, left_mask, right_mask = calculate_meta_rule_gini(
+                    rule, self.train_x, self.train_y, samples
+                )
+                
+                # 记录日志
+                logger.log(f"规则 '{rule}' 的基尼增益: {gain:.4f}")
+                logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
+                logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+                
+                # 如果是小样本情况并且当前规则会导致一边为空，记录下来作为备选
+                if is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
+                    if best_small_sample_rule is None or rule.confidence > best_small_sample_confidence:
+                        best_small_sample_rule = rule
+                        best_small_sample_confidence = rule.confidence
+                        
+                # 如果样本无法分裂，跳过（对于非小样本情况）
+                if not is_small_sample and (np.sum(left_mask) == 0 or np.sum(right_mask) == 0):
+                    continue
+                
+                # 如果有增益，标记为非零增益
+                if gain > 0:
+                    has_non_zero_gain = True
+                
+                # 更新最佳规则
+                # 如果有更高的增益，或者增益相同但置信度更高
+                if gain > best_gain or (gain == best_gain and rule.confidence > best_confidence):
+                    best_gain = gain
+                    best_rule = rule
+                    best_confidence = rule.confidence
+            
+            # 如果当前范围找到了非零增益的规则，停止查找
+            if has_non_zero_gain:
+                logger.log(f"在置信度范围[{min_confidence}, {max_range}]中找到有效增益规则")
+                break
+                
+            # 继续查找下一个范围
+            level += 1
         
         # 如果是小样本且没找到有效规则但有备选规则，使用备选规则
         if is_small_sample and best_rule is None and best_small_sample_rule is not None:
@@ -1707,3 +1721,13 @@ class FeatureBaggingStrategy(TrainStrategy):
             logger.log(f"警告: 未找到值为 {rule_value} 的标签")
         
         return label_name
+
+# 添加处理LLM响应的函数
+def clean_llm_response(response):
+    """移除LLM响应中的<think>标签内容"""
+    if response is None:
+        return None
+    # 使用正则表达式去除所有<think>...</think>部分
+    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+    cleaned = cleaned.lstrip('\n')
+    return cleaned

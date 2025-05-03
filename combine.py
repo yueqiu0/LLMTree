@@ -64,9 +64,9 @@ def create_clean_montage(image_paths, output_path, base_height=900, text_scale=1
             
             # 居中填充
             if new_w < target_width:
-                delta = target_width - new_w
-                left = delta // 2
-                right = delta - left
+                mu = target_width - new_w
+                left = mu // 2
+                right = mu - left
                 resized = cv2.copyMakeBorder(resized, 0, 0, left, right,
                                             cv2.BORDER_CONSTANT, value=[255,255,255])
             

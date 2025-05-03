@@ -660,6 +660,20 @@ class DecisionTree(TreeBase):
         """获取可用的预测值列表，包括-1表示未知类别"""
         return [-1, *range(max(1, np.max(self.train_y) + 1) if hasattr(self, 'train_y') and len(self.train_y) > 0 else 1)]
 
+    def find_non_leaf_nodes(self):
+        """返回所有非叶子节点"""
+        nodes = []
+        
+        def traverse(node):
+            if node is None:
+                return
+            if not node.is_leaf:
+                nodes.append(node)
+                traverse(node.left_child)  # 使用正确的属性名
+                traverse(node.right_child)  # 使用正确的属性名
+        
+        traverse(self.root_node)
+        return nodes
 
 class RandomForest(TreeBase):
     def __init__(

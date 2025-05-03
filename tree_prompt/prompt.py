@@ -195,6 +195,11 @@ class TextSerializer(Serializer):
             .remove_trailing([",", "."])
         )
 
+class CustomDecoder:
+    def decode(self, text):
+        # 处理多行文本格式
+        lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
+        return lines
 
 def gen_prompt(
     master_template: jinja2.Template,
