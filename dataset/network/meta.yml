@@ -1,12 +1,10 @@
 name: network
 target: detect network intrusions
-desc: "This dataset was derived from the 1999 KDD Cup data. It contains a set of network\
+desc: "This dataset contains a set of network\
   \ \nconnections labeled as either normal or as an attack, with attack types falling\
   \ into \nfour main categories: DOS (denial-of-service), R2L (unauthorized access\
   \ from a remote \nmachine), U2R (unauthorized access to local superuser privileges),\
-  \ and probing. \n\nThe dataset was prepared by MIT Lincoln Labs for the DARPA Intrusion\
-  \ Detection \nEvaluation Program, simulating a typical U.S. Air Force LAN environment\
-  \ with \nvarious intrusions.\n"
+  \ and probing."
 label_meaning: connection type
 features:
 - name: duration
@@ -185,10 +183,10 @@ labels:
   desc: Denial-of-service attacks (back, land, neptune, pod, smurf, teardrop)
 - name: probe
   value: 2
-  desc: "Network surveillance and scanning attacks (ipsweep, nmap, portsweep, satan)[NOTE: This label accounts for LESS than 2% of the training dataset.]"
+  desc: "Network surveillance and scanning attacks (ipsweep, nmap, portsweep, satan)[NOTE: This label is very infrequent in the dataset]"
 - name: r2l
   value: 3
-  desc: "Remote to Local attacks - unauthorized access from remote machine (ftp_write, guess_passwd, imap, phf, warezclient)[NOTE: This label accounts for LESS than 2% of the training dataset.]"
+  desc: "Remote to Local attacks - unauthorized access from remote machine (ftp_write, guess_passwd, imap, phf, warezclient)[NOTE: This label is very infrequent in the dataset]"
 - name: u2r
   value: 4
-  desc: "User to Root attacks - privilege escalation to superuser (buffer_overflow, loadmodule, perl, rootkit)[NOTE: This label accounts for LESS than 0.02% of the training dataset.]"
+  desc: "User to Root attacks - privilege escalation to superuser (buffer_overflow, loadmodule, perl, rootkit)[NOTE: Tthis label is extremely rare in the dataset]"

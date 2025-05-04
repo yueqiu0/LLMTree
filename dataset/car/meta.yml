@@ -50,6 +50,6 @@ labels:
 # - name: good
 #   value: 2
 #   desc: the car is good for buyers
-- name: good
+- name: very good
   value: 3
-  desc: "the car is good for buyers[NOTE: This label accounts for LESS than 5% of the training dataset.]"
+  desc: "the car is very good for buyers[NOTE: This label is very infrequent in the dataset]"
