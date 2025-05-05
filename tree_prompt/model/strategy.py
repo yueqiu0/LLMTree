@@ -53,6 +53,12 @@ class TrainStrategy:
         self._meta_instance = None
         self.llm_feature_ranking = None  # 添加此属性
 
+        # Token计数器 - 添加到__init__方法中
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0  # 添加评估计数器
+
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
         self.train_y = train_y
@@ -783,6 +789,29 @@ class TrainStrategy:
         else:
             return f"{label_name} (default)"
 
+    # 在TrainStrategy类中添加方法
+    def get_token_stats(self):
+        """返回token使用统计信息"""
+        build_tokens = {
+            "prompt": self.supervision_tokens["prompt"] + self.meta_rule_tokens["prompt"],
+            "completion": self.supervision_tokens["completion"] + self.meta_rule_tokens["completion"],
+            "total": self.supervision_tokens["total"] + self.meta_rule_tokens["total"]
+        }
+        return {
+            "build_tokens": build_tokens,
+            "supervision_tokens": self.supervision_tokens,
+            "meta_rule_tokens": self.meta_rule_tokens,
+            "evaluation_tokens": self.evaluation_tokens
+        }
+
+    # 添加重置token计数的方法
+    def reset_token_stats(self):
+        """重置token统计信息，用于多次测试间隔离统计"""
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0
+
 
 class UnknownClassStrategy(TrainStrategy):
     def __init__(
@@ -862,21 +891,25 @@ class UnknownClassStrategy(TrainStrategy):
         self, prompts: list[str], expected_lens: list[int]
     ) -> list[list[int]]:
         all_results = []
-        for i, resp_candidates in enumerate(self.runner.run(prompts)):
+        for i, (resp_candidates, token_info) in enumerate(self.runner.run(prompts)):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self._meta.get_label_value(r) for r in results]
+            
+            # 记录评估prompt的token使用情况
+            self.evaluation_tokens.append(token_info)
+            logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
-                if None in results or len(results) != expected_lens[i]:
-                    continue
+            if None in results or len(results) != expected_lens[i]:
+                continue
 
-                all_results.append(results)
-                break
-            else:
-                logger.log(
-                    "No valid response found, raw responses: {}".format(resp_candidates)
-                )
-                return None
+            all_results.append(results)
+            break
+        else:
+            logger.log(
+                "No valid response found, raw responses: {}".format(resp_candidates)
+            )
+            return None
 
         return all_results
 
@@ -1141,13 +1174,17 @@ class FeatureBaggingStrategy(TrainStrategy):
         if prompt is None:
             raise RuntimeError("Invalid tree rules!")
 
-        for resp_candidates in self.runner.run([prompt]):
+        for resp_candidates, token_info in self.runner.run([prompt]):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self.all_meta.get_label_value(r) for r in results]
 
                 if None in results or len(results) != len(x):
                     continue
+
+                # 记录评估prompt的token使用情况
+                self.evaluation_tokens.append(token_info)
+                logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
                 return results
             else:
