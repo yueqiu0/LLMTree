@@ -421,6 +421,23 @@ def parse_args() -> TrainArgs:
     
     return args
 
+def calc_accuracy(labels: list, results: list) -> float:
+    """计算准确率"""
+    if len(labels) == 0 or len(results) == 0:
+        return 0.0
+    
+    assert len(labels) == len(results)
+    correct_count = 0
+    for i, result in enumerate(results):
+        if isinstance(result, str):
+            if result.lower() == labels[i].lower():
+                correct_count += 1
+        else:
+            if result == labels[i]:
+                correct_count += 1
+
+    return correct_count / len(labels)
+
 
 def evaluate(
     x_train: np.ndarray,
@@ -430,6 +447,9 @@ def evaluate(
     model: Classifier,
     test_batch: int,
 ):
+    # 在开始评估前重置token统计
+    if hasattr(model.strategy, 'reset_token_stats'):
+        model.strategy.reset_token_stats()
     start = time.time()
     model.fit(x_train, y_train)
     elapsed = time.time() - start
@@ -543,6 +563,25 @@ def evaluate(
         )
     )
 
+    # 计算准确率
+    llm_tree_acc = calc_accuracy(y_test.tolist(), llm_with_tree_results)
+    tree_acc = calc_accuracy(y_test.tolist(), tree_results)
+    raw_tree_acc = calc_accuracy(y_test.tolist(), tree_raw_results)
+
+    # 打印准确率结果
+    logger.log(f"Accuracy: LLM+Tree={llm_tree_acc:.4f}, Tree={tree_acc:.4f}, Raw Tree={raw_tree_acc:.4f}")
+
+    # 获取并打印token统计（使用英文）
+    token_stats = None
+    if hasattr(model.strategy, 'get_token_stats'):
+        token_stats = model.strategy.get_token_stats()
+        build_tokens = token_stats["build_tokens"]
+        logger.log(f"Tree Building Total Token Usage: Input={build_tokens['prompt']}, Output={build_tokens['completion']}, Total={build_tokens['total']}")
+        
+        # 打印每次评估的token统计
+        for i, eval_token in enumerate(token_stats["evaluation_tokens"]):
+            logger.log(f"Evaluation #{i+1} Token Usage: Input={eval_token['prompt_tokens']}, Output={eval_token['completion_tokens']}, Total={eval_token['total_tokens']}")
+
     return (
         llm_with_tree_auc,
         tree_auc,
@@ -555,6 +594,10 @@ def evaluate(
         elapsed,
         train_node_stats,  # 新增返回项
         test_node_stats,   # 新增返回项
+        token_stats,       # 添加token统计信息作为额外返回项
+        llm_tree_acc,      # 添加准确率
+        tree_acc,          # 添加准确率
+        raw_tree_acc       # 添加准确率
     )
 
 
@@ -852,14 +895,21 @@ def main():
                     elapsed,
                     train_node_stats,  # 新增返回项
                     test_node_stats,   # 新增返回项
+                    token_stats,
+                    llm_tree_acc,
+                    tree_acc,
+                    raw_tree_acc
                     
                 ) = result
 
                 logger.log("Training time: {}".format(elapsed))
 
                 result_dict = {
-                    "llm_tree": llm_with_tree_auc,
-                    "tree": tree_auc,
+                    "llm_tree_auc": llm_with_tree_auc,
+                    "tree_auc": tree_auc,
+                    "llm_tree_acc": llm_tree_acc,
+                    "tree_acc": tree_acc,
+                    "raw_tree_acc": raw_tree_acc,
                     "sub_trees": llm_with_sub_tree_aucs,
                     "llm_tree_results": llm_with_tree_results,
                     "tree_results": tree_results,
@@ -869,7 +919,8 @@ def main():
                     "model": model.export(),
                     "train_elapsed": elapsed,
                     'train_node_stats': train_node_stats,
-                    'test_node_stats': test_node_stats
+                    'test_node_stats': test_node_stats,
+                    'token_stats': token_stats,
                 }
 
             # 在保存结果到JSON文件之前

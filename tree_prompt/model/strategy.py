@@ -66,6 +66,11 @@ class TrainStrategy:
         self.tree = None
         self.hist_nbins = 10
         self._meta_instance = None
+        # Token计数器 - 添加到__init__方法中
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0  # 添加评估计数器
 
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
@@ -902,7 +907,8 @@ class TrainStrategy:
         try:
             # 调用LLM
             response_gen = self.llm_runner.run([prompt])
-            response = next(response_gen)[0]
+            response_data, token_info = next(response_gen)
+            response = response_data[0]
             
             # 解析响应和置信度
             logger.log(f"LLM响应: {response}")
@@ -932,7 +938,12 @@ class TrainStrategy:
                                     best_label = label
                         except ValueError:
                             continue
-            
+            # 记录监督prompt的token使用情况
+            self.supervision_tokens["prompt"] += token_info["prompt_tokens"]
+            self.supervision_tokens["completion"] += token_info["completion_tokens"]
+            self.supervision_tokens["total"] += token_info["total_tokens"]
+            # 删除日志代码，避免重复输出
+            logger.log(f"监督Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
             
             # 原有逻辑：检查是否需要替换标签    
             if highest_confidence >= _threshold and best_label != prediction:
@@ -957,6 +968,29 @@ class TrainStrategy:
         
         # 如果什么都没有，返回通用描述
         return "data analysis"
+
+    # 在TrainStrategy类中添加方法
+    def get_token_stats(self):
+        """返回token使用统计信息"""
+        build_tokens = {
+            "prompt": self.supervision_tokens["prompt"] + self.meta_rule_tokens["prompt"],
+            "completion": self.supervision_tokens["completion"] + self.meta_rule_tokens["completion"],
+            "total": self.supervision_tokens["total"] + self.meta_rule_tokens["total"]
+        }
+        return {
+            "build_tokens": build_tokens,
+            "supervision_tokens": self.supervision_tokens,
+            "meta_rule_tokens": self.meta_rule_tokens,
+            "evaluation_tokens": self.evaluation_tokens
+        }
+
+    # 添加重置token计数的方法
+    def reset_token_stats(self):
+        """重置token统计信息，用于多次测试间隔离统计"""
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0
 
 
 class UnknownClassStrategy(TrainStrategy):
@@ -1016,21 +1050,25 @@ class UnknownClassStrategy(TrainStrategy):
         self, prompts: list[str], expected_lens: list[int]
     ) -> list[list[int]]:
         all_results = []
-        for i, resp_candidates in enumerate(self.runner.run(prompts)):
+        for i, (resp_candidates, token_info) in enumerate(self.runner.run(prompts)):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self._meta.get_label_value(r) for r in results]
+            
+            # 记录评估prompt的token使用情况
+            self.evaluation_tokens.append(token_info)
+            logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
-                if None in results or len(results) != expected_lens[i]:
-                    continue
+            if None in results or len(results) != expected_lens[i]:
+                continue
 
-                all_results.append(results)
-                break
-            else:
-                logger.log(
-                    "No valid response found, raw responses: {}".format(resp_candidates)
-                )
-                return None
+            all_results.append(results)
+            break
+        else:
+            logger.log(
+                "No valid response found, raw responses: {}".format(resp_candidates)
+            )
+            return None
 
         return all_results
 
@@ -1181,7 +1219,7 @@ class UnknownClassStrategy(TrainStrategy):
         logger.log(f"请求元规则生成，提示词:\n{prompt}")
         
         meta_rules = []
-        for responses in runner.run([prompt]):
+        for responses, token_info in runner.run([prompt]):
             for response in responses:
                 logger.log(f"收到LLM响应:\n{response}")
                 
@@ -1204,6 +1242,12 @@ class UnknownClassStrategy(TrainStrategy):
         if not hasattr(self.__class__, '_cached_meta_rules'):
             self.__class__._cached_meta_rules = {}
         self.__class__._cached_meta_rules[cache_key] = meta_rules
+        # 根据prompt类型记录token信息
+        # 这里假设是meta rule prompt
+        self.meta_rule_tokens["prompt"] += token_info["prompt_tokens"]
+        self.meta_rule_tokens["completion"] += token_info["completion_tokens"]
+        self.meta_rule_tokens["total"] += token_info["total_tokens"]
+        logger.log(f"Meta Rule Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
         
         return meta_rules
     
@@ -1522,6 +1566,10 @@ class FeatureBaggingStrategy(TrainStrategy):
 
                 if None in results or len(results) != len(x):
                     continue
+
+                # 记录评估prompt的token使用情况
+                self.evaluation_tokens.append(token_info)
+                logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
                 return results
             else:

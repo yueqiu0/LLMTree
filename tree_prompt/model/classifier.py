@@ -68,6 +68,11 @@ class Classifier:
         self.prune_tree(self.strategy.get_tree())
         logger.log("剪枝后的决策树:\n" + self.strategy.get_tree().to_graphviz_source())
 
+        # 打印树构建的总token使用情况
+        token_stats = self.strategy.get_token_stats()
+        build_tokens = token_stats["build_tokens"]
+        logger.log(f"树构建总Token使用: 输入={build_tokens['prompt']}, 输出={build_tokens['completion']}, 总计={build_tokens['total']}")
+
         return last_loss
 
     def predict(self, x) -> tuple[list[int], list[int], list[int]]:

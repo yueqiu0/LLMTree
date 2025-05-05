@@ -34,8 +34,10 @@ Label context: {{ label_meaning }}
 - {{ rule }}
 {% endfor %}
 
-## Output format (no additional explanation):
+## Output format:
 {% for label in labels %}
 Label {{ label.value }}: <score> 
 {% endfor %}
+
+Do NOT include any other text, explanations, or headers.  
 
