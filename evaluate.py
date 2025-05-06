@@ -178,8 +178,6 @@ class EvaluateArgs:
             assert isinstance(self.runner_args, dict)
             runner_args_dict = self.runner_args
 
-            if self.runner is None:
-                raise ValueError("当tree_only为False时，必须指定runner类型")
             
             if self.runner == "openai_api":
                 self.runner_args = OpenAIAPIArgs()
