@@ -266,13 +266,13 @@ Feature Ranking: """
 
 
 def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[int]:
-    """获取LLM对特征重要性的排序"""
+    """获取ToT对特征重要性的排序"""
     prompt = create_feature_ranking_prompt(meta)
     logger.log(f"请求特征重要性排序，提示词:\n{prompt}")
     
     for responses in runner.run([prompt]):
         for response in responses:
-            logger.log(f"收到LLM响应:\n{response}")
+            logger.log(f"收到ToT响应:\n{response}")
             
             # 尝试从回复中提取特征排序
             try:
@@ -315,181 +315,95 @@ def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[in
 
 
 def generate_ToT_tree_prompt(
-    meta: DatasetMeta,
+meta: DatasetMeta,
     x_train: np.ndarray,
     y_train: np.ndarray,
-    max_depth: int = 3,  # 强制设置为3层深度
+    max_depth: int = 3,  
     num_examples: int = 5,
-    current_rules: list[str] = None  # 当前层级已生成的规则，用于避免重复
+    current_path: str = "Root",
+    applied_rules: str = "None"
 ) -> dict:
     """
-    生成决策树构建提示词（完整优化版）
-    修改重点：
-    1. 移除数值型特征的统计信息显示
-    2. 强制要求决策树使用max_depth-1个不同特征
+    生成决策树构建提示词
     返回值：dict，包括prompt、label_dist、num_examples等
     """
     # ================= 输入校验 =================
     if not hasattr(meta, 'features') or len(meta.features) == 0:
-        logger.error("特征元数据为空，请检查meta文件")
+        logger.log("特征元数据为空，请检查meta文件")
         return {"prompt": "", "label_dist": {}, "num_examples": 0}
         
     if x_train.shape[1] != len(meta.features):
-        logger.error(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
+        logger.log(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
         return {"prompt": "", "label_dist": {}, "num_examples": 0}
 
-    # ============== 标签分布计算 ============= =
-    label_dist = {}
-    try:
-        unique_labels, label_counts = np.unique(y_train, return_counts=True)
-        for val, count in zip(unique_labels, label_counts):
-            label = meta.find_label(float(val))
-            label_name = label.name if label else f"未知({val})"
-            label_dist[label_name] = int(count)
-    except Exception as e:
-        return {"prompt": "", "label_dist": {}, "num_examples": 0}
 
-    # ============== 示例数据生成 ==============
-    examples = []
-    try:
-        indices = np.random.choice(len(x_train), min(num_examples, len(x_train)), replace=False)
-        for idx in indices:
-            features = []
-            for i, feat in enumerate(meta.features):
-                val = x_train[idx][i]
-                # 处理特殊值
-                if feat.is_categorical:
-                    val = feat.categories.get(str(val), f"未知({val})")
-                elif feat.type == "float":
-                    val = f"{float(val):.4f}"
-                features.append(f"{feat.name}={val}")
-            
-            label_val = float(y_train[idx])
-            label = meta.find_label(label_val)
-            label_name = label.name if label else "未知"
-            examples.append(f"样本 {idx+1}: {', '.join(features)} → {label_name}")
-    except Exception as e:
-        examples = []
 
-    # ============== 构建提示词 ==============
+
+    # ============== 构建新版英文任务描述和提示词 ==============
     prompt_parts = []
-    
-    # ------ 元数据部分 ------
-    prompt_parts.append("# Dataset Metadata")
-    prompt_parts.append(f"Dataset Name: {getattr(meta, 'name', 'Unnamed Dataset')}")
-    prompt_parts.append(f"Target Variable: {getattr(meta, 'target', 'Not Specified')}")
-    prompt_parts.append(f"Sample Count: {x_train.shape[0]}")
-    prompt_parts.append(f"Feature Count: {len(meta.features)}")
-    prompt_parts.append("Label Distribution: " + ", ".join(
-        [f"{k}({v})" for k, v in label_dist.items()]
-    ))
-    prompt_parts.append("")
+    prompt_parts.append("#Task Description")
+    prompt_parts.append("You are a decision tree generator. Your task is to generate candidate split rules for the current node. Please strictly follow the requirements below.Please don't explain.")
+    prompt_parts.append("#Core Requirements")
+    prompt_parts.append("Generate mutually exclusive rule pairs forming complete branches")
+    prompt_parts.append("Directly assign final class (younger/older) to leaf nodes")
+    prompt_parts.append("Mark intermediate nodes with [NODE]")
+    prompt_parts.append("Always inherit parent path conditions")
+    prompt_parts.append(f"When parent's used features reach 1, generate leaf nodes instead of new nodes")
+    prompt_parts.append("#Structural Constraints")
+    prompt_parts.append("Each split must form complete complementary conditions")
+    prompt_parts.append("Continuous features use single-threshold splits")
+    prompt_parts.append("Categorical features use explicit category combinations")
+    prompt_parts.append("Path conditions are automatically inherited without repetition")
+    prompt_parts.append("Final class labels must appear in leaf node rules")
+    prompt_parts.append(f"Next split produces only leaves when parent's feature count ≥ 1")
+    prompt_parts.append("## Input Context")
+    prompt_parts.append("**Current Path:** ")
+    prompt_parts.append(f"{current_path}")
+    prompt_parts.append("]\n")
 
-    # ------ 当前层级规则 ------
-    if current_rules and len(current_rules) > 0:
-        prompt_parts.append("# Current Layer Rules (DO NOT REPEAT THESE)")
-        for i, rule in enumerate(current_rules):
-            prompt_parts.append(f"{i+1}. {rule}")
-        prompt_parts.append("")
-
-    # ------ 特征详情 ------
-    prompt_parts.append("# Feature Details")
-    feature_details = []
-    for i, feat in enumerate(meta.features):
-        feat_lines = []
-        
-        # 基础信息
-        feat_lines.append(f"Feature {i+1}: {feat.name}")
-        feat_lines.append(f"- Type: {feat.type}{' (Categorical)' if feat.is_categorical else ''}")
-        
-        # 处理描述信息
-        desc = getattr(feat, 'desc', 'No description').replace('"', '\"')
-        feat_lines.append(f"- Description: {desc}")
-
-        # 类型特定信息
+    # # ============== 数据集介绍部分 ==============
+    feature_lines = []
+    for feat in meta.features:
+        desc = getattr(feat, 'desc', 'No description')
+        unit = ''
+        m = re.search(r'\(([^)]+)\)', desc)
+        if m:
+            unit = m.group(1)
+        line = f"{feat.name}: {desc}"
+        if unit:
+            line += f" [unit: {unit}]"
         if feat.is_categorical:
-            categories = []
-            for k, v in feat.categories.items():
-                safe_k = k.replace('"', '\"')
-                categories.append(f"{safe_k}({v})")
-            feat_lines.append(f"- Categories: {', '.join(categories)}")
-        # 数值型特征的统计信息已移除
-        
-        feature_details.append("\n".join(feat_lines))
-    
-    prompt_parts.append("\n\n".join(feature_details))
-    prompt_parts.append("")
+            categories = [f"{k}({v})" for k, v in feat.categories.items()]
+            line += f" | Categories: {', '.join(categories)}"
+        feature_lines.append(line)
+    prompt_parts.append("# Feature Definitions")
+    prompt_parts.append("; ".join(feature_lines))  # 用分号拼接，紧凑排列
 
-    # ------ 标签定义 ------
+    label_lines = [f"{label.name}: {getattr(label, 'desc', 'No description')}" for label in meta.labels]
     prompt_parts.append("# Label Definitions")
-    label_defs = []
-    for label in meta.labels:
-        desc = getattr(label, 'desc', 'No description').replace('"', '\"')
-        label_defs.append(f"{label.name} (Value={label.value}): {desc}")
-    prompt_parts.append("\n".join(label_defs))
-    prompt_parts.append("")
+    prompt_parts.append("; ".join(label_lines))  # 同样紧凑排列
 
-    # ------ 决策树要求 ------
-    prompt_parts.append("# Decision Tree Requirements")
-    prompt_parts.append("1. The tree must have exactly 3 levels (max_depth=3)")
-    prompt_parts.append("2. Use exactly 2 distinct features in total (max_depth -1)")
-    prompt_parts.append("3. Each split must use a different feature than the previous ones")
-    prompt_parts.append("4. Rules must be mutually exclusive")
-    prompt_parts.append("5. Leverage domain knowledge when creating splitting rules")
-    prompt_parts.append("6. All rules must include both THEN and ELSE branches")
-    prompt_parts.append("7. DO NOT generate any rule that already exists in Current Layer Rules")
-    prompt_parts.append("8. Each rule in this layer must use different features or split values")
-    prompt_parts.append("")
+    prompt_parts.append("## Output Specifications")
+    prompt_parts.append("Generate one rule pairs that must:")
+    prompt_parts.append("- Use identical feature combinations per pair")
+    prompt_parts.append("- Cover all possible value ranges")
+    prompt_parts.append("- Prioritize features with maximum information gain")
+    prompt_parts.append("- Maintain tree structure compatibility")
 
-    # ------ 重要提示 ------
-    prompt_parts.append("# Important Note")
-    prompt_parts.append("You MUST NOT generate any rule that:")
-    prompt_parts.append("- Has the same feature and split value as any rule in Current Layer Rules")
-    prompt_parts.append("- Has the same logical structure as any existing rule")
-    prompt_parts.append("If you're unsure, generate a completely different rule.")
+    prompt_parts.append("## Examples")
+    prompt_parts.append("parent is Root->generate one")
+    prompt_parts.append("IF size = big THEN yes")
+    prompt_parts.append("IF size != big THEN [NODE]")
+    prompt_parts.append("")
+    prompt_parts.append("Have parents->Add AND condition")
+    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN [NODE]")
+    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN older")
     prompt_parts.append("")
     
-    # ------ 决策树输出格式要求 ------
-    prompt_parts.append("# Decision Tree Output Format Requirement")
-    prompt_parts.append("Please strictly follow the following format for each rule:")
-    prompt_parts.append("- Each rule must be on a single line, starting with 'Rule N:'.")
-    prompt_parts.append("- Use 'IF ... THEN ...' structure. For multiple conditions, use 'AND' to connect.")
-    prompt_parts.append("- All feature names and label names must match the metadata exactly.")
-    prompt_parts.append("- Do not add extra explanations, comments, or blank lines.")
-    prompt_parts.append("")
-
-    # ------ 决策树示例 ------
-    prompt_parts.append("# Rule Example")
-    # 只给出一条一层的示例规则
-    if len(meta.features) > 0 and len(meta.labels) > 1:
-        feat = meta.features[0]
-        label1 = meta.labels[0].name
-        label2 = meta.labels[1].name
-        if feat.is_categorical:
-            common_cat = list(feat.categories.keys())[0] if feat.categories else "A"
-            rule = f"Rule 1: IF {feat.name} = '{common_cat}' THEN {label1} ELSE {label2}"
-        else:
-            threshold = 0.5
-            rule = f"Rule 1: IF {feat.name} > {threshold:.4f} THEN {label1} ELSE {label2}"
-        prompt_parts.append(rule)
-        prompt_parts.append("")
-    else:
-        prompt_parts.append("")
 
     # ============== 最终组装 ==============
     full_prompt = "\n".join(prompt_parts)
 
-    # 只在首次调用时打印一次完整提示词内容
-    if not hasattr(generate_ToT_tree_prompt, "_printed"):
-        logger.log("=============== 完整提示词内容 ===============")
-        logger.log(full_prompt)
-        logger.log(f"提示词长度: {len(full_prompt)} 字符")
-        generate_ToT_tree_prompt._printed = True
-    # 此处不再输出大模型规则，实际规则应在外部调用大模型后打印
-    
     return {
         "prompt": full_prompt.strip(),
-        "label_dist": label_dist,
-        "num_examples": len(examples),
-        "examples": examples
     }

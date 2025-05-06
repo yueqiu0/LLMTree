@@ -12,11 +12,13 @@ class TogetherAPIRunner(Runner):
         self.model_name = model_name
 
     def run(self, messages: list[str]) -> Generator[list[str], None, None]:
+        import logging
         if self.api_base:
             together.api_base = self.api_base
         together.api_key = self.api_key
 
         for prompt in messages:
+            logging.info(f"[TogetherAPIRunner] prompt: {prompt}")
             while True:
                 try:
                     response = together.Complete.create(
@@ -27,10 +29,16 @@ class TogetherAPIRunner(Runner):
                         top_k=50,
                         top_p=0.7,
                     )
+                    logging.info(f"[TogetherAPIRunner] raw response: {response}")
                 except BaseException as e:
+                    logging.error(f"[TogetherAPIRunner] Exception: {e}")
                     raise e
 
-                result = response["output"]["choices"][0]["text"]
+                try:
+                    result = response["output"]["choices"][0]["text"]
+                except Exception as e:
+                    logging.error(f"[TogetherAPIRunner] Failed to parse response: {response}, error: {e}")
+                    result = str(response)
                 break
 
             yield [result]

@@ -68,367 +68,413 @@ class DecisionTree:
         raise NotImplementedError()
 
 
-class ToTDecisionTree(DecisionTree):
-    def __init__(self, meta, max_depth, runner, log_file, tree_num=5, best_num=1):
-        super().__init__(meta)  # Initialize the parent class
-        self.max_depth = max_depth  # Max tree depth
-        self.runner = runner      # LLM runner
-        self.log_file = log_file  # Log file path
-        self.rules = []           # List to store parsed rules
-        self.feature_names = [f.name for f in meta.features]  # Get feature names from metadata features
-        self.num_rule_candidates = tree_num  # Keep internal name but accept external name
-        self.select_top_k = best_num  # Keep internal name but accept external name
-        # Open log file in append mode with line buffering for real-time writing
-        log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)  # 1 means line buffering
-        self.logger = Logger(log_file_obj)  # Initialize logger with file object
-        # Ensure first log message marks the start
-        self.logger.log(f"=== ToTDecision initialized at {datetime.now().isoformat()} ===")
 
-    def _build_rule_prompt(self, x_train, y_train, rules, depth, used_features=None):
-        """Build prompt for generating rules in DOT format"""
-        from ..dataset import generate_ToT_tree_prompt
-        meta = self.meta
-        num_examples = min(5, x_train.shape[0])
-        prompt_info = generate_ToT_tree_prompt(meta, x_train, y_train, max_depth=self.max_depth, num_examples=num_examples)
-        prompt_head = prompt_info["prompt"]
-        
-        # Generate current tree in DOT format
-        tree_str = "empty"
-        if rules:
-            tree_lines = ["node0 [label=\"ROOT\"]"]
-            node_id = 1
-            parent_map = {}
-            
-            for i, rule in enumerate(rules, 1):
-                condition = rule['condition']
-                label = rule['label']
-                path = rule.get('path', [])
-                
-                # Build tree structure
-                current_parent = "node0"
-                for cond in path[:-1]:
-                    key = f"{current_parent}-{cond}"
-                    if key not in parent_map:
-                        parent_map[key] = f"node{node_id}"
-                        tree_lines.append(f"{parent_map[key]} [label=\"{cond}\"]")
-                        tree_lines.append(f"{current_parent} -> {parent_map[key]}")
-                        node_id += 1
-                    current_parent = parent_map[key]
-                
-                # Add leaf node
-                leaf_node = f"node{node_id}"
-                tree_lines.append(f"{leaf_node} [label=\"{path[-1] if path else condition}\\n[{label}]\"]")
-                tree_lines.append(f"{current_parent} -> {leaf_node}")
-                node_id += 1
-            
-            tree_str = "\n".join(tree_lines)
-        
-        # Forbidden features note
-        forbid_str = ""
-        if used_features:
-            forbid_str = f"\n# Note: The following features cannot be used in this layer: {', '.join(used_features)}"
-        
-        # Prompt template in English
-        prompt_tail = f"""
-# Current decision :
-{tree_str}
-{forbid_str}
-
-Please propose the optimal classification rule for layer {depth+1}.
-"""
-        return prompt_head + "\n" + prompt_tail
-
-    def _parse_llm_rule_response(self, response):
-        """解析LLM生成的单条规则"""
-        return self.parse_dot_tree(response)[0] if response else None
-
-    @staticmethod
-    def parse_dot_tree(dot_str):
-        """Parse DOT format tree into decision rules
-        
-        Example input:
-        node0 [label="ROOT"]
-        node1 [label="price = vhigh"]
-        node0 -> node1
-        node2 [label="safety = high\n[good]"]
-        node1 -> node2
-        node3 [label="safety != high\n[unacceptable]"]
-        node1 -> node3
-        
-        Returns list of rules in format:
-        [{
-            'condition': 'price = vhigh AND safety = high',
-            'label': 'good',
-            'path': ['price = vhigh', 'safety = high']
-        }]
-        """
-        import re
-        from collections import defaultdict
-        
-        # Parse nodes
-        nodes = {}
-        node_pattern = re.compile(r'node(\d+)\s*\[label="([^"]+)"\]')
-        for node_id, label in node_pattern.findall(dot_str):
-            # Extract condition and label (if any)
-            parts = label.split('\n')
-            condition = parts[0].strip()
-            label = parts[1][1:-1] if len(parts) > 1 else None  # Remove brackets
-            nodes[node_id] = {
-                'condition': condition,
-                'label': label,
-                'children': []
-            }
-        
-        # Parse edges and build tree
-        edge_pattern = re.compile(r'node(\d+)\s*->\s*node(\d+)')
-        for parent_id, child_id in edge_pattern.findall(dot_str):
-            nodes[parent_id]['children'].append(child_id)
-        
-        # Build rules by traversing from root
-        rules = []
-        root_id = '0'  # Assuming root is always node0
-
-    def _build_select_prompt(self, rule_candidates, rules, depth):
-        """构造规则筛选prompt，让LLM在候选规则中选最优k个，要求输出标准格式"""
-        prompt = f"""
-你正在构建一棵决策树，当前已生成的规则如下：\n{rules}\n以下是本层候选规则：\n"
-"""
-        for idx, rule in enumerate(rule_candidates):
-            prompt += f"规则{idx+1}: {rule}\n"
-        prompt += f"\n请你从中选出最优的{self.select_top_k}个规则，并只输出被选中的规则，保持如下格式：\nRule N: IF ... THEN ..."
-        return prompt
-
-    def _parse_llm_select_response(self, response, rule_candidates, k):
-        """解析LLM筛选返回的最优k个规则"""
-        # 直接用parse_dot_tree解析，返回前k条
-        rules = self.parse_dot_tree(response)
-        return rules[:k] if rules else []
-
-    def generate_candidate_rules(self, x_train, y_train, current_rules, depth, used_features=None):
-        """让LLM生成候选分类规则"""
-        prompt_info = generate_ToT_tree_prompt(self.meta, x_train, y_train, 
-                                             max_depth=self.max_depth,
-                                             current_rules=current_rules)
-        prompt = prompt_info["prompt"]
-        
-        # 记录发送给LLM的prompt
-        self.logger.log(f"\n=== Sending to LLM at depth {depth} ===")
-        self.logger.log(f"Prompt:\n{prompt}")
-        
-        # 处理生成器响应
-        response_generator = self.runner.run(prompt)
-        try:
-            response = next(response_generator)
-            # 记录LLM原始响应
-            self.logger.log(f"\nLLM Raw Response:")
-            if isinstance(response, list):
-                self.logger.log("\n".join(response))
-                response = '\n'.join(response)
-            else:
-                self.logger.log(str(response))
-                
-            parsed_rules = self.parse_dot_tree(response)
-            # 记录解析后的规则
-            self.logger.log(f"\nParsed Rules:")
-            for i, rule in enumerate(parsed_rules):
-                self.logger.log(f"Rule {i+1}: {rule}")
-                
-            return parsed_rules
-        except StopIteration:
-            self.logger.log(f"No response from LLM at depth {depth}")
-            return []
-
-    def evaluate_rules(self, rule_candidates, current_rules, depth):
-        """让LLM评估并选择最优规则"""
-        prompt = self._build_select_prompt(rule_candidates, current_rules, depth)
-        
-        # 记录发送给LLM的prompt
-        self.logger.log(f"\n=== Evaluating Rules at depth {depth} ===")
-        self.logger.log(f"Prompt:\n{prompt}")
-        
-        response_generator = self.runner.run(prompt)
-        try:
-            response = next(response_generator)
-            # 记录LLM原始响应
-            self.logger.log(f"\nLLM Raw Response:")
-            if isinstance(response, list):
-                self.logger.log("\n".join(response))
-                response = '\n'.join(response)
-            else:
-                self.logger.log(str(response))
-                
-            selected_rules = self._parse_llm_select_response(response, rule_candidates, self.select_top_k)
-            # 记录选择的规则
-            self.logger.log(f"\nSelected Rules:")
-            for i, rule in enumerate(selected_rules):
-                self.logger.log(f"Rule {i+1}: {rule}")
-                
-            return selected_rules
-        except StopIteration:
-            self.logger.log(f"No response from LLM during evaluation at depth {depth}")
-            return []
-        """让LLM评估并选择最优规则"""
-        prompt = self._build_select_prompt(rule_candidates, current_rules, depth)
-        response = self.runner.run(prompt)
-        return self._parse_llm_select_response(response, rule_candidates, self.select_top_k)
-
-    def convert_to_if_rules(self, dot_rules):
-        """将DOT格式规则转换为IF-THEN规则列表"""
-        if_rules = []
-        for rule in dot_rules:
-            conditions = []
-            for cond in rule['conditions']:
-                if cond['is_categorical']:
-                    conditions.append(f"{self.feature_names[cond['feature']]} == {cond['value']}")
-                else:
-                    op = ">=" if cond['is_left'] else "<"
-                    conditions.append(f"{self.feature_names[cond['feature']]} {op} {cond['value']}")
-            if_condition = " AND ".join(conditions)
-            if_rules.append(f"IF {if_condition} THEN {rule['label']}")
-        return if_rules
-
-    def parse_rules_to_functions(self, dot_rules):
-        """将规则解析为可执行Python函数"""
-        funcs = []
-        for i, rule in enumerate(dot_rules):
-            conditions = []
-            for cond in rule['conditions']:
-                if cond['is_categorical']:
-                    conditions.append(f"x[{cond['feature']}] == {cond['value']}")
-                else:
-                    op = ">=" if cond['is_left'] else "<"
-                    conditions.append(f"x[{cond['feature']}] {op} {cond['value']}")
-            func_code = f"def rule_{i}(x):\n    return {' and '.join(conditions)}"
-            funcs.append(func_code)
-        return funcs
-
-    def render_jinja_template(self, rules, with_llm=True):
-        """渲染监控模板"""
-        env = Environment(loader=FileSystemLoader('template'))
-        template = env.get_template('basic.jinja')
-        
-        if with_llm:
-            # For LLM parsing
-            return template.render(
-                meta=self.meta,
-                rules=rules,
-                prediction_intro="Please predict the following cases:"
-            )
+# === Step 1: TreeNode类实现 ===
+class TreeNode:
+    def __init__(self, depth, x, y, parent=None):
+        self.depth = depth
+        self.x = x
+        self.y = y
+        self.parent = parent
+        self.candidates = []  # n个候选规则
+        self.votes = {}       # {rule_str: 得票数}
+        self.selected_rule = None  # 最终选定规则
+        self.children = []    # 子节点
+        self.is_leaf = False
+        self.leaf_class = None
+        # 新增：路径条件和特征使用追踪
+        if parent is not None:
+            self.path_conditions = list(parent.path_conditions)
+            self.used_features = set(parent.used_features)
         else:
-            # For function parsing
-            return template.render(
-                meta=self.meta,
-                rules=rules,
-                prediction_intro=""
-            )
+            self.path_conditions = []
+            self.used_features = set()
 
-    def build_decision_tree(self, x_train, y_train, max_depth=None):
-        """递归构建决策树"""
-        if max_depth is None:
-            max_depth = self.max_depth
-            
-        if max_depth <= 0 or len(np.unique(y_train)) == 1:
-            # Base case: create leaf node
-            leaf_class = np.argmax(np.bincount(y_train))
-            return {'is_leaf': True, 'class': leaf_class}
-            
-        # Generate candidate rules
-        current_rules = self.rules.copy()
-        rule_candidates = self.generate_candidate_rules(
-            x_train, y_train, 
-            current_rules, 
-            self.max_depth - max_depth
-        )
-        
-        if not rule_candidates:
-            # No valid rules found
-            leaf_class = np.argmax(np.bincount(y_train))
-            return {'is_leaf': True, 'class': leaf_class}
-            
-        # Evaluate and select best rule
-        best_rules = self.evaluate_rules(
-            rule_candidates, 
-            current_rules,
-            self.max_depth - max_depth
-        )
-        
-        if not best_rules:
-            # No rules selected
-            leaf_class = np.argmax(np.bincount(y_train))
-            return {'is_leaf': True, 'class': leaf_class}
-            
-        best_rule = best_rules[0]
-        self.rules.append(best_rule)
-        
-        # Split data based on rule
-        left_mask = self._apply_rule(x_train, best_rule)
-        right_mask = ~left_mask
-        
-        # Recursively build subtrees
-        left_subtree = self.build_decision_tree(
-            x_train[left_mask], 
-            y_train[left_mask],
-            max_depth - 1
-        )
-        right_subtree = self.build_decision_tree(
-            x_train[right_mask],
-            y_train[right_mask],
-            max_depth - 1
-        )
-        
-        return {
-            'is_leaf': False,
-            'rule': best_rule,
-            'left': left_subtree,
-            'right': right_subtree
-        }
+    def add_condition(self, feature, condition):
+        """记录当前节点的分裂条件和已用特征"""
+        self.path_conditions.append(f"{feature} {condition}")
+        self.used_features.add(feature)
 
-    def _apply_rule(self, x, rule):
-        """应用规则生成掩码"""
-        mask = np.ones(len(x), dtype=bool)
-        for cond in rule['conditions']:
-            if cond['is_categorical']:
-                mask &= (x[:, cond['feature']] == cond['value'])
-            else:
-                if cond['is_left']:
-                    mask &= (x[:, cond['feature']] >= cond['value'])
+    def __repr__(self):
+        return f"TreeNode(depth={self.depth}, rule={self.selected_rule}, is_leaf={self.is_leaf}, leaf_class={self.leaf_class})"
+
+
+
+# === Step 2: ToTDecisionTree类重构初始化，支持树结构和参数 ===
+class ToTDecisionTree(DecisionTree):
+    def flat_rules_to_graphviz(self, flat_rules, graph_name="FlatRulesTree"):
+        """
+        将平面化规则链列表（如 export_flat_rules 输出）转为 dot 格式字符串。
+        每条规则为一个节点，节点 label 为完整规则，节点编号顺序连接。
+        """
+        lines = []
+        lines.append(f'digraph {graph_name} {{')
+        for idx, rule in enumerate(flat_rules):
+            lines.append(f'node{idx} [label="{rule}"]')
+        for idx in range(len(flat_rules) - 1):
+            lines.append(f'node{idx} -> node{idx+1}')
+        lines.append('}')
+        return "\n".join(lines)
+
+    def to_graphviz_source(self, features=None, classes=None, graph_name="ToTDecisionTree"):
+        """
+        生成严格符合如下格式的dot源码：
+        node0 [label="ROOT"]
+        node1 [label="If xxx ,[node]"]
+        node0 -> node1
+        node2 [label="If yyy ,THEN label"]
+        node1 -> node2
+        ...
+        """
+        lines = []
+        node_id_counter = [0]
+        node_ids = {}
+
+        def get_node_id(node):
+            if node not in node_ids:
+                node_ids[node] = f"node{node_id_counter[0]}"
+                node_id_counter[0] += 1
+            return node_ids[node]
+
+        def dfs(node, parent=None, cond_text=None):
+            nid = get_node_id(node)
+            if node.depth == 0:
+                lines.append(f'{nid} ["ROOT"]')
+            elif node.is_leaf:
+                if parent and cond_text:
+                    label = f'If {cond_text} ,THEN {node.leaf_class}'
                 else:
-                    mask &= (x[:, cond['feature']] < cond['value'])
-        return mask
+                    label = f'THEN {node.leaf_class}'
+                lines.append(f'{nid} ["{label}"]')
+            else:
+                if cond_text:
+                    label = f'If {cond_text} ,[node]'
+                else:
+                    label = f'If [unknown] ,[node]'
+                lines.append(f'{nid} ["{label}"]')
+            if parent:
+                pid = get_node_id(parent)
+                lines.append(f'{pid} -> {nid}')
+            if not node.is_leaf and node.selected_rule and isinstance(node.selected_rule, dict):
+                conds = node.selected_rule.get("condition", "")
+                cond_lines = [l.strip() for l in conds.splitlines() if l.strip()]
+                for idx, child in enumerate(node.children):
+                    cond_line = cond_lines[idx] if idx < len(cond_lines) else ""
+                    dfs(child, node, cond_line)
+            elif not node.is_leaf:
+                for child in node.children:
+                    dfs(child, node, "")
 
+        lines.append(f'digraph {graph_name} {{')
+        dfs(self.root)
+        lines.append('}')
+        return "\n".join(lines)
+    def export_flat_rules(self, features=None) -> list[str]:
+        """
+        导出所有从根到叶的规则，每条规则为 IF cond1 AND cond2 ... THEN label，
+        其中 AND 的数量为 max_depth-2（即条件数为 max_depth-1），只输出这些深度的规则。
+        修正：去重条件，且只保留最后一个 THEN label。
+        """
+        rules = []
+        max_and = self.max_depth - 2 if hasattr(self, 'max_depth') else 1
+        def clean_cond(cond):
+            cond = cond.strip()
+            if cond.startswith("IF "):
+                cond = cond[3:]
+            if 'THEN [NODE]' in cond or 'THEN [node]' in cond or 'THEN [Node]' in cond:
+                cond = cond.split('THEN')[0].strip()
+            if cond.endswith(','):
+                cond = cond[:-1].strip()
+            return cond
+        def dfs(node, path_conds):
+            if node is None:
+                return
+            # 叶子节点直接输出完整路径
+            if node.is_leaf:
+                if path_conds:
+                    rule = " AND ".join(path_conds)
+                    rules.append(f"IF {rule} THEN {node.leaf_class}")
+                return
+            # 非叶子节点，递归所有分支
+            if node.selected_rule and isinstance(node.selected_rule, dict):
+                conds = node.selected_rule.get("condition", "")
+                cond_lines = [l.strip() for l in conds.splitlines() if l.strip()]
+                for idx, child in enumerate(node.children):
+                    if idx < len(cond_lines):
+                        cond = clean_cond(cond_lines[idx])
+                        dfs(child, path_conds + [cond])
+                    else:
+                        dfs(child, path_conds)
+            else:
+                for child in node.children:
+                    dfs(child, path_conds)
+        dfs(self.root, [])
+        return rules
+
+    def _zero_shot_llm_generate_rule(self, depth, parent_rule, current_path):
+        """
+        使用LLM和meta信息生成单条决策规则（零样本）。
+        调用方式与basic.jinja批量推理部分保持一致。
+        """
+        prompt = self._build_rule_prompt(
+            x=np.zeros((1, len(self.feature_names))),
+            y=np.zeros(1),
+            depth=depth,
+            parent_rule=parent_rule,
+            current_path=current_path
+        )
+        self.logger.log(f"[Zero-Shot LLM RuleGen] prompt:\n{prompt}")
+        self.total_prompts += 1
+        try:
+            responses = next(self.runner.run([prompt]))
+            response = responses[0] if isinstance(responses, list) and len(responses) > 0 else responses
+            self.logger.log(f"[Zero-Shot LLM RuleGen] 原始回应:\n{response}")
+            import json
+            if isinstance(response, dict):
+                self.logger.log(f"[Zero-Shot LLM RuleGen] 最终返回: {repr(response)}，类型: dict")
+                return response
+            if isinstance(response, str):
+                try:
+                    rule = json.loads(response)
+                    if isinstance(rule, dict):
+                        self.logger.log(f"[Zero-Shot LLM RuleGen] 最终返回: {repr(rule)}，类型: dict(json)")
+                        return rule
+                except Exception:
+                    pass
+                import re
+                m = re.search(r'condition\s*:\s*(.+?)\s*label\s*:\s*(.+)', response, re.I)
+                if m:
+                    rule = {"condition": m.group(1).strip(), "label": m.group(2).strip()}
+                    self.logger.log(f"[Zero-Shot LLM RuleGen] 最终返回: {repr(rule)}，类型: dict(re)")
+                    return rule
+                # 新增：如果是多行规则字符串，直接返回字符串
+                if response.strip().startswith('IF'):
+                    self.logger.log(f"[Zero-Shot LLM RuleGen] 最终返回: {repr(response)}，类型: str(plain)")
+                    return {"condition": response.strip(), "label": ""}
+        except Exception as e:
+            self.logger.log(f"[Zero-Shot LLM RuleGen] 解析异常: {e}")
+        self.logger.log(f"[Zero-Shot LLM RuleGen] 最终返回: None")
+        return None
+
+
+
+    def _zero_shot_llm_vote(self, candidates, depth, parent_rule):
+        # Always include rich dataset/feature context
+        context_prompt = generate_ToT_tree_prompt(self.meta, np.zeros((1, len(self.feature_names))), np.zeros(1), max_depth=depth).get("prompt", "")
+        prompt = f"{context_prompt}\nYou are building a zero-shot decision tree. The following are candidate rules for depth {depth+1}:\n"
+        for idx, rule in enumerate(candidates):
+            prompt += f"Rule {idx+1}: {rule.get('condition', str(rule))} -> {rule.get('label', '')}\n"
+        prompt += "\nPlease select the best rule. Output format: Rule N"
+        self.logger.log(f"[Zero-Shot LLM Voting] prompt:\n{prompt}")
+        self.total_prompts += 1
+        try:
+            response = next(self.runner.run(prompt))
+            self.logger.log(f"[Zero-Shot LLM投票] 原始回应:\n{response}")
+            import re
+            m = re.search(r'Rule\s*(\d+)', str(response))
+            if m:
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < len(candidates):
+                    return idx
+        except Exception as e:
+            self.logger.log(f"[Zero-Shot LLM投票] 解析异常: {e}")
+        return 0
+
+
+
+
+    def print_tree(self, node=None, indent=""):
+        if node is None:
+            node = self.root
+        if node.is_leaf:
+            print(f"{indent}Leaf: class={node.leaf_class}")
+        else:
+            print(f"{indent}Rule: {node.selected_rule['condition']} -> {node.selected_rule['label']}")
+            for child in node.children:
+                self.print_tree(child, indent + "  ")
+    def __init__(self, meta, max_depth, runner, log_file,
+                 candidate_rules_per_node=5, voting_rounds_per_node=3, top_k_rules=2, final_voting_rounds=3):
+        super().__init__(meta)
+        self.max_depth = max_depth  # 树最大深度
+        self.runner = runner        # LLM runner
+        self.log_file = log_file    # 日志文件路径
+        self.candidate_rules_per_node = candidate_rules_per_node  # 每个节点生成规则数
+        self.voting_rounds_per_node = voting_rounds_per_node      # 每个节点投票轮数
+        self.top_k_rules = top_k_rules                            # 每个节点保留分支数
+        self.final_voting_rounds = final_voting_rounds            # 全局最终投票轮数
+        self.root = None            # 最终决策树根节点
+        self.candidate_trees = []   # 所有候选树
+        self.total_prompts = 0      # 总prompt计数器
+        self.feature_names = [f.name for f in meta.features]
+        self.rules = []  # 用于build_decision_tree递归规则收集
+        log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)
+        self.logger = Logger(log_file_obj)
+        self.logger.log(f"=== ToTDecisionTree initialized at {datetime.now().isoformat()} ===")
+
+
+    def _build_rule_prompt(self, x, y, depth, current_path=None, parent_rule=None, applied_rules=None, num_examples=5):
+        """
+        构造用于生成规则的prompt（新版，支持自定义格式，集成新版prompt片段和参数传递）
+        支持 current_path、applied_rules 等参数灵活传递。
+        """
+        # 兼容参数
+        if current_path is None:
+            current_path = "Root"
+        if applied_rules is None:
+            # 默认用 current_path 作为 applied_rules
+            applied_rules = current_path
+        # 生成新版prompt（dataset.py新版函数，支持全部上下文参数）
+        prompt_dict = generate_ToT_tree_prompt(
+            self.meta,
+            x,
+            y,
+            max_depth=depth if depth is not None else self.max_depth,
+            num_examples=num_examples,
+            current_path=current_path,
+            applied_rules=applied_rules
+        )
+        prompt = prompt_dict.get("prompt", "")
+        return prompt
     def get_rules(self):
         """获取当前决策树的所有规则"""
         return self.rules
 
-    def fit(self, x_train, y_train, with_llm=True):
-        """Complete tree building pipeline including:
-        1. Rule generation and evaluation
-        2. Dataset splitting
-        3. Termination condition checking
-        4. Format conversion
-        5. Output selection based on with_llm flag
-        
-        Args:
-            x_train: Training data features
-            y_train: Training data labels
-            with_llm: Whether to use LLM for output rendering
-            
-        Returns:
-            self: Returns the trained model instance
+    def fit(self, x_train=None, y_train=None, with_llm=True):
         """
-        # Build the complete decision tree
-        tree_structure = self.build_decision_tree(x_train, y_train)
-        
-        # Convert tree to appropriate format
-        if with_llm:
-            # Render monitoring template for LLM
-            rules = self.get_rules()
-            self.render_jinja_template(rules, with_llm=True)
-        else:
-            # Generate executable decision functions
-            rules = self.get_rules()
-            self.parse_rules_to_functions(rules)
-            
+        只用LLM和meta信息生成决策树（零样本），不依赖训练数据。
+        支持多层递归，每一层扫描所有[NODE]节点，current_path为完整规则链。
+        修正：循环次数为 max_depth-1，最后一层自动生成叶子节点。
+        """
+        self.logger.log("=== [Zero-Shot] Start zero-shot decision tree generation (ToT enhanced) ===")
+        self.total_prompts = 0
+        max_depth = self.max_depth
+        self.root = TreeNode(0, x=None, y=None, parent=None)
+        # 第一层只有root，current_path为Root
+        current_layer = [(self.root, "Root")]
+        # 修正：采用while循环，确保所有[NODE]分支都能被递归扩展，直到到达max_depth-1层
+        depth = 0
+        while current_layer and depth < max_depth - 1:
+            self.logger.log(f"[DEBUG][ToT] while-loop begin, depth={depth}, current_layer size={len(current_layer)}, nodes={[repr(n) for n, _ in current_layer]}")
+            next_layer = []
+            for node, current_path in current_layer:
+                self.logger.log(f"[DEBUG][ToT] for-loop, depth={depth}, node={repr(node)}, current_path={current_path}")
+                # 终止条件
+                if node.depth >= max_depth - 1:
+                    self.logger.log(f"[DEBUG][ToT] depth={depth}, node.depth={node.depth} >= max_depth-1, continue as leaf")
+                    node.is_leaf = True
+                    node.leaf_class = None
+                    continue
+                # 生成候选规则，数量由 candidate_rules_per_node 控制
+                candidates = []
+                for _ in range(self.candidate_rules_per_node):
+                    rule = self._zero_shot_llm_generate_rule(node.depth, None, current_path)
+                    self.logger.log(f"[DEBUG][ToT] depth={depth}, candidate rule raw: {repr(rule)}, type={type(rule)}")
+                    if rule is not None:
+                        candidates.append(rule)
+                if not candidates:
+                    self.logger.log(f"[DEBUG][ToT] depth={depth}, no candidates, node set as leaf, continue")
+                    node.is_leaf = True
+                    node.leaf_class = None
+                    continue
+                # 投票选出最佳规则
+                best_idx = self._zero_shot_llm_vote(candidates, node.depth, None)
+                # 打印本轮投票prompt和最佳分支
+                self.logger.log(f"[DEBUG][ToT] depth={depth}, 投票prompt如下:\n{getattr(self, 'last_vote_prompt', '')}")
+                best_rule = candidates[best_idx]
+                self.logger.log(f"[DEBUG][ToT] depth={depth}, 最佳分支: {best_rule}")
+                node.selected_rule = best_rule
+                node.candidates = candidates
+                node.votes = {i: 1 if i == best_idx else 0 for i in range(len(candidates))}
+                node.children = []
+                # 只扩展最佳分支
+                cond = best_rule.get('condition', '')
+                self.logger.log(f"[DEBUG][ToT] depth={depth}, cond(raw)={repr(cond)}, type={type(cond)}")
+                if not isinstance(cond, str):
+                    cond = str(cond)
+                    self.logger.log(f"[DEBUG][ToT] depth={depth}, cond 强制转为str: {repr(cond)}")
+                if '[NODE]' in cond or '[Node]' in cond or '[node]' in cond:
+                    rules_lines = [l.strip() for l in cond.splitlines() if l.strip()]
+                    self.logger.log(f"[DEBUG][ToT] depth={depth}, rules_lines: {rules_lines}")
+                    for rule_line in rules_lines:
+                        self.logger.log(f"[DEBUG][ToT] depth={depth}, rule_line: {repr(rule_line)}")
+                        if '[NODE]' in rule_line or '[Node]' in rule_line or '[node]' in rule_line:
+                            child_path = (current_path + " AND " + rule_line.replace('THEN [NODE]', '').replace('THEN [Node]', '').replace('THEN [node]', '').strip()).replace('Root AND', 'Root')
+                            child = TreeNode(node.depth + 1, x=None, y=None, parent=node)
+                            node.children.append(child)
+                            next_layer.append((child, child_path))
+                            self.logger.log(f"[DEBUG][ToT] 当前depth={depth}, 新child.depth={child.depth}, 发现[NODE]分支: {rule_line}, child_path={child_path}")
+                        elif 'THEN' in rule_line:
+                            label = rule_line.split('THEN')[-1].strip()
+                            child = TreeNode(node.depth + 1, x=None, y=None, parent=node)
+                            child.is_leaf = True
+                            child.leaf_class = label
+                            node.children.append(child)
+                            self.logger.log(f"[DEBUG][ToT] depth={depth}, 发现叶子分支: {rule_line}, label={label}")
+                else:
+                    # 兼容只有一个规则的情况
+                    if '[NODE]' in cond or '[Node]' in cond or '[node]' in cond:
+                        self.logger.log(f"[DEBUG][ToT] depth={depth}, else-branch, 发现[NODE]分支: {cond}")
+                        child_path = (current_path + " AND " + cond.replace('THEN [NODE]', '').replace('THEN [Node]', '').replace('THEN [node]', '').strip()).replace('Root AND', 'Root')
+                        child = TreeNode(node.depth + 1, x=None, y=None, parent=node)
+                        node.children.append(child)
+                        next_layer.append((child, child_path))
+                        self.logger.log(f"[DEBUG][ToT] 当前depth={depth}, 新child.depth={child.depth}, 发现[NODE]分支: {cond}, child_path={child_path}")
+                    elif 'THEN' in cond:
+                        self.logger.log(f"[DEBUG][ToT] depth={depth}, else-branch, 发现叶子分支: {cond}")
+                        label = cond.split('THEN')[-1].strip()
+                        child = TreeNode(node.depth + 1, x=None, y=None, parent=node)
+                        child.is_leaf = True
+                        child.leaf_class = label
+                        node.children.append(child)
+                        self.logger.log(f"[DEBUG][ToT] depth={depth}, 发现叶子分支: {cond}, label={label}")
+            self.logger.log(f"[DEBUG][ToT] while-loop end, depth={depth}, next_layer size={len(next_layer)}")
+            current_layer = next_layer
+            self.logger.log(f"[DEBUG][ToT] 第{depth+1}轮生成树的循环结束，当前层节点数: {len(current_layer)}")
+            depth += 1
+        # 最后一层：所有 current_layer 节点直接生成叶子
+        all_leaf = True
+        for node, current_path in current_layer:
+            if not node.is_leaf:
+                node.is_leaf = True
+                node.leaf_class = None
+            if not node.is_leaf:
+                all_leaf = False
+        if not all_leaf:
+            self.logger.log("[ERROR][ToT] 最后一层仍有非叶子节点，决策树生成异常，强制退出！")
+            import sys
+            sys.exit(1)
+        # 打印加载后的平面决策树规则
+        flat_rules = self.export_flat_rules(features=[f.name for f in self.meta.features] if hasattr(self.meta, 'features') else None)
+        print("# === 加载后的决策树平面规则如下 ===")
+        for rule in flat_rules:
+            print(rule)
+        # 打印加载后的平面dot结构源码
+        print("\n# === 加载后的平面规则dot源码如下 ===")
+        flat_dot = self.flat_rules_to_graphviz(flat_rules, graph_name="FlatRulesTree")
+        print(flat_dot)
+        # 打印加载后的原始树dot结构源码
+        print("\n# === 加载后的决策树结构dot源码如下 ===")
+        try:
+            dot_source = self.to_graphviz_source(
+                features=[f.name for f in self.meta.features] if hasattr(self.meta, 'features') else None,
+                classes=[c.name for c in self.meta.labels] if hasattr(self.meta, 'labels') else None,
+                graph_name="ToTDecisionTree"
+            )
+            print(dot_source)
+        except Exception as e:
+            print(f"[ToT] 决策树dot源码生成异常: {e}")
+        # 日志文件也写入两种dot结构
+        self.logger.log("# === 加载后的决策树平面规则如下 ===")
+        for rule in flat_rules:
+            self.logger.log(rule)
+        self.logger.log("\n# === 加载后的平面规则dot源码如下 ===")
+        self.logger.log(flat_dot)
+        self.logger.log("\n# === 加载后的决策树结构dot源码如下 ===")
+        try:
+            self.logger.log(dot_source)
+        except Exception:
+            pass
+        self.logger.log("=== [Zero-Shot] Decision tree generation finished ===")
         return self
 
 
@@ -686,4 +732,3 @@ class FederatedDecisionTree(DecisionTree):
         return all_results, []
 
 
-    
