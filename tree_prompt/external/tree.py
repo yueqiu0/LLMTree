@@ -2,6 +2,8 @@ from sklearn.preprocessing import OneHotEncoder
 import sklearn.tree
 import sklearn.ensemble
 import numpy as np
+import time
+from typing import Any, Tuple, List
 
 from .. import dataset
 from ..dataset import DatasetMeta
@@ -48,8 +50,9 @@ def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, l
 
 
 class DecisionTree:
-    def __init__(self, meta: dataset.DatasetMeta) -> None:
+    def __init__(self, meta: Any) -> None:
         self.meta = meta
+        self.train_elapsed = 0.0
 
     def predict(
         self,
@@ -74,8 +77,11 @@ class SimpleDecisionTree(DecisionTree):
         x_test: np.ndarray,
         export_rules: bool = True,
     ):
-        from sklearn.tree import DecisionTreeClassifier
+        from sklearn import tree
 
+        start_time = time.time()
+
+        
         if len(np.unique(y_train)) == 1:
             return np.full(x_test.shape[0], y_train[0]), []
 
@@ -93,8 +99,11 @@ class SimpleDecisionTree(DecisionTree):
             x_train = new_x[:train_size]
             x_test = new_x[train_size:]
 
-        self.clf = DecisionTreeClassifier(max_depth=self.max_depth)
+        self.clf = tree.DecisionTreeClassifier(max_depth=self.max_depth)
         self.clf.fit(x_train, y_train)
+
+        self.train_elapsed = time.time() - start_time
+
 
         if not export_rules:
             self.meta = old_meta
@@ -201,11 +210,19 @@ class XGBoostDecisionTree(DecisionTree):
             n_estimators=self.num_trees,
             random_state=self.random_state,
         )
+        
+        # 添加计时开始
+        start_time = time.time()
+        
         # transform y_train to 0/1
         y_train = np.array(
             [self.meta.labels.index(self.meta.find_label(y)) for y in y_train]
         )
         clf.fit(x_train, y_train)
+        
+        # 记录训练时间
+        self.train_elapsed = time.time() - start_time
+        
         y_test = clf.predict(x_test)
         y_test = np.array([self.meta.labels[y].value for y in y_test])
 
@@ -255,7 +272,14 @@ class RandomForestDecisionTree(DecisionTree):
         self.clf = RandomForestClassifier(
             n_estimators=self.num_trees, max_depth=self.max_depth
         )
+        
+        # 添加计时开始
+        start_time = time.time()
+        
         self.clf.fit(x_train, y_train)
+        
+        # 记录训练时间
+        self.train_elapsed = time.time() - start_time
 
         self.meta = old_meta
         return self.clf.predict(x_test), []
@@ -308,10 +332,16 @@ class FederatedDecisionTree(DecisionTree):
             )
         all_results = []
 
+        # 添加计时开始
+        start_time = time.time()
+        
         for sub_tree, feature_group in zip(self.sub_trees, self.feature_groups):
             sub_x_train = x_train[:, feature_group]
             sub_x_test = x_test[:, feature_group]
             result, _ = sub_tree.predict(sub_x_train, y_train, sub_x_test)
             all_results.append(result)
+        
+        # 记录训练时间
+        self.train_elapsed = time.time() - start_time
 
         return all_results, []

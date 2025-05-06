@@ -494,11 +494,15 @@ def evaluate(
         tree_predict, rules = tree_model.predict(
             train_x, train_y, test_x, export_rules
         )
+        # 获取树的训练时间
+        train_elapsed = getattr(tree_model, "train_elapsed", 0.0)
     except NotImplementedError:
         # 如果规则导出不被支持，重新调用但禁用规则导出
         tree_predict, rules = tree_model.predict(
             train_x, train_y, test_x, False
         )
+        # 获取树的训练时间
+        train_elapsed = getattr(tree_model, "train_elapsed", 0.0)
         rules = []  # 提供空规则列表
     
     tree_accuracy = calc_accuracy(test_y, tree_predict)
@@ -549,10 +553,12 @@ def evaluate(
                 logger.log("使用默认AUC值: 0.5")
 
     if tree_only:
+        logger.log(f"树模型训练时间: {train_elapsed:.4f}秒")
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
             "tree_results": tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict,
+            "train_elapsed": train_elapsed  # 添加树训练时间
         }
 
     prompts, test_splits, labels = gen_prompt(
@@ -698,14 +704,16 @@ def evaluate(
     result_dict["results"] = [meta.get_label_value(r) for r in results]
     result_dict["auc"] = auc
     result_dict["accuracy"] = acc
-    result_dict["eval_tokens"] = eval_tokens  # 添加token统计
-    result_dict["total_tokens"] = total_tokens  # 添加总token统计
+    result_dict["eval_tokens"] = eval_tokens
+    result_dict["total_tokens"] = total_tokens
 
     # 只在使用树规则时添加树相关结果
-    if use_tree_rules:
+    if use_tree_rules or tree_only:
         result_dict["tree_auc"] = tree_auc
         result_dict["tree_accuracy"] = tree_accuracy
         result_dict["tree_results"] = tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict
+        result_dict["train_elapsed"] = train_elapsed  # 添加树训练时间
+        logger.log(f"最终决策树训练时间: {train_elapsed:.4f}秒")
 
     return result_dict
 
