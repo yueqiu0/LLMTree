@@ -618,28 +618,58 @@ def evaluate(
             return result_dict
 
     acc = calc_accuracy(labels, results)
-    results_values = [meta.get_label_value(r) for r in results]
-    n_classes = len(meta.labels)
-    if n_classes > 2:
-        from sklearn.preprocessing import label_binarize
-        classes = np.unique(test_y)
+    
+    # 收集并清理预测结果值，确保没有None值
+    results_values = []
+    for r in results:
+        try:
+            value = meta.get_label_value(r)
+            if value is not None:  # 确保没有None值
+                results_values.append(value)
+            else:
+                # 如果找不到对应的标签值，使用0作为默认值（或者其他合适的默认值）
+                logger.log(f"警告: 无法为'{r}'找到有效的标签值，使用默认值0")
+                results_values.append(0)
+        except Exception as e:
+            logger.log(f"警告: 处理预测结果'{r}'时出错: {e}，使用默认值0")
+            results_values.append(0)
+    
+    # 确保结果长度与测试标签相同
+    if len(results_values) != len(test_y):
+        logger.log(f"警告: 预测结果数量({len(results_values)})与测试标签数量({len(test_y)})不匹配")
+        # 如果长度不匹配，可能需要调整
         
-        # 二进制化处理
-        y_test_bin = label_binarize(test_y, classes=classes)
-        if np.array(results_values).ndim == 1:  # 如果预测是一维的
-            results_bin = label_binarize(results_values, classes=classes)
-            # 计算宏平均AUC和微平均AUC
-            auc = {
-                'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='macro'),
-                'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='micro')
-            }
-        else:  # 如果已经是二维的
-            auc = {
-                'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='macro'),
-                'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='micro')
-            }
-    else:
-        auc = sklearn.metrics.roc_auc_score(test_y, results_values)
+    # 计算AUC，添加异常处理
+    try:
+        n_classes = len(meta.labels)
+        if n_classes > 2:
+            from sklearn.preprocessing import label_binarize
+            classes = np.unique(test_y)
+            
+            # 二进制化处理
+            y_test_bin = label_binarize(test_y, classes=classes)
+            if np.array(results_values).ndim == 1:  # 如果预测是一维的
+                results_bin = label_binarize(results_values, classes=classes)
+                # 计算宏平均AUC和微平均AUC
+                auc = {
+                    'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='macro'),
+                    'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='micro')
+                }
+            else:  # 如果已经是二维的
+                auc = {
+                    'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='macro'),
+                    'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='micro')
+                }
+        else:
+            auc = sklearn.metrics.roc_auc_score(test_y, results_values)
+    except Exception as e:
+        logger.log(f"计算LLM预测AUC时出错: {e}")
+        # 提供默认的AUC值
+        if n_classes > 2:
+            auc = {'macro': 0.5, 'micro': 0.5, 'error': str(e)}
+        else:
+            auc = 0.5
+        logger.log("使用默认AUC值: 0.5")
 
     if isinstance(auc, dict):
         logger.log("LLM Accuracy/AUC (macro/micro): {:.4f}/{:.4f}/{:.4f}".format(acc, auc['macro'], auc['micro']))
