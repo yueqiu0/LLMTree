@@ -1073,6 +1073,7 @@ class UnknownClassStrategy(TrainStrategy):
             format_desc=self.serializer.format_desc(),
             prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
             tests=x_test_str,
+            unknown_correction_example=self.serializer.unknown_correction_example(),
         )
 
         return prompt
@@ -1779,6 +1780,7 @@ class FeatureBaggingStrategy(TrainStrategy):
             format_desc=self.serializer.format_desc(),
             prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
             tests=x_test_str,
+            unknown_correction_example=self.serializer.unknown_correction_example(),
         )
 
         return prompt
