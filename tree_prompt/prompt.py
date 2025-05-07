@@ -62,6 +62,30 @@ class Serializer:
 
     def answer_requirement(self, ncases: int) -> str:
         return None
+        
+    def unknown_correction_example(self) -> str:
+        """生成处理未知预测的示例文本"""
+        # 获取标签名称列表
+        label_names = [label.name for label in self.meta.labels]
+        
+        # 构建示例文本 - 使用简单的 yes/no 示例
+        example = f"""
+Incorrect output for 4 lines:
+{label_names[0]}
+{label_names[0]}
+unknown 
+{label_names[-1]}
+
+Since 'unknown' is not allowed, you should use your knowledge to make predictions for the 'unknown' ones.
+
+One possible corrected output:
+{label_names[0]}
+{label_names[0]} 
+{label_names[0]}
+{label_names[-1]}
+
+Output ONLY the corrected predictions(no 'unknown'):"""
+        return example
 
     @property
     def answer_decoder(self) -> Decoder:
@@ -103,9 +127,7 @@ class TabularSerializer(Serializer):
         req += " and reply each prediction in a new line. Make sure there are exactly {} lines.".format(
             ncases
         )
-
-        # req = "Please make prediction on the following {} cases ".format(ncases)
-        # req += "and reply your prediction one by one in a new line."
+        
         return req
 
     @property
@@ -139,13 +161,17 @@ class ListSerializer(Serializer):
         req = 'Please make prediction on the following {} lines containing "<RESULT>", filling "<RESULT>" with one of '.format(
             ncases
         )
-        req += "and reply each in a new line with " + " or ".join(
+        for label in self.meta.labels:
+            req += f' "{label.name}",'
+            
+        req += " and reply each prediction in a new line with " + " or ".join(
             ['"' + x.name + '"' for x in self.meta.labels]
         )
 
-        req += " and reply each prediction in a new line. Make sure there are exactly {} lines.".format(
+        req += ". Make sure there are exactly {} lines.".format(
             ncases
         )
+        
         return req
 
     @property
@@ -184,6 +210,7 @@ class TextSerializer(Serializer):
         req += " and reply each prediction in a new line. Make sure there are exactly {} lines.".format(
             ncases
         )
+        
         return req
 
     @property
@@ -195,11 +222,13 @@ class TextSerializer(Serializer):
             .remove_trailing([",", "."])
         )
 
+
 class CustomDecoder:
     def decode(self, text):
         # 处理多行文本格式
         lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
         return lines
+
 
 def gen_prompt(
     master_template: jinja2.Template,
@@ -242,14 +271,12 @@ def gen_prompt(
             format_desc=format_desc,
             prediction_intro=row_serializer.answer_requirement(num_cases),
             tests=x_test_str[current : current + num_cases],
+            unknown_correction_example=row_serializer.unknown_correction_example()
         )
         prompt = prompt.strip() + "\n"
 
         prompts.append(prompt)
         test_splits.append((current, current + num_cases))
         current += num_cases
-
-    # print(prompts[0])
-    # exit()
 
     return prompts, test_splits
