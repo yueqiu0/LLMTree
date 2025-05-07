@@ -1,4 +1,5 @@
 from .strategy import TrainStrategy, FeatureBaggingStrategy
+from .tree import RandomForest, DecisionTree
 from .. import logger
 
 
@@ -67,7 +68,7 @@ class Classifier:
         logger.log("决策树构建完成，开始执行剪枝...")
         self.prune_tree(self.strategy.get_tree())
         logger.log("剪枝后的决策树:\n" + self.strategy.get_tree().to_graphviz_source())
-
+        
         # 打印树构建的总token使用情况
         token_stats = self.strategy.get_token_stats()
         build_tokens = token_stats["build_tokens"]
@@ -75,20 +76,34 @@ class Classifier:
 
         return last_loss
 
-    def predict(self, x) -> tuple[list[int], list[int], list[int]]:
-        if type(self.strategy) == FeatureBaggingStrategy:
-            sub_results = self.strategy.predict_llm_with_all_subtrees(
-                x, with_examples=True
-            )
+    def predict(self, x) -> tuple[list[int], list[int], list[int], list[list[int]] | None]:
+        """使用模型进行预测
+        
+        返回：
+            (LLM预测结果, 树预测结果, 树原始预测结果, 子树LLM预测结果)
+            
+        对于随机森林模型，第四个元素包含每棵子树的预测结果
+        对于单棵树模型，第四个元素为None
+        """
+        # 检查是否为特征装袋策略（随机森林）
+        if isinstance(self.strategy, FeatureBaggingStrategy):
+            # 使用随机森林进行预测，返回完整的四元组
+            llm_results = self.strategy.predict_llm_with_tree(x, with_examples=True)
+            tree_results = self.strategy.predict_tree(x)
+            tree_raw_results = self.strategy.predict_tree_raw(x)
+            
+            # 子树预测结果为空列表，已不再单独预测每棵子树
+            sub_tree_results = None
+            
+            return (llm_results, tree_results, tree_raw_results, sub_tree_results)
         else:
-            sub_results = []
-
-        return (
-            self.strategy.predict_llm_with_tree(x, with_examples=True),
-            self.strategy.predict_tree(x),
-            self.strategy.predict_tree_raw(x),
-            sub_results,
-        )
+            # 单棵树的情况，保持第四个元素为None
+            return (
+                self.strategy.predict_llm_with_tree(x, with_examples=True),
+                self.strategy.predict_tree(x),
+                self.strategy.predict_tree_raw(x),
+                None  # 单棵树没有子树结果
+            )
 
     def export(self) -> dict:
         """ """
@@ -101,6 +116,25 @@ class Classifier:
         """
         剪枝算法：合并具有相同标签的子树
         """
+        # 检查树的类型
+        if isinstance(tree, RandomForest):
+            logger.log(f"对随机森林的{len(tree.trees)}棵子树分别进行剪枝")
+            total_merged = 0
+            for i, subtree in enumerate(tree.trees):
+                logger.log(f"剪枝子树 {i+1}/{len(tree.trees)}")
+                subtree_merged = self._prune_decision_tree(subtree)
+                total_merged += subtree_merged
+            logger.log(f"随机森林剪枝完成，合并了 {total_merged} 个节点")
+            return total_merged
+        # 如果是DecisionTree，直接剪枝
+        elif isinstance(tree, DecisionTree):
+            return self._prune_decision_tree(tree)
+        else:
+            logger.log(f"无法剪枝，未知的树类型: {type(tree)}")
+            return 0
+            
+    def _prune_decision_tree(self, tree):
+        """对单棵决策树进行剪枝"""
         if tree.root_node is None:
             return 0
         
@@ -114,7 +148,7 @@ class Classifier:
             if merged_count == 0:
                 break
         
-        logger.log(f"剪枝完成，合并了 {total_merged} 个节点")
+        logger.log(f"决策树剪枝完成，合并了 {total_merged} 个节点")
         return total_merged
 
     def _prune_one_pass(self, node):

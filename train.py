@@ -466,11 +466,13 @@ def evaluate(
             logger.log("Model prediction failed")
         else:
             llm_with_tree_results += results[0]
-            if llm_with_tree_subresults is None:
-                llm_with_tree_subresults = results[3]
-            else:
-                for i in range(len(llm_with_tree_subresults)):
-                    llm_with_tree_subresults[i] += results[3][i]
+            # 兼容随机森林模型：检查results长度，处理可能不存在的子树结果
+            if len(results) > 3 and results[3] is not None:
+                if llm_with_tree_subresults is None:
+                    llm_with_tree_subresults = results[3]
+                else:
+                    for i in range(len(llm_with_tree_subresults)):
+                        llm_with_tree_subresults[i] += results[3][i]
 
         tree_results += results[1]
         tree_raw_results += results[2]
@@ -557,11 +559,19 @@ def evaluate(
                 roc_auc_score(y_test, sub_result, multi_class="ovr")
             )
 
-    logger.log(
-        "llm + tree AUC: {}, tree AUC: {}, llm + subtree AUC: {}".format(
-            llm_with_tree_auc, tree_auc, llm_with_sub_tree_aucs
+    # 兼容随机森林输出的日志记录
+    if llm_with_sub_tree_aucs:
+        logger.log(
+            "llm + tree AUC: {}, tree AUC: {}, llm + subtree AUC: {}".format(
+                llm_with_tree_auc, tree_auc, llm_with_sub_tree_aucs
+            )
         )
-    )
+    else:
+        logger.log(
+            "llm + tree AUC: {}, tree AUC: {}".format(
+                llm_with_tree_auc, tree_auc
+            )
+        )
 
     # 计算准确率
     llm_tree_acc = calc_accuracy(y_test.tolist(), llm_with_tree_results)
@@ -869,6 +879,8 @@ def main():
             return obj.__dict__
     
     for train_size in args.train_sizes:
+        x, y, strategy = load_args(args)
+        logger.log(f"处理train_size={train_size}，重新创建了原始策略对象")
         train_cases = sample_balanced(
             avail_x, avail_y, args.num_tests_per_set, train_size, args.random_seed
         )
@@ -876,6 +888,9 @@ def main():
         if len(train_cases) > 0:
             logger.log(f"首例训练集形状: {train_cases[0][0].shape}")
         for train_x, train_y in train_cases:
+            # 为每次训练重置策略对象的token统计，但保留元规则缓存
+            strategy.reset_for_new_training()
+            logger.log("已重置策略对象的token统计，保留元规则缓存，准备进行新的测试")
             model = Classifier(strategy)
             result = evaluate(train_x, train_y, test_x, test_y, model, args.test_batch)
             if result is None:

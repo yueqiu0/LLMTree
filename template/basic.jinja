@@ -19,9 +19,9 @@ For each data, the result can ONLY be one of the following:
 {% for label in meta.labels %}
 ({{ loop.index }}) {{ label.name }}{%if label.desc %}: {{ label.desc }}{% endif %}{{" "}}
 {%- endfor -%}
-{%- endblock %}
 
 NOTE: “unknown” is NOT a valid label.
+{%- endblock %}
 
 {% block format_descriptions -%}
 {%- if format_desc -%}{{ format_desc }}{%- endif -%}
@@ -42,14 +42,12 @@ The rules are as follows:
 {% for rule in rules %}
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
+
+[Random Forest Note] If there are multiple trees, treat them as a random forest and use all for prediction.
+
+[Rule Uncertainty Note] If a rule outputs "unknown", it means it can't decide — rely entirely on your own knowledge.
 {%- endif -%}
 {%- endblock %}
-
-NOTE:
-If a rule says "unknown", it means the given rule CANNOT decide the result. 
-In this situation, the prediction should be COMPLETELY BASED on your knowledge rather than given tree rules.
-
-
 
 {% block prediction_intro -%}
 {{ prediction_intro }}
@@ -62,4 +60,4 @@ In this situation, the prediction should be COMPLETELY BASED on your knowledge r
 {%- endblock %}
 
 IMPORTANT REMINDER: 
-NEVER include "unknown" in ANY of your predictions!!!
+NEVER include "unknown" in ANY of your predictions!

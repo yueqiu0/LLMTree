@@ -66,6 +66,10 @@ class TrainStrategy:
         self.tree = None
         self.hist_nbins = 10
         self._meta_instance = None
+
+        # 初始化meta_rules为空列表，避免首次step时出错
+        self.meta_rules = []
+
         # Token计数器 - 添加到__init__方法中
         self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
         self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
@@ -92,6 +96,12 @@ class TrainStrategy:
             logger.log("警告: 未找到特征映射关系")
         
         self.split_values = _get_feature_values(self._meta, train_x, self.hist_nbins)
+
+        # 创建新树的逻辑移动到_create_tree方法中
+        self._create_tree(train_x)
+
+    def _create_tree(self, train_x: np.ndarray) -> None:
+        """创建新的决策树，可被子类覆盖"""
         
         self.tree = DecisionTree(self.max_depth, self._meta.categories_map)
         self.tree.set_train_data(train_x)
@@ -285,6 +295,20 @@ class TrainStrategy:
 
     def predict_tree(self, x: np.ndarray) -> list[int]:
         """使用决策树进行预测"""
+        # 区分单棵树和随机森林策略
+        if hasattr(self, 'random_forest'):
+            # 随机森林策略
+            if self.random_forest is None:
+                logger.log("警告: 随机森林未初始化，返回默认预测")
+                default_value = 0  # 使用第一个类别作为默认值
+                return [default_value] * len(x)
+        elif hasattr(self, 'tree'):
+            # 单棵树策略
+            if self.tree is None:
+                logger.log("警告: 决策树未初始化，返回默认预测")
+                default_value = 0  # 使用第一个类别作为默认值
+                return [default_value] * len(x)
+            
         results = self.predict_tree_raw(x)
         for i, res in enumerate(results):
             if res < 0:
@@ -296,46 +320,36 @@ class TrainStrategy:
         return results
 
     def predict_tree_raw(self, x: np.ndarray) -> list[int]:
-        """预测单个样本，返回原始标签值"""
-        # 添加调试信息
-        logger.log(f"开始预测，_meta.labels: {[(i, l.name, l.value) for i, l in enumerate(self._meta.labels)]}")
-        
-        if self.tree is None:
-            logger.log("警告: 决策树尚未初始化")
-            return [-1] * len(x)  # 返回未知标签
-        
-        # 获取决策树预测结果
-        raw_predictions = self.tree.predict(x)
-        
-        # 添加调试信息，显示原始预测和转换过程
-        logger.log(f"原始预测结果: {raw_predictions}...")  
-        
-        # 对每个预测结果进行转换
-        results = []
-        for idx in raw_predictions:
-            # 打印更多调试信息
-            logger.log(f"处理预测结果: {idx}")
-            
-            # 安全地获取标签值
-            if idx >= 0:
-                # 查找对应的标签值而不是使用索引直接访问
-                label_value = None
-                for label in self._meta.labels:
-                    if label.value == idx:
-                        label_value = idx
-                        break
+        """使用树进行原始预测，返回包含-1的结果"""
+        # 区分单棵树和随机森林策略
+        if hasattr(self, 'random_forest'):
+            # 随机森林策略
+            if self.random_forest is None:
+                logger.log("警告: 随机森林未初始化，返回默认预测")
+                return [-1] * len(x)  # 使用unknown作为默认值
+        elif hasattr(self, 'tree'):
+            # 单棵树策略
+            if self.tree is None:
+                logger.log("警告: 决策树未初始化，返回默认预测")
+                return [-1] * len(x)  # 使用unknown作为默认值
                 
-                if label_value is None:
-                    logger.log(f"警告: 未找到标签值为 {idx} 的标签，使用原始值")
-                    label_value = idx
-                
-                y = label_value
-            else:
-                y = idx
+        ret = []
+        # 根据不同策略类型使用不同的预测方法
+        if hasattr(self, 'random_forest') and self.random_forest is not None:
+            # 随机森林预测
+            for xx in x:
+                predicted_value = self.random_forest.predict_one(xx)
+                ret.append(predicted_value)
+        elif hasattr(self, 'tree') and self.tree is not None:
+            # 单棵树预测
+            for xx in x:
+                predicted_value = self.tree.predict_one(xx)
+                ret.append(predicted_value)
+        else:
+            # 如果既没有随机森林也没有单棵树，返回未知类别
+            return [-1] * len(x)
             
-            results.append(y)
-        
-        return results
+        return ret
 
     def predict_llm_with_tree(
         self, x: np.ndarray, with_examples: bool = False
@@ -942,8 +956,10 @@ class TrainStrategy:
             self.supervision_tokens["prompt"] += token_info["prompt_tokens"]
             self.supervision_tokens["completion"] += token_info["completion_tokens"]
             self.supervision_tokens["total"] += token_info["total_tokens"]
-            # 删除日志代码，避免重复输出
-            logger.log(f"监督Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
+            # 添加树索引信息到日志
+            tree_index = getattr(self, '_tree_index', -1)
+            tree_info = f"树{tree_index}: " if tree_index >= 0 else ""
+            logger.log(f"{tree_info}监督Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
             
             # 原有逻辑：检查是否需要替换标签    
             if highest_confidence >= _threshold and best_label != prediction:
@@ -991,6 +1007,21 @@ class TrainStrategy:
         self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
         self.evaluation_tokens = []
         self.evaluation_count = 0
+        logger.log("Token统计已重置")
+        
+    def reset_for_new_training(self):
+        """为新一轮训练重置状态，保留缓存但重置token统计，包括所有子策略"""
+        # 重置自身token统计
+        self.reset_token_stats()
+        
+        # 重置所有子策略的token统计
+        if hasattr(self, "sub_strategies") and self.sub_strategies:
+            for sub_strategy in self.sub_strategies:
+                sub_strategy.reset_token_stats()
+            logger.log(f"已重置{len(self.sub_strategies)}个子策略的token统计")
+        
+        logger.log(f"FeatureBaggingStrategy已重置，保留元规则缓存")
+        return self
 
 
 class UnknownClassStrategy(TrainStrategy):
@@ -1057,7 +1088,10 @@ class UnknownClassStrategy(TrainStrategy):
             
             # 记录评估prompt的token使用情况
             self.evaluation_tokens.append(token_info)
-            logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
+            # 添加树索引信息到日志
+            tree_index = getattr(self, '_tree_index', -1)
+            tree_info = f"树{tree_index}: " if tree_index >= 0 else ""
+            logger.log(f"{tree_info}评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
             if None in results or len(results) != expected_lens[i]:
                 continue
@@ -1128,7 +1162,7 @@ class UnknownClassStrategy(TrainStrategy):
     def _create_meta_rules_prompt(self, max_depth: int) -> str:
         """创建获取元规则的提示词"""
         # 计算需要的规则数量
-        num_rules_required = 2**max_depth - 1
+        num_rules_required = max(10, 2**max_depth - 1)
         
         # 准备训练数据展示
         train_examples = []
@@ -1204,11 +1238,25 @@ class UnknownClassStrategy(TrainStrategy):
 
     def _get_meta_rules(self, max_depth: int, runner: Runner = None) -> list[MetaRule]:
         """从LLM获取元规则列表"""
-        # 使用缓存避免重复请求
+        # 使用缓存避免重复请求，但需要确保每棵子树使用不同的缓存键
+        # 检查当前策略是否属于特征装袋子策略
+        tree_index = -1
+        if hasattr(self, '_tree_index'):
+            tree_index = self._tree_index
+        
+        # 生成带有树索引的缓存键，确保每棵树独立缓存
         cache_key = f"{self._meta.name}_meta_rules_{max_depth}"
-        if hasattr(self.__class__, '_cached_meta_rules') and cache_key in self.__class__._cached_meta_rules:
-            logger.log(f"使用缓存的元规则列表: {len(self.__class__._cached_meta_rules[cache_key])}条规则")
-            return self.__class__._cached_meta_rules[cache_key]
+        if tree_index >= 0:
+            cache_key = f"{self._meta.name}_tree{tree_index}_meta_rules_{max_depth}"
+        
+        # 修改：使用实例级别的缓存而不是类级别缓存
+        if not hasattr(self, '_instance_cached_meta_rules'):
+            self._instance_cached_meta_rules = {}
+            
+        if cache_key in self._instance_cached_meta_rules:
+            logger.log(f"使用缓存的元规则列表: {len(self._instance_cached_meta_rules[cache_key])}条规则")
+            return self._instance_cached_meta_rules[cache_key]
+        
         
         # 如果没有设置runner，使用类成员变量
         if runner is None:
@@ -1216,7 +1264,7 @@ class UnknownClassStrategy(TrainStrategy):
         
         # 创建提示词并请求LLM
         prompt = self._create_meta_rules_prompt(max_depth)
-        logger.log(f"请求元规则生成，提示词:\n{prompt}")
+
         
         meta_rules = []
         for responses, token_info in runner.run([prompt]):
@@ -1237,18 +1285,20 @@ class UnknownClassStrategy(TrainStrategy):
         
         # 按置信度排序
         meta_rules.sort(key=lambda x: x.confidence, reverse=True)
+         # 缓存结果到实例级别
+        self._instance_cached_meta_rules[cache_key] = meta_rules
         
-        # 缓存结果
-        if not hasattr(self.__class__, '_cached_meta_rules'):
-            self.__class__._cached_meta_rules = {}
-        self.__class__._cached_meta_rules[cache_key] = meta_rules
         # 根据prompt类型记录token信息
         # 这里假设是meta rule prompt
         self.meta_rule_tokens["prompt"] += token_info["prompt_tokens"]
         self.meta_rule_tokens["completion"] += token_info["completion_tokens"]
         self.meta_rule_tokens["total"] += token_info["total_tokens"]
-        logger.log(f"Meta Rule Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
         
+        # 添加树索引信息到日志
+        tree_index = getattr(self, '_tree_index', -1)
+        tree_info = f"树{tree_index}: " if tree_index >= 0 else ""
+        logger.log(f"{tree_info}Meta Rule Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
+
         return meta_rules
     
 
@@ -1380,6 +1430,25 @@ class UnknownClassStrategy(TrainStrategy):
         for rule in self.meta_rules[:10]:  # 只显示前10条规则
             logger.log(f"规则: {rule}")
 
+            
+    def _create_tree(self, train_x: np.ndarray) -> None:
+        """创建新的决策树，确保每次都是新实例"""
+        # 显式清除已有的树
+        self.tree = None
+        # 创建新树
+        self.tree = DecisionTree(self.max_depth, self._meta.categories_map)
+        self.tree.set_train_data(train_x)
+
+    def reset_for_new_training(self):
+        """为新一轮训练重置状态，确保缓存正确初始化"""
+        self.tree = None
+        
+        # 重置token计数
+        self.reset_token_stats()
+        
+        logger.log(f"UnknownClassStrategy已重置，准备进行新一轮训练")
+        return self
+
 
 class KnownClassStrategy(UnknownClassStrategy):
     def __init__(
@@ -1419,12 +1488,31 @@ class FeatureBaggingStrategy(TrainStrategy):
         train_batch: int,
         hist_nbins: int = 10,
     ) -> None:
+        super().__init__()  # 调用父类初始化方法
         self.runner = runner
         self.template = template
         self.all_meta = all_meta
         self.max_depth = max_depth
         self.train_batch = train_batch
         self.hist_nbins = hist_nbins
+
+        # Token计数器初始化
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0
+
+        # 记录特征映射关系
+        self._feature_shuffle_map = getattr(all_meta, 'feature_shuffle_map', {})
+        if self._feature_shuffle_map:
+            logger.log(f"初始化时获取到特征映射关系: {self._feature_shuffle_map}")
+        else:
+            logger.log("初始化时未找到特征映射关系，使用空映射")
+        
+        # 树跟踪状态初始化
+        self.trees = []
+        self.trees_active = []
+        self.random_forest = None
 
         self.num_trees = min(num_trees, self.all_meta.feature_count())
 
@@ -1447,16 +1535,34 @@ class FeatureBaggingStrategy(TrainStrategy):
         elif serializer_type == "text":
             self.serializer = TextSerializer(all_meta)
 
+        # 为每组特征创建正确的DatasetMeta
         self.sub_metas = []
-        for feature_idxes in self.feature_groups:
-            meta = DatasetMeta()
-            meta.name = self.all_meta.name
-            meta.target = self.all_meta.target
-            meta.desc = self.all_meta.desc
-            meta.label_meaning = self.all_meta.label_meaning
-            meta.features = [self.all_meta.features[i] for i in feature_idxes]
-            meta.labels = self.all_meta.labels
-            self.sub_metas.append(meta)
+        for i, feature_idxes in enumerate(self.feature_groups):
+            # 创建子集DatasetMeta
+            sub_meta = DatasetMeta(
+                name=self.all_meta.name,
+                desc=self.all_meta.desc,
+                target=self.all_meta.target,
+                label_meaning=self.all_meta.label_meaning,
+                features=[self.all_meta.features[idx] for idx in feature_idxes],
+                labels=self.all_meta.labels
+            )
+            
+            # 创建特征映射关系
+            if hasattr(self.all_meta, 'feature_shuffle_map') and self.all_meta.feature_shuffle_map:
+                # 为每个子元数据创建自己的特征映射
+                sub_meta.feature_shuffle_map = {}
+                for local_idx, global_idx in enumerate(feature_idxes):
+                    if global_idx in self.all_meta.feature_shuffle_map:
+                        # 映射全局特征索引到原始特征索引
+                        sub_meta.feature_shuffle_map[local_idx] = self.all_meta.feature_shuffle_map[global_idx]
+                    else:
+                        # 如果没有映射关系，使用全局索引
+                        sub_meta.feature_shuffle_map[local_idx] = global_idx
+                        
+                logger.log(f"树 {i+1} 创建特征映射: {sub_meta.feature_shuffle_map}")
+            
+            self.sub_metas.append(sub_meta)
 
         # TODO: Other strategies
         self.sub_strategies: list[UnknownClassStrategy] = []
@@ -1478,34 +1584,101 @@ class FeatureBaggingStrategy(TrainStrategy):
                     hist_nbins=hist_nbins,
                 )
             )
+            # 设置树索引，确保每棵树使用独立的缓存键
+            self.sub_strategies[i]._tree_index = i
+        
+        # 初始化树跟踪状态
+        self.trees_active = [True] * self.num_trees
 
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
+        """设置训练数据，确保每棵子树只接收其对应的特征子集"""
         self.train_x = train_x
         self.train_y = train_y
         
-        feature_values = _get_feature_values(self.all_meta, train_x, self.hist_nbins)
-
-        if len(train_x) > 1:
-            for values in feature_values:
-                values = values[1:]
-
-        self.split_values = feature_values
+        logger.log(f"主训练数据形状: x={train_x.shape}, y={train_y.shape}")
+        
+        # 重置训练状态
         self.trees = []
-
-        for i, feature_group in enumerate(self.feature_groups):
-            self.sub_strategies[i].set_train_data(train_x[:, feature_group], train_y)
-            self.trees.append(self.sub_strategies[i].get_tree())
-
-        self.random_forest = RandomForest(
-            self.trees, self.feature_groups, len(self.all_meta.labels)
-        )
-
         self.trees_active = [True] * self.num_trees
+        self.random_forest = None
+
+        # 为每个子策略分配相应的特征数据
+        for i, feature_group in enumerate(self.feature_groups):
+            # 重置子策略的树结构
+            if hasattr(self.sub_strategies[i], 'tree'):
+                self.sub_strategies[i].tree = None
+            
+            # 只选择对应特征的列
+            sub_x = train_x[:, feature_group]
+            logger.log(f"子策略 {i+1} 训练数据形状: x={sub_x.shape}, 特征索引: {feature_group}")
+            
+            # 设置子策略的训练数据
+            self.sub_strategies[i].set_train_data(sub_x, train_y)
+            
+            # 获取全局特征名称列表，用于过滤元规则
+            global_feature_names = [self.all_meta.features[idx].name for idx in feature_group]
+            logger.log(f"子策略 {i+1} 特征名称: {global_feature_names}")
+            
+            # 获取子树的元规则列表
+            child_meta_rules = self.sub_strategies[i].meta_rules
+            
+            # 创建特征名称到局部索引的映射
+            feature_name_to_local_idx = {}
+            for local_idx, global_idx in enumerate(feature_group):
+                feature_name = self.all_meta.features[global_idx].name
+                feature_name_to_local_idx[feature_name] = local_idx
+            
+            # 保存映射关系到子策略，便于后续使用
+            self.sub_strategies[i]._feature_name_to_local_idx = feature_name_to_local_idx
+            logger.log(f"子策略 {i+1} 中保存特征映射关系: {feature_name_to_local_idx}")
+            
+            # 过滤元规则，只保留子树可使用的特征
+            filtered_rules = []
+            for rule in child_meta_rules:
+                # 获取规则对应的全局特征名称
+                if hasattr(rule, 'feature_name') and rule.feature_name:
+                    feature_name = rule.feature_name
+                else:
+                    # 如果规则没有名称属性，跳过
+                    continue
+                
+                # 检查特征是否在子树的特征集中
+                if feature_name in feature_name_to_local_idx:
+                    # 创建一个新规则，更新特征索引为子树中的局部索引
+                    local_idx = feature_name_to_local_idx[feature_name]
+                    new_rule = MetaRule(
+                        feature_idx=local_idx,
+                        feature_name=feature_name,
+                        split_value=rule.split_value,
+                        is_categorical=rule.is_categorical,
+                        confidence=rule.confidence
+                    )
+                    filtered_rules.append(new_rule)
+            
+            # 更新子策略的元规则列表
+            self.sub_strategies[i].meta_rules = filtered_rules
+            logger.log(f"子策略 {i+1}: 过滤后保留 {len(filtered_rules)}/{len(child_meta_rules)} 条元规则")
+            
+            # 打印前几条过滤后的规则
+            for r in filtered_rules[:3]:
+                logger.log(f"  规则: {r}")
+        
+        # 确保特征映射关系被保存
+        self._feature_shuffle_map = getattr(self.all_meta, 'feature_shuffle_map', None)
+        if self._feature_shuffle_map:
+            logger.log(f"保存特征随机打乱映射: {self._feature_shuffle_map}")
 
     def step(self) -> tuple[bool, list[float]]:
         losses = []
         continue_step = False
 
+        # 始终确保trees列表正确初始化，无论是首次调用还是后续调用
+        if len(self.trees) != len(self.sub_strategies):
+            # 重置trees列表
+            self.trees = [None] * len(self.sub_strategies)
+            logger.log(f"初始化/重置 {len(self.trees)} 棵子树")
+
+        # 训练每棵子树
         for i, sub_strategy in enumerate(tqdm(self.sub_strategies, desc="Trees")):
             if not self.trees_active[i]:
                 continue
@@ -1516,37 +1689,28 @@ class FeatureBaggingStrategy(TrainStrategy):
             self.trees_active[i] = this_continue_step
             continue_step = continue_step or this_continue_step
             losses.append(loss)
+            
+            # 更新随机森林中的子树
+            self.trees[i] = sub_strategy.get_tree()
+            logger.log(f"更新随机森林子树 {i+1}")
+            
+            # 更新树的跟踪状态
+            if not this_continue_step:
+                logger.log(f"树 {i+1} 训练完成")
+
+        # 重新构建随机森林以反映子树的变化
+        # 确保所有子树都已经初始化
+        if all(tree is not None for tree in self.trees):
+            self.random_forest = RandomForest(
+                self.trees, self.feature_groups, len(self.all_meta.labels)
+            )
+            logger.log(f"重建随机森林，包含 {len(self.trees)} 棵子树")
+        else:
+            # 报告哪些树未初始化
+            uninitialized = [i for i, tree in enumerate(self.trees) if tree is None]
+            logger.log(f"部分子树尚未初始化 {uninitialized}，跳过随机森林重建")
 
         return continue_step, losses
-
-    def predict_tree(self, x: np.ndarray) -> list[int]:
-        """使用决策树进行预测"""
-        results = self.predict_tree_raw(x)
-        for i, res in enumerate(results):
-            if res < 0:
-                # 随机选择一个有效标签，并记录日志
-                valid_labels = [label.value for label in self.all_meta.labels]
-                selected_label = random.choice(valid_labels)
-                logger.log(f"遇到预测值为unknown(-1)的节点，随机选择标签: {selected_label}")
-                results[i] = selected_label
-        return results
-
-    def predict_tree_raw(self, x: np.ndarray) -> list[int]:
-        ret = []
-        for xx in x:
-            predicted_value = self.random_forest.predict_one(xx)
-            # 处理预测值为-1的情况
-            if predicted_value < 0:
-                # 获取所有有效标签值
-                valid_labels = [label.value for label in self.all_meta.labels]
-                # 从有效标签中随机选择
-                selected_label = random.choice(valid_labels)
-                logger.log(f"遇到预测值为unknown(-1)的节点，随机选择标签: {selected_label}")
-                ret.append(selected_label)
-            else:
-                # 直接使用预测值，因为predict_one已经返回了标签值
-                ret.append(predicted_value)
-        return ret
 
     def predict_llm_with_tree(
         self, x: np.ndarray, with_examples: bool = False
@@ -1559,7 +1723,7 @@ class FeatureBaggingStrategy(TrainStrategy):
         if prompt is None:
             raise RuntimeError("Invalid tree rules!")
 
-        for resp_candidates in self.runner.run([prompt]):
+        for resp_candidates, token_info in self.runner.run([prompt]):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self.all_meta.get_label_value(r) for r in results]
@@ -1569,7 +1733,7 @@ class FeatureBaggingStrategy(TrainStrategy):
 
                 # 记录评估prompt的token使用情况
                 self.evaluation_tokens.append(token_info)
-                logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
+                logger.log(f"随机森林评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
                 return results
             else:
@@ -1578,19 +1742,19 @@ class FeatureBaggingStrategy(TrainStrategy):
                 )
                 return None
 
-    def predict_llm_with_all_subtrees(
-        self, x: np.ndarray, with_examples: bool = False
-    ) -> list[list[int]]:
-        return [
-            strategy.predict_llm_with_tree(x[:, feature_group], with_examples)
-            for feature_group, strategy in zip(self.feature_groups, self.sub_strategies)
-        ]
-
     def _get_tree_rules(self, sub_strategies: list[UnknownClassStrategy]) -> list[str]:
-        rules = []
-        for sub_strategy in sub_strategies:
-            rules += sub_strategy._get_tree_rules()
-        return rules
+        """整合所有子树的规则，并添加树的标识"""
+        all_rules = []
+        
+        for i, sub_strategy in enumerate(sub_strategies):
+            # 获取子树规则
+            tree_rules = sub_strategy._get_tree_rules()
+            if tree_rules:
+                # 为每条规则添加树的标识
+                tree_rules = [f"Tree {i+1}: {rule}" for rule in tree_rules]
+                all_rules.extend(tree_rules)
+        
+        return all_rules
 
     def _gen_prompt(
         self,
@@ -1621,6 +1785,11 @@ class FeatureBaggingStrategy(TrainStrategy):
 
     def get_tree(self) -> TreeBase:
         return self.random_forest
+        
+    @property
+    def _meta(self) -> DatasetMeta:
+        """返回元数据，以与TrainStrategy基类方法兼容"""
+        return self.all_meta
 
     def export(self) -> any:
         """导出随机森林模型，包含特征映射信息"""
@@ -1641,114 +1810,62 @@ class FeatureBaggingStrategy(TrainStrategy):
             ),
         }
 
-    def _determine_split_point(self, node, feature_idx):
-        """确定特征的最佳分裂点"""
-        # 获取节点样本
-        samples = node.get_samples()
-        node_x = self.train_x[samples]
-        node_y = self.train_y[samples]
+    def _merge_token_stats_from_sub_strategies(self):
+        """合并所有子策略的token统计"""
+        # 保存当前的评估tokens，避免被清空后丢失
+        current_evaluation_tokens = self.evaluation_tokens.copy()
         
-        logger.log(f"节点({id(node)})样本标签分布: {dict(Counter(node_y))}, 总样本数: {len(node_y)}")
+        # 重置自身的统计数据
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
         
-        # 检查特征是否为类别型
-        is_categorical = self._meta.features[feature_idx].is_categorical if feature_idx < len(self._meta.features) else False
+        logger.log("合并子策略token统计...")
         
-        if is_categorical:
-            # 类别型特征，找出最佳类别值作为分裂点
-            unique_values = np.unique(node_x[:, feature_idx])
-            best_gain = 0.0
-            best_split = None
+        # 从每个子策略收集并合并统计数据
+        for i, sub_strategy in enumerate(self.sub_strategies):
+            # 合并supervision tokens
+            self.supervision_tokens["prompt"] += sub_strategy.supervision_tokens["prompt"]
+            self.supervision_tokens["completion"] += sub_strategy.supervision_tokens["completion"]
+            self.supervision_tokens["total"] += sub_strategy.supervision_tokens["total"]
             
-            for val in unique_values:
-                left_mask = node_x[:, feature_idx] == val
-                right_mask = ~left_mask
-                
-                # 确保两边都有样本
-                if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
-                    continue
-                
-                # 计算基尼增益
-                parent_gini = calculate_gini_impurity(node_y)
-                left_gini = calculate_gini_impurity(node_y[left_mask])
-                right_gini = calculate_gini_impurity(node_y[right_mask])
-                
-                left_weight = np.sum(left_mask) / len(node_y)
-                right_weight = np.sum(right_mask) / len(node_y)
-                
-                weighted_gini = left_weight * left_gini + right_weight * right_gini
-                gain = parent_gini - weighted_gini
-                
-                if gain > best_gain:
-                    best_gain = gain
-                    best_split = val
-                    logger.log(f"新的最佳分裂点: {val}, 增益: {gain:.4f}")
-                    logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
-                    logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
+            # 合并meta rule tokens
+            self.meta_rule_tokens["prompt"] += sub_strategy.meta_rule_tokens["prompt"]
+            self.meta_rule_tokens["completion"] += sub_strategy.meta_rule_tokens["completion"]
+            self.meta_rule_tokens["total"] += sub_strategy.meta_rule_tokens["total"]
             
-            logger.log(f"最终选择的最佳分裂点: {best_split}, 增益: {best_gain:.4f}")
-            return best_split
-        else:
-            # 数值型特征，找出最佳阈值作为分裂点
-            unique_values = np.unique(node_x[:, feature_idx])
+            # 合并evaluation tokens
+            self.evaluation_tokens.extend(sub_strategy.evaluation_tokens)
             
-            # 确定小数位数 - 检查特征值的小数位数，取最大值加1
-            decimal_places = 1  # 默认至少保留1位小数
-            for val in unique_values:
-                if isinstance(val, (float, np.float64, np.float32)):
-                    # 将值转换为字符串，然后检查小数点后的位数
-                    str_val = str(val)
-                    if '.' in str_val:
-                        curr_places = len(str_val.split('.')[1])
-                        decimal_places = max(decimal_places, curr_places + 1)
-            
-            # 对特征值排序
-            sorted_indices = np.argsort(node_x[:, feature_idx])
-            sorted_feature = node_x[sorted_indices, feature_idx]
-            sorted_y = node_y[sorted_indices]
-            
-            best_gain = 0.0
-            best_split = None
-            
-            # 尝试所有可能的分裂点
-            for i in range(1, len(sorted_feature)):
-                # 如果当前值与前一个值相同，跳过
-                if sorted_feature[i] == sorted_feature[i-1]:
-                    continue
-                
-                # 计算分裂点（相邻值的中点）
-                split_value = (sorted_feature[i] + sorted_feature[i-1]) / 2
-                
-                # 格式化分裂点，控制小数位数
-                split_value = round(split_value, decimal_places)
-                
-                # 创建左右子节点的掩码
-                left_mask = node_x[:, feature_idx] <= split_value
-                right_mask = ~left_mask
-                
-                # 确保两边都有样本
-                if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
-                    continue
-                
-                # 计算基尼增益
-                parent_gini = calculate_gini_impurity(node_y)
-                left_gini = calculate_gini_impurity(node_y[left_mask])
-                right_gini = calculate_gini_impurity(node_y[right_mask])
-                
-                left_weight = np.sum(left_mask) / len(node_y)
-                right_weight = np.sum(right_mask) / len(node_y)
-                
-                weighted_gini = left_weight * left_gini + right_weight * right_gini
-                gain = parent_gini - weighted_gini
-                
-                if gain > best_gain:
-                    best_gain = gain
-                    best_split = split_value
-                    logger.log(f"新的最佳分裂点: {split_value:.{decimal_places}f}, 增益: {gain:.4f}")
-                    logger.log(f"  左子节点: 样本数={np.sum(left_mask)}, 基尼={left_gini:.4f}")
-                    logger.log(f"  右子节点: 样本数={np.sum(right_mask)}, 基尼={right_gini:.4f}")
-            
-            logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
-            return best_split
+            # 记录每棵树的token使用情况
+            logger.log(f"子策略 {i+1} token使用: meta_rule={sub_strategy.meta_rule_tokens['total']}, "
+                    f"supervision={sub_strategy.supervision_tokens['total']}")
+        
+        # 重新添加之前保存的评估tokens
+        self.evaluation_tokens.extend(current_evaluation_tokens)
+
+    def get_token_stats(self):
+        """获取token使用统计"""
+        # 首先合并来自子策略的最新统计
+        self._merge_token_stats_from_sub_strategies()
+        
+        # 返回合并后的统计
+        build_tokens = {
+            "prompt": self.supervision_tokens["prompt"] + self.meta_rule_tokens["prompt"],
+            "completion": self.supervision_tokens["completion"] + self.meta_rule_tokens["completion"],
+            "total": self.supervision_tokens["total"] + self.meta_rule_tokens["total"]
+        }
+        
+        logger.log(f"当前森林token使用: 元规则={self.meta_rule_tokens['total']}, 监督={self.supervision_tokens['total']}")
+        
+        return {
+            "build_tokens": build_tokens,
+            "supervision_tokens": self.supervision_tokens,
+            "meta_rule_tokens": self.meta_rule_tokens,
+            "evaluation_tokens": self.evaluation_tokens
+        }
+
+
 
     def _get_label_name(self, rule_value):
         """获取标签名称"""
@@ -1770,6 +1887,21 @@ class FeatureBaggingStrategy(TrainStrategy):
         
         return label_name
 
+    def reset_for_new_training(self):
+        """为新一轮训练重置状态，保留缓存但重置token统计，包括所有子策略"""
+        # 重置自身token统计
+        self.reset_token_stats()
+        
+        # 重置所有子策略的token统计
+        if hasattr(self, "sub_strategies") and self.sub_strategies:
+            for sub_strategy in self.sub_strategies:
+                sub_strategy.reset_token_stats()
+            logger.log(f"已重置{len(self.sub_strategies)}个子策略的token统计")
+        
+        logger.log(f"FeatureBaggingStrategy已重置，保留元规则缓存")
+        return self
+
+
 # 添加处理LLM响应的函数
 def clean_llm_response(response):
     """移除LLM响应中的<think>标签内容"""
@@ -1779,3 +1911,4 @@ def clean_llm_response(response):
     cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
     cleaned = cleaned.lstrip('\n')
     return cleaned
+
