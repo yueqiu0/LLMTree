@@ -42,9 +42,10 @@ The rules are as follows:
 {% for rule in rules %}
 ({{loop.index}}) {{ rule }}
 {%- endfor %}
-NOTE:
-(1)IF there are multiple trees, you should perceive them as a model of random forest. Use ALL trees to make the final prediction.
-(2)IF a rule says "unknown", it means the given rule CANNOT decide the result, thus the prediction should be COMPLETELY BASED on your knowledge rather than given tree rules.
+
+[Random Forest Note] If there are multiple trees, treat them as a random forest and use all for prediction.
+
+[Rule Uncertainty Note] If a rule outputs "unknown", it means it can't decide — rely entirely on your own knowledge.
 {%- endif -%}
 {%- endblock %}
 
@@ -59,4 +60,4 @@ NOTE:
 {%- endblock %}
 
 IMPORTANT REMINDER: 
-NEVER include "unknown" in ANY of your predictions.
+NEVER include "unknown" in ANY of your predictions!
