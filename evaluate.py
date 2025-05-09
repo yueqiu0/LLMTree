@@ -682,6 +682,20 @@ def evaluate(
     rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
     # --- 强制CoTDecisionTree二次ToT交互始终被执行 ---
+    import traceback
+    # 新增更严格的输入检查
+    if x_train is None or y_train is None:
+        global_log("[ERROR][evaluate] x_train 或 y_train 为 None!")
+        global_log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError("[evaluate] x_train 或 y_train 为 None!")
+    if not hasattr(x_train, "shape") or x_train.shape[0] == 0:
+        global_log(f"[ERROR][evaluate] x_train shape 异常: {getattr(x_train, 'shape', None)}")
+        global_log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError("[evaluate] x_train shape 异常")
+    if not hasattr(y_train, "shape") or y_train.shape[0] == 0:
+        global_log(f"[ERROR][evaluate] y_train shape 异常: {getattr(y_train, 'shape', None)}")
+        global_log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError("[evaluate] y_train shape 异常")
     if isinstance(tree_model, ToTDecisionTree) and with_llm:
         global_log(f"[DEBUG][ToT] >>> 进入ToTDecisionTree二次ToT推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
         # 第一次：用ToT prompt生成规则
@@ -884,12 +898,17 @@ def evaluate(
                     # 直接应用规则进行预测（with_llm=0时）
                     global_log("[DEBUG][ToT] 直接用规则本地推理，无ToT参与")
                     tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
-                    tree_predict = tree_model.predict(x_test)
+                    # 直接用 get_rules() 获取平面化规则，保证和 basic.jinja 渲染一致
+                    rules = tree_model.get_rules() if hasattr(tree_model, 'get_rules') else []
+                    tree_predict, _ = tree_model.predict(x_train, y_train, x_test, export_rules=True)
                     # ToT输出为字符串，专用评测函数
                     tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_predict, meta)
                     global_log("[ToTDecisionTree] 直接用规则推理（未调用ToT）")
-                    global_log(f"规则数量: {len(tree_model.rules)}")
-                    global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
+                    # 先打印平面化规则
+                    global_log("平面化决策树规则如下：")
+                    for rule in rules:
+                        global_log(rule)
+                    global_log(f"规则数量: {len(rules)}")
                     results = tree_predict
                     acc = tree_accuracy
                     auc = tree_auc

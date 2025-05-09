@@ -220,6 +220,7 @@ def sample_balanced(
     if num_samples_per_group != 1:
         assert num_samples_per_group % len(classes) == 0
 
+
     for group in range(num_groups):
         random_state = np.random.RandomState(random_seed + group)
         mask = np.hstack(
@@ -238,6 +239,11 @@ def sample_balanced(
             samples_x, samples_y = x[[mask[group % 2]]], y[[mask[group % 2]]]
         else:
             samples_x, samples_y = x[mask], y[mask]
+
+        # 新增：采样有效性检查
+        if samples_x is None or samples_y is None or len(samples_x) == 0 or len(samples_y) == 0:
+            logger.log(f"[ERROR][sample_balanced] 采样结果为空！group={group}, mask={mask}, x.shape={x.shape}, y.shape={y.shape}")
+            raise ValueError(f"[sample_balanced] 采样结果为空！请检查数据集类别分布和采样参数。")
 
         all_samples.append((samples_x, samples_y))
 
@@ -328,12 +334,26 @@ meta: DatasetMeta,
     返回值：dict，包括prompt、label_dist、num_examples等
     """
     # ================= 输入校验 =================
+    import traceback
+    if x_train is None:
+        logger.log("[ERROR] generate_ToT_tree_prompt: x_train is None!")
+        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError("generate_ToT_tree_prompt: x_train is None!")
+    if y_train is None:
+        logger.log("[ERROR] generate_ToT_tree_prompt: y_train is None!")
+        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError("generate_ToT_tree_prompt: y_train is None!")
     if not hasattr(meta, 'features') or len(meta.features) == 0:
         logger.log("特征元数据为空，请检查meta文件")
+        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
         return {"prompt": "", "label_dist": {}, "num_examples": 0}
-        
+    if not hasattr(x_train, 'shape'):
+        logger.log(f"[ERROR] generate_ToT_tree_prompt: x_train has no shape attribute, type: {type(x_train)}")
+        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
+        raise ValueError(f"generate_ToT_tree_prompt: x_train has no shape attribute, type: {type(x_train)}")
     if x_train.shape[1] != len(meta.features):
         logger.log(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
+        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
         return {"prompt": "", "label_dist": {}, "num_examples": 0}
 
 
@@ -345,14 +365,15 @@ meta: DatasetMeta,
     prompt_parts.append("You are a decision tree generator. Your task is to generate candidate split rules for the current node. Please strictly follow the requirements below.Please don't explain.")
     prompt_parts.append("#Core Requirements")
     prompt_parts.append("Generate mutually exclusive rule pairs forming complete branches")
-    prompt_parts.append("Directly assign final class (younger/older) to leaf nodes")
+    prompt_parts.append("Directly assign final class labels to leaf nodes")
     prompt_parts.append("Mark intermediate nodes with [NODE]")
     prompt_parts.append("Always inherit parent path conditions")
-    prompt_parts.append(f"When parent's used features reach 1, generate leaf nodes instead of new nodes")
+    prompt_parts.append(f"Parent has features >= {max_depth-2} ->next split only produces leaf nodes")
+    prompt_parts.append(f"")
     prompt_parts.append("#Structural Constraints")
     prompt_parts.append("Each split must form complete complementary conditions")
-    prompt_parts.append("Continuous features use single-threshold splits")
-    prompt_parts.append("Categorical features use explicit category combinations")
+    prompt_parts.append("Continuous features use single-threshold splits,using < and >=")
+    prompt_parts.append("Categorical features use explicit category combinations,using = and !=")
     prompt_parts.append("Path conditions are automatically inherited without repetition")
     prompt_parts.append("Final class labels must appear in leaf node rules")
     prompt_parts.append(f"Next split produces only leaves when parent's feature count ≥ 1")
@@ -369,7 +390,13 @@ meta: DatasetMeta,
         m = re.search(r'\(([^)]+)\)', desc)
         if m:
             unit = m.group(1)
-        line = f"{feat.name}: {desc}"
+        # 新增类型后缀
+        type_suffix = ''
+        if feat.type == 'float' or feat.type == 'int':
+            type_suffix = ' (cont)'
+        elif feat.is_categorical:
+            type_suffix = ' (Cate)'
+        line = f"{feat.name}{type_suffix}: {desc}"
         if unit:
             line += f" [unit: {unit}]"
         if feat.is_categorical:
@@ -383,21 +410,15 @@ meta: DatasetMeta,
     prompt_parts.append("# Label Definitions")
     prompt_parts.append("; ".join(label_lines))  # 同样紧凑排列
 
-    prompt_parts.append("## Output Specifications")
-    prompt_parts.append("Generate one rule pairs that must:")
-    prompt_parts.append("- Use identical feature combinations per pair")
-    prompt_parts.append("- Cover all possible value ranges")
-    prompt_parts.append("- Prioritize features with maximum information gain")
-    prompt_parts.append("- Maintain tree structure compatibility")
 
     prompt_parts.append("## Examples")
     prompt_parts.append("parent is Root->generate one")
     prompt_parts.append("IF size = big THEN yes")
     prompt_parts.append("IF size != big THEN [NODE]")
     prompt_parts.append("")
-    prompt_parts.append("Have parents->Add AND condition")
+    prompt_parts.append("parent is branch->Add AND condition")
     prompt_parts.append("IF age >= 9 AND height < 1.3 THEN [NODE]")
-    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN older")
+    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN no")
     prompt_parts.append("")
     
 

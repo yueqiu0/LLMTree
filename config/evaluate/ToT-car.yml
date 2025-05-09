@@ -6,6 +6,6 @@ base_configs:
   - ./common.yml
 
 config:
-  exp_name: ToT_tree-car-baseline
+  exp_name: ToT-car-baseline
   template: template/basic.jinja
   tree_only: False
