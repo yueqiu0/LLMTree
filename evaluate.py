@@ -498,12 +498,24 @@ def calc_accuracy(labels: list, results: list) -> float:
     return correct_count / len(labels)
 
 
-def cot_calc_accuracy_auc(y_true, y_pred, meta):
+def format_auc_result(auc_result, is_binary=None):
+    """格式化AUC结果，二分类情况下显示单个值，多分类显示字典"""
+    if is_binary is None:
+        # 尝试自动检测是否为二分类结果
+        is_binary = isinstance(auc_result, dict) and 'macro' in auc_result and 'micro' in auc_result and auc_result['macro'] == auc_result['micro']
+    
+    if is_binary and isinstance(auc_result, dict):
+        return auc_result.get('macro', float('nan'))
+    return auc_result
+
+
+def cot_calc_accuracy_auc(y_true, y_pred, meta, force_dict=False):
     """
     专用于CoT字符串标签输出的准确率和AUC计算。
     y_true, y_pred: 均为字符串标签或数值标签
     meta: DatasetMeta, 用于标签到数值的映射
-    返回: (accuracy, auc)
+    force_dict: 是否强制返回字典格式的AUC结果，即使是二分类情况
+    返回: (accuracy, auc_value_or_dict)，二分类时返回单值，多分类时返回字典
     """
     global_log(f"准确率计算 - 标签类型: {type(y_true[0])}, 预测类型: {type(y_pred[0])}")
     
@@ -550,7 +562,14 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta):
                 # 不可比较的类型，输出警告
                 global_log(f"警告: 无法比较的标签类型 - 真实标签: {type(yt)}({yt}), 预测标签: {type(yp)}({yp})")
         
-
+        if is_match:
+            matches.append(f"样本{i}: {yt} == {yp} [{match_type}]")
+    
+    # 添加详细的匹配统计
+    if matches:
+        global_log(f"前10个匹配样本: {matches[:10]}")
+        if len(matches) > 10:
+            global_log(f"... 及其他 {len(matches)-10} 个匹配")
             
     accuracy = correct / len(y_true)
     global_log(f"准确率计算结果: {correct}/{len(y_true)} = {accuracy:.4f}")
@@ -584,16 +603,21 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta):
     
     global_log(f"唯一标签值: {unique_true}, 唯一预测值: {unique_pred}")
     
+    # 初始化AUC结果字典
+    auc_dict = {"macro": float('nan'), "micro": float('nan')}
+    
     # 如果标签或预测只有一个类别，无法计算AUC
     if len(unique_true) < 2 or len(unique_pred) < 2:
         global_log(f"警告: 标签或预测只有一个类别，无法计算AUC (标签类别数={len(unique_true)}, 预测类别数={len(unique_pred)})")
-        return accuracy, float('nan')
+        return accuracy, auc_dict if force_dict else float('nan')
     
     try:
         # 多分类情况
-        if len(unique_true) > 2:
+        is_multiclass = len(unique_true) > 2
+        if is_multiclass:
             global_log(f"检测到多分类情况 (类别数={len(unique_true)}), 使用one-vs-rest方法计算AUC")
             from sklearn.preprocessing import label_binarize
+            from sklearn.metrics import roc_auc_score
             
             # 确保classes包含所有可能的类别
             all_classes = sorted(np.union1d(unique_true, unique_pred))
@@ -606,15 +630,23 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta):
             global_log(f"二值化后形状: y_true_bin={y_true_bin.shape}, y_pred_bin={y_pred_bin.shape}")
             
             try:
-                from sklearn.metrics import roc_auc_score
-                auc = roc_auc_score(y_true_bin, y_pred_bin, multi_class='ovr', average='macro')
-                global_log(f"多分类AUC计算成功: {auc}")
-                return accuracy, auc
+                # 计算宏平均AUC (macro)
+                auc_macro = roc_auc_score(y_true_bin, y_pred_bin, multi_class='ovr', average='macro')
+                auc_dict["macro"] = auc_macro
+                global_log(f"多分类宏平均AUC计算成功: {auc_macro}")
+                
+                # 计算微平均AUC (micro)
+                auc_micro = roc_auc_score(y_true_bin, y_pred_bin, multi_class='ovr', average='micro')
+                auc_dict["micro"] = auc_micro
+                global_log(f"多分类微平均AUC计算成功: {auc_micro}")
+                
+                # 多分类情况总是返回字典
+                return accuracy, auc_dict
             except Exception as e:
                 global_log(f"多分类AUC计算失败: {e}")
                 if 'samples are not positive and negative' in str(e):
                     global_log("可能是某些类别在二值化后没有正样本或负样本")
-                return accuracy, float('nan')
+                return accuracy, auc_dict if force_dict else float('nan')
         else:
             # 二分类情况
             global_log("检测到二分类情况，直接计算AUC")
@@ -631,22 +663,28 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta):
                     y_pred_mapped = np.where(y_pred_num == unique_classes[0], 0, 1)
                     
                     auc = roc_auc_score(y_true_mapped, y_pred_mapped)
+                    # 二分类情况下，macro=micro=标准AUC
+                    auc_dict["macro"] = auc
+                    auc_dict["micro"] = auc
                     global_log(f"使用映射后的类别计算AUC成功: {auc}")
-                    return accuracy, auc
+                    return accuracy, auc_dict if force_dict else auc
             
             # 直接计算AUC
             try:
                 auc = roc_auc_score(y_true_num, y_pred_num)
+                # 二分类情况下，macro=micro=标准AUC
+                auc_dict["macro"] = auc
+                auc_dict["micro"] = auc
                 global_log(f"AUC计算成功: {auc}")
-                return accuracy, auc
+                return accuracy, auc_dict if force_dict else auc
             except Exception as e:
                 global_log(f"AUC计算失败: {e}")
                 import warnings
                 warnings.warn(f"roc_auc_score failed: {e}. Returning NaN.")
-                return accuracy, float('nan')
+                return accuracy, auc_dict if force_dict else float('nan')
     except Exception as e:
         global_log(f"AUC计算过程中发生意外错误: {e}")
-        return accuracy, float('nan')
+        return accuracy, auc_dict if force_dict else float('nan')
 
 
 def evaluate(
@@ -666,9 +704,9 @@ def evaluate(
 ):
     rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
-    # --- 强制CoTDecisionTree二次LLM交互始终被执行 ---
+    # --- 强制CoTDecisionTree二次CoT交互始终被执行 ---
     if isinstance(tree_model, CoTDecisionTree) and with_llm:
-        global_log(f"[DEBUG][LLM] >>> 进入CoTDecisionTree二次LLM推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
+        global_log(f"[DEBUG][LLM] >>> 进入CoTDecisionTree二次CoT推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
         # 第一次：用LLM prompt生成规则
         global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
         tree_model.fit(x_train, y_train)
@@ -735,17 +773,14 @@ def evaluate(
                 return result_dict
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
         global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
-        tree_accuracy = calc_accuracy(labels, results)
-        # 转换为01标签
-        results_num = [meta.get_label_value(r) for r in results]
-        y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
-        # 只有预测结果有两个类别时才计算AUC，否则返回NaN
-        if len(set(results_num)) < 2:
-            global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
-            tree_auc = float('nan')
-        else:
-            tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
-        tree_results = results_num
+        tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
+        
+        # 优化二分类情况下的AUC输出格式
+        is_binary = len(np.unique(y_test)) <= 2
+        formatted_auc = format_auc_result(tree_auc, is_binary)
+        global_log(f"[DEBUG][LLM] 二次LLM推理结果 - 准确率: {tree_accuracy:.4f}, AUC: {formatted_auc}")
+        
+        tree_results = results
         acc = tree_accuracy
         auc = tree_auc
         global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
@@ -766,17 +801,17 @@ def evaluate(
                 # 确保在调用 predict 之前调用 fit 方法
                 if with_llm:
                     # 第一次：用CoT prompt生成规则
-                    global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+                    global_log("[DEBUG][CoT] === 第一次CoT交互：生成规则 ===")
                     tree_model.fit(x_train, y_train)
                     rules = tree_model.get_rules()
                     tree_model.rules = rules
-                    global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
+                    global_log("[DEBUG][CoT] 规则生成完毕，规则内容如下：")
                     if isinstance(tree_model.rules, list):
                         rules_str = "\n".join(str(rule) for rule in tree_model.rules)
                         global_log(rules_str)
                     else:
                         global_log(str(tree_model.rules))
-                    global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
+                    global_log("[DEBUG][CoT] === 进入第二次CoT交互：用basic.jinja渲染规则并让CoT预测 ===")
                     prompts, test_splits, labels = gen_prompt(
                         meta,
                         master_template,
@@ -789,13 +824,13 @@ def evaluate(
                         num_tests_per_round,
                 
                     )
-                    global_log(f"[DEBUG][LLM] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
+                    global_log(f"[DEBUG][CoT] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
                     if prompts and len(prompts) > 0:
-                        global_log("[DEBUG][LLM] basic.jinja prompt内容如下：")
+                        global_log("[DEBUG][CoT] basic.jinja prompt内容如下：")
                         global_log(prompts[0])
-                        global_log("[DEBUG][LLM] ===== end of basic.jinja prompt =====")
+                        global_log("[DEBUG][CoT] ===== end of basic.jinja prompt =====")
                     if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
-                        global_log("[ERROR][LLM] basic.jinja prompt未能成功生成或内容为空！")
+                        global_log("[ERROR][CoT] basic.jinja prompt未能成功生成或内容为空！")
                         global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
                         global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
                         global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
@@ -804,8 +839,8 @@ def evaluate(
                     raw_results = []
                     results = []
                     for idx, responses in enumerate(runner.run(prompts)):
-                        global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
-                        global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
+                        global_log(f"[DEBUG][CoT] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
+                        global_log(f"[DEBUG][CoT] CoT返回response candidates: {responses}")
                         expected_len = test_splits[idx][1] - test_splits[idx][0]
                         found = False
                         for response in responses:
@@ -832,17 +867,14 @@ def evaluate(
                             return result_dict
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
-                    tree_accuracy = calc_accuracy(labels, results)
-                    # 转换为01标签
-                    results_num = [meta.get_label_value(r) for r in results]
-                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
-                    # 只有预测结果有两个类别时才计算AUC，否则返回NaN
-                    if len(set(results_num)) < 2:
-                        global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
-                        tree_auc = float('nan')
-                    else:
-                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
-                    tree_results = results_num
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
+                    
+                    # 优化二分类情况下的AUC输出格式
+                    is_binary = len(np.unique(y_test)) <= 2
+                    formatted_auc = format_auc_result(tree_auc, is_binary)
+                    global_log(f"[DEBUG][LLM] 二次LLM推理结果 - 准确率: {tree_accuracy:.4f}, AUC: {formatted_auc}")
+                    
+                    tree_results = results
                     acc = tree_accuracy
                     auc = tree_auc
                     global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
@@ -854,7 +886,7 @@ def evaluate(
                     
                     # 新增：检查并转换预测结果类型
                     if isinstance(tree_results[0], str):
-                        global_log("[DEBUG] LLMDecisionTree返回的预测结果是字符串类型，转换为数值...")
+                        global_log("[DEBUG] CoTDecisionTree返回的预测结果是字符串类型，转换为数值...")
                         # 将字符串标签转换为对应的数值标签
                         tree_results_numeric = []
                         for label in tree_results:
@@ -867,28 +899,81 @@ def evaluate(
                         tree_results = np.array(tree_results_numeric)
                         global_log(f"[DEBUG] 转换后的预测结果: {tree_results[:5]}...")
                     
-                    # LLM输出为字符串，专用评测函数
-                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_results, meta)
-                    global_log("[LLMDecisionTree] 直接用规则推理（未调用LLM）")
+                    # CoT输出为字符串，专用评测函数
+                    tree_accuracy, tree_auc_result = cot_calc_accuracy_auc(y_test, tree_results, meta, force_dict=True)
+                    global_log("[CoTDecisionTree] 直接用规则推理（未调用CoT）")
                     global_log(f"规则数量: {len(tree_model.rules)}")
-                    global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
+                    
+                    # 优化二分类情况下的AUC输出格式
+                    is_binary = len(np.unique(y_test)) <= 2
+                    if is_binary and isinstance(tree_auc_result, dict):
+                        # 二分类情况下，简化输出为单个值
+                        auc_value = tree_auc_result.get('macro', float('nan'))
+                        global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {auc_value}")
+                    else:
+                        global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc_result}")
+                        
                     results = tree_results
                     acc = tree_accuracy
-                    auc = tree_auc
+                    auc = tree_auc_result
             else:
                 # 其他类型的决策树
                 tree_results, rules = tree_model.predict(
                     x_train, y_train, x_test, export_rules=True
                 )
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_results)
-                tree_accuracy = calc_accuracy(y_test, tree_results)
+                # 修改这里的直接AUC计算，使用cot_calc_accuracy_auc函数
+                if len(set(tree_results)) < 2:
+                    global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+                    tree_auc = {"macro": float('nan'), "micro": float('nan')}
+                else:
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_results, meta, force_dict=True)
 
     if tree_only:
+        # 分类树在训练时已经被训练好了，直接预测。
+        # 这些预测结果可能是浮点数或整数。
+        results, rule_trace = tree_model.predict(x_test)
+        y_test_num = [float(y) for y in y_test]
+        
+        # 如果预测结果为字符串，则转换为标签值
+        if isinstance(results[0], str):
+            global_log("树模型返回字符串标签，转换为数值...")
+            results_num = []
+            for r in results:
+                label_val = meta.get_label_value(r)
+                if label_val is None:
+                    # 如果找不到对应的标签值，使用默认值0
+                    global_log(f"警告：找不到标签'{r}'对应的值，使用默认值0")
+                    results_num.append(0)
+                else:
+                    results_num.append(label_val)
+        else:
+            results_num = results
+            
+        # 计算准确率
+        tree_accuracy = calc_accuracy(y_test, results)
+        
+        # 计算AUC (修改为使用cot_calc_accuracy_auc函数)
+        if len(set(results_num)) < 2:
+            global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
+            tree_auc = {"macro": float('nan'), "micro": float('nan')}
+        else:
+            tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test_num, results_num, meta, force_dict=True)
+            
+        tree_results = results_num
+        acc = tree_accuracy
+        auc = tree_auc
+        
         return {
-            "tree_auc": tree_auc,
-            "tree_accuracy": tree_accuracy,
+            "acc": acc,
+            "auc": auc,  # 现在是字典格式
+            "llm_tree_results": None,
+            "labels": y_test.tolist(),
+            "rule_trace": rule_trace,
             "tree_results": tree_results,
-            "rules": rules if isinstance(tree_model, CoTDecisionTree) else None
+            "samples": [],
+            "match_by_samples": [],
+            "prompts": [],
+            "trees": 1,
         }
 
     # 如果不是tree_only模式且不是CoTDecisionTree的with_llm模式
@@ -934,12 +1019,12 @@ def evaluate(
                 return result_dict
 
         acc = calc_accuracy(labels, results)
-        auc = sklearn.metrics.roc_auc_score(
-            y_test,
-            [meta.get_label_value(r) for r in results],
-        )
+        # 使用专用函数计算AUC，将结果改为字典形式
+        tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, [meta.get_label_value(r) for r in results], meta, force_dict=True)
 
-        global_log("Accuracy/AUC: {}/{}".format(acc, auc))
+        # 优化二分类情况下的AUC输出格式
+        formatted_auc = format_auc_result(tree_auc)
+        global_log(f"Accuracy/AUC: {acc}/{formatted_auc}")
 
     # 增加修改：始终保存tree的预测结果，即使AUC计算失败
     result = {
@@ -950,9 +1035,11 @@ def evaluate(
     # 计算基础准确率和AUC（用于决策树）
     global_log("计算决策树准确率和AUC...")
     tree_acc, tree_auc = cot_calc_accuracy_auc(
-        y_test, tree_results, meta
+        y_test, tree_results, meta, force_dict=True
     )
-    global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {tree_auc}")
+    is_binary = len(np.unique(y_test)) <= 2
+    formatted_auc = format_auc_result(tree_auc, is_binary)
+    global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {formatted_auc}")
     
     # 确保tree_auc被保存，即使值为NaN
     result["tree_acc"] = tree_acc
@@ -962,9 +1049,10 @@ def evaluate(
     if with_llm:
         # 计算LLM+树的准确率和AUC
         llm_tree_acc, llm_tree_auc = cot_calc_accuracy_auc(
-            y_test, results, meta
+            y_test, results, meta, force_dict=True
         )
-        global_log(f"LLM+树准确率: {llm_tree_acc:.4f}, AUC: {llm_tree_auc}")
+        formatted_llm_auc = format_auc_result(llm_tree_auc, is_binary)
+        global_log(f"LLM+树准确率: {llm_tree_acc:.4f}, AUC: {formatted_llm_auc}")
         
         # 增加LLM相关结果
         result["llm_tree_acc"] = llm_tree_acc
