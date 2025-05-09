@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/nursery/data.csv
+    meta_file: dataset/nursery/meta.yml
+    format: csv
+    shuffle_column: true
