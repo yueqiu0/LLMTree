@@ -436,24 +436,26 @@ def generate_LLM_tree_prompt(
     prompt_parts.append("")
     
     # Example Rules
-    prompt_parts.append("# Example Rules")
-
+    prompt_parts.append("# Example: 1 level of split (only one condition per rule)")
     prompt_parts.append("(1) IF temperature >= 38 THEN high_fever")
-    prompt_parts.append("(2) IF temperature < 38 AND cough = True THEN suspect_infection")
-    prompt_parts.append("(3) IF temperature < 38 AND cough != True THEN normal")
+    prompt_parts.append("(2) IF temperature < 38 THEN normal")
     prompt_parts.append("...")
-    
-    prompt_parts.append("(1) IF gender = 'male' AND age_group = 'senior' THEN high_risk")
-    prompt_parts.append("(2) IF gender = 'male' AND age_group != 'senior' THEN medium_risk")
-    prompt_parts.append("(3) IF gender != 'male' THEN low_risk")
-    prompt_parts.append("...")
-    
+
+    # Two levels of split (depth = 2)
+    prompt_parts.append("# Example: 2 levels of split (two conditions per rule)")
     prompt_parts.append("(1) IF income >= 50000.50 AND credit_score >= 700 THEN approve")
-    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score >= 600 THEN review")
+    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score >= 600 THEN reject")
     prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 600 THEN reject")
-    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 600 THEN review")
+    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 600 THEN reject")
+    
+    prompt_parts.append("NOTE: This is a 2 levels of split, since some rules use 2 features:")
+    prompt_parts.append("(1) IF income >= 50000.50 THEN approve")
+    prompt_parts.append("(2) IF income < 50000.50 AND credit_score < 600 THEN approve")
+    prompt_parts.append("(3) IF income < 50000.50 AND credit_score >= 600 THEN reject")
     prompt_parts.append("...")
-    prompt_parts.append("# Example Rules")
+    
+    prompt_parts.append(f"Please generate corrected tree rules for a tree of max depth of {max_depth} (i.e., {max_depth - 1} levels of splits)")
+    prompt_parts.append(f"Remember you can use {max_depth - 1} features at most for one rule in the tree, and you should generate {2**(max_depth - 1)} rules at most.")
 
     # ============== 最终组装 ==============
     full_prompt = "\n".join(prompt_parts)
