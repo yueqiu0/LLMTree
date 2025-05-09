@@ -12,6 +12,8 @@ from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializ
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
 from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
+import re
+
 
 
 def _get_feature_values(
@@ -50,6 +52,12 @@ class TrainStrategy:
         self.hist_nbins = 10
         self._meta_instance = None
         self.llm_feature_ranking = None  # 添加此属性
+
+        # Token计数器 - 添加到__init__方法中
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0  # 添加评估计数器
 
     def set_train_data(self, train_x: np.ndarray, train_y: np.ndarray) -> None:
         self.train_x = train_x
@@ -779,7 +787,30 @@ class TrainStrategy:
         if conditions:
             return f"IF {' AND '.join(conditions)} THEN {label_name}"
         else:
-            return f"{label_name} (无条件)"
+            return f"{label_name} (default)"
+
+    # 在TrainStrategy类中添加方法
+    def get_token_stats(self):
+        """返回token使用统计信息"""
+        build_tokens = {
+            "prompt": self.supervision_tokens["prompt"] + self.meta_rule_tokens["prompt"],
+            "completion": self.supervision_tokens["completion"] + self.meta_rule_tokens["completion"],
+            "total": self.supervision_tokens["total"] + self.meta_rule_tokens["total"]
+        }
+        return {
+            "build_tokens": build_tokens,
+            "supervision_tokens": self.supervision_tokens,
+            "meta_rule_tokens": self.meta_rule_tokens,
+            "evaluation_tokens": self.evaluation_tokens
+        }
+
+    # 添加重置token计数的方法
+    def reset_token_stats(self):
+        """重置token统计信息，用于多次测试间隔离统计"""
+        self.supervision_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.meta_rule_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        self.evaluation_tokens = []
+        self.evaluation_count = 0
 
 
 class UnknownClassStrategy(TrainStrategy):
@@ -852,6 +883,7 @@ class UnknownClassStrategy(TrainStrategy):
             format_desc=self.serializer.format_desc(),
             prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
             tests=x_test_str,
+            unknown_correction_example=self.serializer.unknown_correction_example(),
         )
 
         return prompt
@@ -860,21 +892,25 @@ class UnknownClassStrategy(TrainStrategy):
         self, prompts: list[str], expected_lens: list[int]
     ) -> list[list[int]]:
         all_results = []
-        for i, resp_candidates in enumerate(self.runner.run(prompts)):
+        for i, (resp_candidates, token_info) in enumerate(self.runner.run(prompts)):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self._meta.get_label_value(r) for r in results]
+            
+            # 记录评估prompt的token使用情况
+            self.evaluation_tokens.append(token_info)
+            logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
-                if None in results or len(results) != expected_lens[i]:
-                    continue
+            if None in results or len(results) != expected_lens[i]:
+                continue
 
-                all_results.append(results)
-                break
-            else:
-                logger.log(
-                    "No valid response found, raw responses: {}".format(resp_candidates)
-                )
-                return None
+            all_results.append(results)
+            break
+        else:
+            logger.log(
+                "No valid response found, raw responses: {}".format(resp_candidates)
+            )
+            return None
 
         return all_results
 
@@ -1139,13 +1175,17 @@ class FeatureBaggingStrategy(TrainStrategy):
         if prompt is None:
             raise RuntimeError("Invalid tree rules!")
 
-        for resp_candidates in self.runner.run([prompt]):
+        for resp_candidates, token_info in self.runner.run([prompt]):
             for resp in resp_candidates:
                 results = self.serializer.answer_decoder.decode(resp)
                 results = [self.all_meta.get_label_value(r) for r in results]
 
                 if None in results or len(results) != len(x):
                     continue
+
+                # 记录评估prompt的token使用情况
+                self.evaluation_tokens.append(token_info)
+                logger.log(f"评估Prompt Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
 
                 return results
             else:
@@ -1191,6 +1231,7 @@ class FeatureBaggingStrategy(TrainStrategy):
             format_desc=self.serializer.format_desc(),
             prediction_intro=self.serializer.answer_requirement(len(x_test_str)),
             tests=x_test_str,
+            unknown_correction_example=self.serializer.unknown_correction_example(),
         )
 
         return prompt
@@ -1325,3 +1366,14 @@ class FeatureBaggingStrategy(TrainStrategy):
             
             logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
             return best_split
+
+
+# 添加处理LLM响应的函数
+def clean_llm_response(response):
+    """移除LLM响应中的<think>标签内容"""
+    if response is None:
+        return None
+    # 使用正则表达式去除所有<think>...</think>部分
+    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+    cleaned = cleaned.lstrip('\n')
+    return cleaned

@@ -267,6 +267,8 @@ The dataset consists of the following features:
 
 Please return your answer as a comma-separated list of feature indices, ordered from most important to least important. For example: 2,4,1,3
 
+DO NOT use headers or explanations.
+
 Feature Ranking: """
     return prompt
 

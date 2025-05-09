@@ -21,6 +21,8 @@ For each data, the result can be one of the following:
 {%- endfor -%}
 {%- endblock %}
 
+NOTE: “unknown” is NOT a valid label.
+
 {% block format_descriptions -%}
 {%- if format_desc -%}{{ format_desc }}{%- endif -%}
 {%- endblock %}
@@ -47,8 +49,12 @@ For data points that are not covered by any rule, you should predict the result 
 {% block prediction_intro -%}
 {{ prediction_intro }}
 {%- endblock %}
+
 {% block test_cases -%}
 {% for case in tests %}
 ({{ loop.index }}) {{ case }}
 {%- endfor %}
 {%- endblock %}
+
+{{ unknown_correction_example }}
+

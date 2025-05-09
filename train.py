@@ -17,6 +17,7 @@ from tree_prompt.model.strategy import (
     UnknownClassStrategy,
     KnownClassStrategy,
     FeatureBaggingStrategy,
+    clean_llm_response,
 )
 from tree_prompt.prompt import (
     TabularSerializer,
@@ -34,6 +35,7 @@ from tree_prompt.common_args import (
     FeatureBaggingStrategyArgs,
 )
 from tree_prompt.dataset import load_dataset, sample_balanced
+from tree_prompt.model.strategy import clean_llm_response
 
 
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
@@ -426,18 +428,7 @@ def evaluate(
 
     if len(x_test) == 0:
         return None
-    for test_start in tqdm(range(0, len(x_test), test_batch), desc="Test"):
-        test_end_batch = min(test_start + test_batch, len(x_test))
-        current_batch = x_test[test_start:test_end_batch]
-        
-        # 添加批量预测前的日志（新增代码）
-        logger.log(f"[Predict Batch] Size: {len(current_batch)} | Features: {current_batch[0].shape}")
-        
-        results = model.predict(current_batch)
-        
-        # 添加预测结果日志（新增代码）
-        if results[0] is not None:
-            logger.log(f"[Prediction Results] LLM outputs: {len(results[0])} | Tree outputs: {len(results[1])}")
+    
     llm_with_tree_results, llm_with_tree_subresults = [], None
     tree_results, tree_raw_results = [], []
 
@@ -457,10 +448,54 @@ def evaluate(
         tree_results += results[1]
         tree_raw_results += results[2]
 
+    if len(tree_results) > 0:
+        n_classes = len(np.unique(y_test))
+        if n_classes > 2:
+            from sklearn.preprocessing import label_binarize
+            classes = np.unique(y_test)
+            
+            # 二进制化处理
+            y_test_bin = label_binarize(y_test, classes=classes)
+            if np.array(tree_results).ndim == 1:  # 如果预测是一维的（类别标签）
+                tree_results_bin = label_binarize(tree_results, classes=classes)
+                # 计算宏平均AUC和微平均AUC
+                tree_auc = {
+                    'macro': roc_auc_score(y_test_bin, tree_results_bin, average='macro'),
+                    'micro': roc_auc_score(y_test_bin, tree_results_bin, average='micro')
+                }
+            else:  # 如果已经是二维的（类别概率）
+                tree_auc = {
+                    'macro': roc_auc_score(y_test_bin, tree_results, average='macro'),
+                    'micro': roc_auc_score(y_test_bin, tree_results, average='micro')
+                }
+        else:
+            # 二分类情况，使用标准方法
+            tree_auc = roc_auc_score(y_test, tree_results)
+    else:
+        tree_auc = None
+
     if len(llm_with_tree_results) == len(tree_results):
-        llm_with_tree_auc = roc_auc_score(
-            y_test, llm_with_tree_results, multi_class="ovr"
-        )
+        n_classes = len(np.unique(y_test))
+        if n_classes > 2:
+            from sklearn.preprocessing import label_binarize
+            classes = np.unique(y_test)
+            
+            # 二进制化处理
+            y_test_bin = label_binarize(y_test, classes=classes)
+            if np.array(llm_with_tree_results).ndim == 1:  # 如果预测是一维的
+                llm_results_bin = label_binarize(llm_with_tree_results, classes=classes)
+                # 计算宏平均AUC和微平均AUC
+                llm_with_tree_auc = {
+                    'macro': roc_auc_score(y_test_bin, llm_results_bin, average='macro'),
+                    'micro': roc_auc_score(y_test_bin, llm_results_bin, average='micro')
+                }
+            else:  # 如果已经是二维的
+                llm_with_tree_auc = {
+                    'macro': roc_auc_score(y_test_bin, llm_with_tree_results, average='macro'),
+                    'micro': roc_auc_score(y_test_bin, llm_with_tree_results, average='micro')
+                }
+        else:
+            llm_with_tree_auc = roc_auc_score(y_test, llm_with_tree_results)
     else:
         llm_with_tree_auc = None
 
@@ -495,7 +530,6 @@ def evaluate(
                 roc_auc_score(y_test, sub_result, multi_class="ovr")
             )
 
-    tree_auc = roc_auc_score(y_test, tree_results, multi_class="ovr")
     logger.log(
         "llm + tree AUC: {}, tree AUC: {}, llm + subtree AUC: {}".format(
             llm_with_tree_auc, tree_auc, llm_with_sub_tree_aucs
@@ -823,7 +857,11 @@ def main():
                 logger.log(f"!! 已达到预期测试次数 {args.num_tests_per_set}")
             bar.update(1)
             
+        total_llm_macro_auc = 0.0
+        total_llm_micro_auc = 0.0
         total_llm_auc = 0.0
+        total_tree_macro_auc = 0.0
+        total_tree_micro_auc = 0.0
         total_tree_auc = 0.0
         valid_counts = 0
         for train_size in results:
@@ -832,9 +870,28 @@ def main():
                 tree_auc = test_result.get('tree')
                 
                 if llm_auc is not None and tree_auc is not None:
-                    total_llm_auc += llm_auc
-                    total_tree_auc += tree_auc
+                    # 处理二分类和多分类的情况
+                    if isinstance(llm_auc, dict) and 'macro' in llm_auc:
+                        # 多分类情况
+                        total_llm_macro_auc += llm_auc['macro']
+                        total_llm_micro_auc += llm_auc['micro']
+                    else:
+                        # 二分类情况
+                        total_llm_auc += llm_auc
+                        
+                    if isinstance(tree_auc, dict) and 'macro' in tree_auc:
+                        # 多分类情况
+                        total_tree_macro_auc += tree_auc['macro']
+                        total_tree_micro_auc += tree_auc['micro']
+                    else:
+                        # 二分类情况
+                        total_tree_auc += tree_auc
+                        
                     valid_counts += 1
+        avg_llm_macro_auc = total_llm_macro_auc / valid_counts if valid_counts > 0 else 0.0
+        avg_llm_micro_auc = total_llm_micro_auc / valid_counts if valid_counts > 0 else 0.0
+        avg_tree_macro_auc = total_tree_macro_auc / valid_counts if valid_counts > 0 else 0.0
+        avg_tree_micro_auc = total_tree_micro_auc / valid_counts if valid_counts > 0 else 0.0
         avg_llm_auc = total_llm_auc / valid_counts if valid_counts > 0 else 0.0
         avg_tree_auc = total_tree_auc / valid_counts if valid_counts > 0 else 0.0
             # Store results each round to avoid losing data
@@ -848,7 +905,10 @@ def main():
         logger.log(f"训练集大小 {size}: {len(tests)}次测试")
         total_tests += len(tests)
     logger.log(f"总计测试次数: {total_tests}")
-    logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.6f},average tree AUC={avg_tree_auc:.6f}")  # 平均值
+    if isinstance(llm_auc, dict) and 'macro' in llm_auc:
+        logger.log(f"Average metrics: average llm+tree Macro-AUC={avg_llm_macro_auc:.6f} average llm+tree Micro-AUC={avg_llm_micro_auc:.6f},average tree Macro-AUC={avg_tree_macro_auc:.6f} average tree Micro-AUC={avg_tree_micro_auc:.6f}")  # 平均值
+    else:
+        logger.log(f"Average metrics: average llm+tree AUC={avg_llm_auc:.6f},average tree AUC={avg_tree_auc:.6f}")  # 平均值 
     logger.log(f"Elapsed time: {time.time()-start_time:.2f}s")
 if __name__ == "__main__":
     main()

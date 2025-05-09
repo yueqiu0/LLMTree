@@ -39,11 +39,15 @@ from tree_prompt.common_args import (
     TogetherAPIArgs,
 )
 from tree_prompt.dataset import DatasetMeta, load_dataset, sample_balanced
+from tree_prompt.model.strategy import clean_llm_response
 
 
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
     missing_fields = []
     for k, v in instance.__dict__.items():
+        # 检查是否为tree_only模式，如果是则跳过检查特定字段
+        if hasattr(instance, 'tree_only') and instance.tree_only and k in ["runner", "use_tree_rules", "template", "serializer_type"]:
+            continue
         if v is None:
             missing_fields.append(k if not prefix else f"{prefix}.{k}")
     return missing_fields
@@ -240,27 +244,35 @@ class EvaluateArgs:
         return str(self.__dict__)
 
     def get_missing_fields(self) -> list[str]:
-        missing_fields = _get_missing_fields(self)
+        # 先获取所有缺失字段
+        missing_fields = []
+        for k, v in self.__dict__.items():
+            # 只有在非tree_only模式下才检查runner和use_tree_rules字段
+            if v is None and not (self.tree_only and k in ["runner", "use_tree_rules", "template", "serializer_type"]):
+                missing_fields.append(k)
+        
+        # 只有在非tree_only模式下才检查runner_args
+        if not self.tree_only:
+            if (
+                (
+                    self.runner == "openai_api"
+                    and not isinstance(self.runner_args, OpenAIAPIArgs)
+                )
+                or (
+                    self.runner == "huggingchat"
+                    and not isinstance(self.runner_args, HuggingChatArgs)
+                )
+                or (
+                    self.runner == "together_api"
+                    and not isinstance(self.runner_args, TogetherAPIArgs)
+                )
+            ):
+                missing_fields.append("runner_args")
 
-        if (
-            (
-                self.runner == "openai_api"
-                and not isinstance(self.runner_args, OpenAIAPIArgs)
-            )
-            or (
-                self.runner == "huggingchat"
-                and not isinstance(self.runner_args, HuggingChatArgs)
-            )
-            or (
-                self.runner == "together_api"
-                and not isinstance(self.runner_args, TogetherAPIArgs)
-            )
-        ):
-            missing_fields.append("runner_args")
+            elif self.runner_args and not isinstance(self.runner_args, dict):
+                missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
-        elif self.runner_args:
-            missing_fields += _get_missing_fields(self.runner_args, "runner_args")
-
+        # 检查tree_args
         if (
             (
                 self.tree_type == "simple"
@@ -280,38 +292,24 @@ class EvaluateArgs:
             )
         ):
             missing_fields.append("tree_args")
-        elif self.tree_args:
+        elif self.tree_args and not isinstance(self.tree_args, dict):
             missing_fields += _get_missing_fields(self.tree_args, "tree_args")
 
-        if self.dataset_args:
-            missing_fields += _get_missing_fields(self.dataset_args, "dataset")
+        # 检查dataset_args
+        if not isinstance(self.dataset_args, DatasetArgs) and not isinstance(self.dataset_args, dict):
+            missing_fields.append("dataset_args")
+        elif self.dataset_args and not isinstance(self.dataset_args, dict):
+            missing_fields += _get_missing_fields(self.dataset_args, "dataset_args")
 
         return missing_fields
 
     def get_missing_fields_tree_only(self) -> list[str]:
-        missing_fields = self.get_missing_fields()
-        required_fields = [
-            "exp_name",
-            "tree_type",
-            "tree_args",
-            "output_dir",
-            "random_seed",
-            "dataset_args",
-            "train_sizes",
-            "num_tests_per_set",
-            "test_size",
-            "test_batch",
-            "shuffle",
-            "shuffle_column",
-        ]
-        tree_only_missing_fields = []
-
-        for field in required_fields:
-            for missing_field in missing_fields:
-                if missing_field.startswith(field):
-                    tree_only_missing_fields.append(missing_field)
-
-        return tree_only_missing_fields
+        # 避免检查runner_args
+        self_copy = EvaluateArgs()
+        self_copy.__dict__ = self.__dict__.copy()
+        self_copy.tree_only = True  # 强制设置为tree_only模式
+        
+        return self_copy.get_missing_fields()
 
     def load_sub_args(self):
         assert isinstance(self.tree_args, dict)
@@ -321,6 +319,7 @@ class EvaluateArgs:
             assert isinstance(self.runner_args, dict)
             runner_args_dict = self.runner_args
 
+            
             if self.runner == "openai_api":
                 self.runner_args = OpenAIAPIArgs()
             elif self.runner == "huggingchat":
@@ -556,12 +555,9 @@ def parse_args() -> EvaluateArgs:
         args.with_llm = bool(cml_args.with_llm)  # 将参数值赋给args.with_llm
     # read openai api key from env
     openai_api_key = os.getenv("OPENAI_API_KEY")
-    if (
-        openai_api_key
-        and not runner_args_dict.get("openai_api_key")
-        and not args.runner_args.get("openai_api_key")
-    ):
-        runner_args_dict["openai_api_key"] = openai_api_key
+    if openai_api_key and not runner_args_dict.get("openai_api_key"):
+        if args.runner_args is None or not args.runner_args.get("openai_api_key"):
+            runner_args_dict["openai_api_key"] = openai_api_key
 
     if args.runner_args is None:
         args.runner_args = {}
@@ -589,10 +585,10 @@ def gen_prompt(
     meta: dataset.DatasetMeta,
     master_template: jinja2.Template,
     serializer: Serializer,
-    x_train,
-    y_train,
-    x_test,
-    y_test,
+    train_x,
+    train_y,
+    test_x,
+    test_y,
     tree_rules,
     num_tests_per_round,
     with_llm: bool = False,
@@ -600,15 +596,15 @@ def gen_prompt(
     prompts, test_splits = prompt.gen_prompt(
         master_template,
         serializer,
-        x_train,
-        y_train,
-        x_test,
+        train_x,
+        train_y,
+        test_x,
         tree_rules,
         num_tests_per_round,
     )
 
     test_labels = []
-    for y in y_test:
+    for y in test_y:
         test_labels.append(meta.find_label(y).name)
 
     return prompts, test_splits, test_labels
@@ -665,10 +661,10 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta):
 
 
 def evaluate(
-    x_train: np.ndarray,
-    y_train: np.ndarray,
-    x_test: np.ndarray,
-    y_test: np.ndarray,
+    train_x: np.ndarray,
+    train_y: np.ndarray,
+    test_x: np.ndarray,
+    test_y: np.ndarray,
     runner: Runner,
     master_template: jinja2.Template,
     serializer: Serializer,
@@ -684,23 +680,23 @@ def evaluate(
     # --- 强制CoTDecisionTree二次ToT交互始终被执行 ---
     import traceback
     # 新增更严格的输入检查
-    if x_train is None or y_train is None:
-        global_log("[ERROR][evaluate] x_train 或 y_train 为 None!")
+    if train_x is None or train_y is None:
+        global_log("[ERROR][evaluate] train_x 或 train_y 为 None!")
         global_log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError("[evaluate] x_train 或 y_train 为 None!")
-    if not hasattr(x_train, "shape") or x_train.shape[0] == 0:
-        global_log(f"[ERROR][evaluate] x_train shape 异常: {getattr(x_train, 'shape', None)}")
+        raise ValueError("[evaluate] train_x 或 train_y 为 None!")
+    if not hasattr(train_x, "shape") or train_x.shape[0] == 0:
+        global_log(f"[ERROR][evaluate] train_x shape 异常: {getattr(train_x, 'shape', None)}")
         global_log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError("[evaluate] x_train shape 异常")
-    if not hasattr(y_train, "shape") or y_train.shape[0] == 0:
-        global_log(f"[ERROR][evaluate] y_train shape 异常: {getattr(y_train, 'shape', None)}")
+        raise ValueError("[evaluate] train_x shape 异常")
+    if not hasattr(train_y, "shape") or train_y.shape[0] == 0:
+        global_log(f"[ERROR][evaluate] train_y shape 异常: {getattr(train_y, 'shape', None)}")
         global_log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError("[evaluate] y_train shape 异常")
+        raise ValueError("[evaluate] train_y shape 异常")
     if isinstance(tree_model, ToTDecisionTree) and with_llm:
         global_log(f"[DEBUG][ToT] >>> 进入ToTDecisionTree二次ToT推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
         # 第一次：用ToT prompt生成规则
         global_log("[DEBUG][ToT] === 第一次ToT交互：生成规则 ===")
-        tree_model.fit(x_train, y_train)
+        tree_model.fit(train_x, train_y)
         rules = tree_model.get_rules()
         tree_model.rules = rules
         global_log("[DEBUG][ToT] 规则生成完毕，规则内容如下：")
@@ -732,10 +728,10 @@ def evaluate(
             meta,
             master_template,
             serializer,
-            x_train,
-            y_train,
-            x_test,
-            y_test,
+            train_x,
+            train_y,
+            test_x,
+            test_y,
             rules,
             num_tests_per_round,
             with_llm=True,
@@ -748,8 +744,8 @@ def evaluate(
         if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
             global_log("[ERROR][ToT] basic.jinja prompt未能成功生成或内容为空！")
             global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
-            global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
-            global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
+            global_log(f"train_x shape: {getattr(train_x, 'shape', None)}, train_y shape: {getattr(train_y, 'shape', None)}")
+            global_log(f"test_x shape: {getattr(test_x, 'shape', None)}, test_y shape: {getattr(test_y, 'shape', None)}")
             global_log(f"meta: {getattr(meta, 'name', None)} features: {getattr(meta, 'features', None)}")
             raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
         raw_results = []
@@ -786,13 +782,13 @@ def evaluate(
         tree_accuracy = calc_accuracy(labels, results)
         # 转换为01标签
         results_num = [meta.get_label_value(r) for r in results]
-        y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+        test_y_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in test_y]
         # 只有预测结果有两个类别时才计算AUC，否则返回NaN
         if len(set(results_num)) < 2:
             global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
             tree_auc = float('nan')
         else:
-            tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+            tree_auc = sklearn.metrics.roc_auc_score(test_y_num, results_num)
         tree_predict = results_num
         acc = tree_accuracy
         auc = tree_auc
@@ -801,11 +797,11 @@ def evaluate(
         # 其它树类型和本地推理逻辑保持不变
         if use_tree_rules or tree_only:
             if isinstance(tree_model, FederatedDecisionTree):
-                all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
+                all_tree_predict, _ = tree_model.predict(train_x, train_y, test_x)
                 tree_aucs, tree_accuracies = [], []
                 for tree_predict in all_tree_predict:
-                    tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                    tree_accuracy = calc_accuracy(y_test, tree_predict)
+                    tree_auc = sklearn.metrics.roc_auc_score(test_y, tree_predict)
+                    tree_accuracy = calc_accuracy(test_y, tree_predict)
                     tree_aucs.append(tree_auc)
                     tree_accuracies.append(tree_accuracy)
                 tree_auc = tree_aucs
@@ -815,7 +811,7 @@ def evaluate(
                 if with_llm:
                     # 第一次：用ToT prompt生成规则
                     global_log("[DEBUG][ToT] === 第一次ToT交互：生成规则 ===")
-                    tree_model.fit(x_train, y_train)
+                    tree_model.fit(train_x, train_y)
                     rules = tree_model.get_rules()
                     tree_model.rules = rules
                     global_log("[DEBUG][ToT] 规则生成完毕，规则内容如下：")
@@ -829,10 +825,10 @@ def evaluate(
                         meta,
                         master_template,
                         serializer,
-                        x_train,
-                        y_train,
-                        x_test,
-                        y_test,
+                        train_x,
+                        train_y,
+                        test_x,
+                        test_y,
                         rules,
                         num_tests_per_round,
                         with_llm=True,
@@ -845,8 +841,8 @@ def evaluate(
                     if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
                         global_log("[ERROR][ToT] basic.jinja prompt未能成功生成或内容为空！")
                         global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
-                        global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
-                        global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
+                        global_log(f"train_x shape: {getattr(train_x, 'shape', None)}, train_y shape: {getattr(train_y, 'shape', None)}")
+                        global_log(f"test_x shape: {getattr(test_x, 'shape', None)}, test_y shape: {getattr(test_y, 'shape', None)}")
                         global_log(f"meta: {getattr(meta, 'name', None)} features: {getattr(meta, 'features', None)}")
                         raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
                     raw_results = []
@@ -883,13 +879,13 @@ def evaluate(
                     tree_accuracy = calc_accuracy(labels, results)
                     # 转换为01标签
                     results_num = [meta.get_label_value(r) for r in results]
-                    y_test_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test]
+                    test_y_num = [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in test_y]
                     # 只有预测结果有两个类别时才计算AUC，否则返回NaN
                     if len(set(results_num)) < 2:
                         global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")
                         tree_auc = float('nan')
                     else:
-                        tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
+                        tree_auc = sklearn.metrics.roc_auc_score(test_y_num, results_num)
                     tree_predict = results_num
                     acc = tree_accuracy
                     auc = tree_auc
@@ -897,12 +893,12 @@ def evaluate(
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
                     global_log("[DEBUG][ToT] 直接用规则本地推理，无ToT参与")
-                    tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
+                    tree_model.fit(train_x, train_y)  # 先生成规则，防止predict报错
                     # 直接用 get_rules() 获取平面化规则，保证和 basic.jinja 渲染一致
                     rules = tree_model.get_rules() if hasattr(tree_model, 'get_rules') else []
-                    tree_predict, _ = tree_model.predict(x_train, y_train, x_test, export_rules=True)
+                    tree_predict, _ = tree_model.predict(train_x, train_y, test_x, export_rules=True)
                     # ToT输出为字符串，专用评测函数
-                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_predict, meta)
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(test_y, tree_predict, meta)
                     global_log("[ToTDecisionTree] 直接用规则推理（未调用ToT）")
                     # 先打印平面化规则
                     global_log("平面化决策树规则如下：")
@@ -915,84 +911,173 @@ def evaluate(
             else:
                 # 其他类型的决策树
                 tree_predict, rules = tree_model.predict(
-                    x_train, y_train, x_test, export_rules=True
+                    train_x, train_y, test_x, export_rules=True
                 )
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                tree_accuracy = calc_accuracy(y_test, tree_predict)
+                tree_auc = sklearn.metrics.roc_auc_score(test_y, tree_predict)
+                tree_accuracy = calc_accuracy(test_y, tree_predict)
 
     if tree_only:
+        logger.log(f"树模型训练时间: {train_elapsed:.4f}秒")
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
-            "rules": rules if isinstance(tree_model, ToTDecisionTree) else None
+            "tree_results": tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict,
+            "train_elapsed": train_elapsed  # 添加树训练时间
         }
 
-    # 如果不是tree_only模式且不是ToTDecisionTree的with_llm模式
-    if not (isinstance(tree_model, ToTDecisionTree) and with_llm):
-        prompts, test_splits, labels = gen_prompt(
-            meta,
-            master_template,
-            serializer,
-            x_train,
-            y_train,
-            x_test,
-            y_test,
-            rules if use_tree_rules else [],
-            num_tests_per_round,
-        )
+    prompts, test_splits, labels = gen_prompt(
+        meta,
+        master_template,
+        serializer,
+        train_x,
+        train_y,
+        test_x,
+        test_y,
+        rules if use_tree_rules else [],
+        test_batch,
+    )
 
-        raw_results = []
-        results = []
+    raw_results = []
+    results = []
+    # 添加token统计
+    eval_tokens = []
 
-        for idx, responses in enumerate(runner.run(prompts)):
-            expected_len = test_splits[idx][1] - test_splits[idx][0]
-            found = False
-            for response in responses:
-                global_log(f"Full ToT response:\n{response}")
+    for idx, response_data in enumerate(runner.run(prompts)):
+        responses, token_info = response_data  # 解包响应和token信息
+        # 记录token信息
+        eval_tokens.append(token_info)
+        logger.log(f"评估 #{idx+1} Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
+        
+        expected_len = test_splits[idx][1] - test_splits[idx][0]
+        found = False
+        for response in responses:
+            # 清理响应中的<think>标签
+            response = clean_llm_response(response)
+            
+            # 预处理响应 - 分割每行并清理空白
+            try:
+                # 尝试不同的响应格式处理方法
+                # 方法1: 按行分割，清理每行的空白
+                lines = [line.strip() for line in response.strip().split('\n') if line.strip()]
+                if len(lines) == expected_len:
+                    found = True
+                    results += lines
+                    raw_results.append(response)
+                    break
+                
+                # 方法2: 使用原有解码器
                 results_batch = serializer.answer_decoder.decode(response)
                 if len(results_batch) == expected_len:
                     found = True
                     results += results_batch
                     raw_results.append(response)
                     break
-                else:
-                    global_log(
-                        "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                            expected_len, len(results_batch), response
-                        )
-                    )
-            if not found:
-                global_log("Failed to find any valid response, skipping...")
-                result_dict = {
-                    "record": prompts[0],
-                    "failed_raw_output": responses,
+                
+            except Exception as e:
+                logger.log(f"解析响应时出错: {e}")
+                logger.log(f"原始响应: {response}")
+        if not found:
+            logger.log("Failed to find any valid response, skipping...")
+            result_dict = {
+                "record": prompts[0],
+                "failed_raw_output": responses,
+                "eval_tokens": eval_tokens  # 添加token统计
+            }
+            return result_dict
+
+    acc = calc_accuracy(labels, results)
+    
+    # 收集并清理预测结果值，确保没有None值
+    results_values = []
+    for r in results:
+        try:
+            value = meta.get_label_value(r)
+            if value is not None:  # 确保没有None值
+                results_values.append(value)
+            else:
+                # 如果找不到对应的标签值，使用0作为默认值（或者其他合适的默认值）
+                logger.log(f"警告: 无法为'{r}'找到有效的标签值，使用默认值0")
+                results_values.append(0)
+        except Exception as e:
+            logger.log(f"警告: 处理预测结果'{r}'时出错: {e}，使用默认值0")
+            results_values.append(0)
+    
+    # 确保结果长度与测试标签相同
+    if len(results_values) != len(test_y):
+        logger.log(f"警告: 预测结果数量({len(results_values)})与测试标签数量({len(test_y)})不匹配")
+        # 如果长度不匹配，可能需要调整
+        
+    # 计算AUC，添加异常处理
+    try:
+        n_classes = len(meta.labels)
+        if n_classes > 2:
+            from sklearn.preprocessing import label_binarize
+            classes = np.unique(test_y)
+            
+            # 二进制化处理
+            test_y_bin = label_binarize(test_y, classes=classes)
+            if np.array(results_values).ndim == 1:  # 如果预测是一维的
+                results_bin = label_binarize(results_values, classes=classes)
+                # 计算宏平均AUC和微平均AUC
+                auc = {
+                    'macro': sklearn.metrics.roc_auc_score(test_y_bin, results_bin, average='macro'),
+                    'micro': sklearn.metrics.roc_auc_score(test_y_bin, results_bin, average='micro')
                 }
-                return result_dict
+            else:  # 如果已经是二维的
+                auc = {
+                    'macro': sklearn.metrics.roc_auc_score(test_y_bin, results_values, average='macro'),
+                    'micro': sklearn.metrics.roc_auc_score(test_y_bin, results_values, average='micro')
+                }
+        else:
+            auc = sklearn.metrics.roc_auc_score(test_y, results_values)
+    except Exception as e:
+        logger.log(f"计算LLM预测AUC时出错: {e}")
+        # 提供默认的AUC值
+        if n_classes > 2:
+            auc = {'macro': 0.5, 'micro': 0.5, 'error': str(e)}
+        else:
+            auc = 0.5
+        logger.log("使用默认AUC值: 0.5")
 
-        acc = calc_accuracy(labels, results)
-        auc = sklearn.metrics.roc_auc_score(
-            y_test,
-            [meta.get_label_value(r) for r in results],
-        )
+    if isinstance(auc, dict):
+        logger.log("LLM Accuracy/AUC (macro/micro): {:.4f}/{:.4f}/{:.4f}".format(acc, auc['macro'], auc['micro']))
+    else:
+        logger.log("LLM Accuracy/AUC: {:.4f}/{:.4f}".format(acc, auc))
 
-        global_log("Accuracy/AUC: {}/{}".format(acc, auc))
+    # 只在使用树规则时输出树模型的结果
+    if use_tree_rules and tree_auc is not None:
+        if isinstance(tree_auc, dict):
+            logger.log("Tree Accuracy/AUC (macro/micro): {:.4f}/{:.4f}/{:.4f}".format(
+                tree_accuracy, tree_auc['macro'], tree_auc['micro']
+            ))
+        else:
+            logger.log("Tree Accuracy/AUC: {:.4f}/{:.4f}".format(tree_accuracy, tree_auc))
 
-    result_dict = {
-        "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
-        "labels": [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test],
-        "results": [meta.get_label_value(r) if isinstance(r, str) else int(r) for r in (results if 'results' in locals() else tree_predict)],
-        "auc": auc if 'auc' in locals() else tree_auc,
-        "accuracy": acc if 'acc' in locals() else tree_accuracy,
-    }
+    # 计算总token使用量
+    total_tokens = {"prompt": 0, "completion": 0, "total": 0}
+    for token_info in eval_tokens:
+        total_tokens["prompt"] += token_info.get("prompt_tokens", 0)
+        total_tokens["completion"] += token_info.get("completion_tokens", 0)
+        total_tokens["total"] += token_info.get("total_tokens", 0)
+    
+    logger.log(f"总评估Token使用: 输入={total_tokens['prompt']}, 输出={total_tokens['completion']}, 总计={total_tokens['total']}")
 
-    if use_tree_rules or isinstance(tree_model, ToTDecisionTree):
-        result_dict.update({
-            "tree_auc": tree_auc,
-            "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
-            "rules": rules if isinstance(tree_model, ToTDecisionTree) else None
-        })
+    result_dict = {}
+    result_dict["record"] = {"prompt": prompts[0]}
+    result_dict["labels"] = [int(y) for y in test_y]
+    result_dict["results"] = [meta.get_label_value(r) for r in results]
+    result_dict["auc"] = auc
+    result_dict["accuracy"] = acc
+    result_dict["eval_tokens"] = eval_tokens
+    result_dict["total_tokens"] = total_tokens
+
+    # 只在使用树规则时添加树相关结果
+    if use_tree_rules or tree_only:
+        result_dict["tree_auc"] = tree_auc
+        result_dict["tree_accuracy"] = tree_accuracy
+        result_dict["tree_results"] = tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict
+        result_dict["train_elapsed"] = train_elapsed  # 添加树训练时间
+        logger.log(f"最终决策树训练时间: {train_elapsed:.4f}秒")
 
     return result_dict
 
@@ -1194,9 +1279,32 @@ def main():
             return obj.tolist()
         else:
             return obj.__dict__
-    with open(output_file, "w") as output_file_fp:
-        output = {"args": args.__dict__, "results": results}
-        json.dump(output, output_file_fp, indent=2, default=json_default_decode)
+
+    # 添加总的token统计数据
+    total_eval_tokens = {"prompt": 0, "completion": 0, "total": 0}
+    eval_records_count = 0
+    
+    # 计算所有评估的总token用量
+    for train_size, train_results in results.items():
+        for result in train_results:
+            if "total_tokens" in result:
+                total_eval_tokens["prompt"] += result["total_tokens"].get("prompt", 0)
+                total_eval_tokens["completion"] += result["total_tokens"].get("completion", 0) 
+                total_eval_tokens["total"] += result["total_tokens"].get("total", 0)
+                eval_records_count += 1
+    
+    # 记录总token使用情况
+    if eval_records_count > 0:
+        logger.log(f"实验总评估Token使用: 输入={total_eval_tokens['prompt']}, 输出={total_eval_tokens['completion']}, 总计={total_eval_tokens['total']}")
+
+    with open(output_file, "w") as output_file:
+        output = {
+            "args": args.__dict__, 
+            "results": results,
+            "total_eval_tokens": total_eval_tokens,
+            "eval_records_count": eval_records_count
+        }
+        json.dump(output, output_file, indent=2, default=json_default_decode)
 
 
 if __name__ == "__main__":
