@@ -1,5 +1,0 @@
-config:
-  train_batch: 8
-  template: template/basic.jinja
-  serializer: tabular
-  output_dir: ./output/train

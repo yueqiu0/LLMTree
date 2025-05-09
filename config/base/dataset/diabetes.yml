@@ -1,6 +1,0 @@
-config:
-  dataset_args:
-    data_file: dataset/diabetes/data.csv
-    meta_file: dataset/diabetes/meta.yml
-    format: csv
-    shuffle_column: true

@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/network.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+
+config:
+  exp_name: network-xgboost
+  tree_only: true

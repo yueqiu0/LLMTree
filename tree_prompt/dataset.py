@@ -428,9 +428,6 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("For each decision tree you construct, you must leverage your domain knowledge and expertise in this field to guide the feature selection, splitting, and rule generation process.")
     prompt_parts.append("Let's think step by step. First, select the best root feature and explain why. Then, based on this feature, describe how to split the dataset. For each subset, explain how to proceed. Please provide a detailed reasoning process in English.")
     prompt_parts.append("")
-    prompt_parts.append("BEGIN_TREE")
-    prompt_parts.append("(1) IF condition1 AND condition2 THEN no")
-    prompt_parts.append("END_TREE")
     prompt_parts.append("Each rule must be a single line, start with a number in parentheses, and follow the format: (N) IF ... THEN ... Only use this format. Do NOT use any format like 'Rule N: ...' or with ELSE or jumps. All rules must be complete and mutually exclusive if needed.")
     prompt_parts.append("")
     

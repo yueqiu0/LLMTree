@@ -1,0 +1,192 @@
+name: network
+target: detect network intrusions
+desc: "This dataset contains a set of network\
+  \ \nconnections labeled as either normal or as an attack, with attack types falling\
+  \ into \nfour main categories: DOS (denial-of-service), R2L (unauthorized access\
+  \ from a remote \nmachine), U2R (unauthorized access to local superuser privileges),\
+  \ and probing."
+label_meaning: connection type
+features:
+- name: duration
+  desc: Length (number of seconds) of the connection
+  type: int
+- name: protocol_type
+  desc: Type of the protocol
+  type: categorical
+  categories:
+    tcp: TCP protocol
+    udp: UDP protocol
+    icmp: ICMP protocol
+- name: service
+  desc: Network service on the destination
+  type: categorical
+  categories:
+    http: HTTP service
+    smtp: SMTP service
+    ftp: FTP service
+    ftp_data: FTP data transfer
+    telnet: Telnet service
+    finger: Finger service
+    domain_u: Domain Name Service
+    auth: Authentication service
+    ecr_i: ECR Internet protocol
+    other: Other services
+    private: Private service
+    pop_3: POP version 3
+    eco_i: ECO Internet protocol
+    ntp_u: Network Time Protocol
+    urp_i: URP Internet protocol
+    domain: Domain Name Service
+    time: Time service
+    ssh: Secure Shell
+    imap4: IMAP version 4
+    daytime: Daytime service
+    ctf: Common Trace Facility
+    name: Name service
+    whois: WHOIS service
+    mtp: Mail Transfer Protocol
+    gopher: Gopher service
+    rje: Remote Job Entry
+    link: Link service
+    remote_job: Remote Job
+    X11: X Window System
+    Z39_50: Z39.50 information retrieval
+    uucp: Unix-to-Unix Copy
+    netbios_ns: NetBIOS Name Service
+    netbios_dgm: NetBIOS Datagram Service
+    netbios_ssn: NetBIOS Session Service
+    supdup: SUPDUP Protocol
+    hostnames: Host Names Server
+    login: Login service
+    exec: Remote execution
+    shell: Shell
+    printer: Printer service
+    efs: Extended File System
+    courier: Courier service
+    systat: System Statistics
+    netstat: Network Statistics
+    uucp_path: UUCP Path Service
+    klogin: Kerberos login
+    kshell: Kerberos shell
+    sunrpc: SUN Remote Procedure Call
+    sql_net: SQL Network
+    vmnet: Virtual Machine Network
+    bgp: Border Gateway Protocol
+    csnet_ns: CSNET Name Service
+    pop_2: POP version 2
+    nntp: Network News Transfer Protocol
+    iso_tsap: ISO Transport Service Access Point
+    echo: Echo service
+    discard: Discard service
+    IRC: Internet Relay Chat
+    tim_i: TIM internet protocol
+    red_i: RED internet protocol
+    ldap: LDAP directory service
+    http_443: HTTPS secure web service
+    tftp_u: Trivial File Transfer Protocol UDP
+    pm_dump: Performance Monitor dump
+    nnsp: Network News Service Protocol
+    icmp: Internet Control Message Protocol
+- name: flag
+  desc: Normal or error status of the connection
+  type: categorical
+  categories:
+    SF: Normal establishment and termination
+    S0: Connection attempt seen, no reply
+    REJ: Connection rejected
+    RSTO: Connection established, originator aborted
+    RSTR: Established, responder aborted
+    SH: Originator sent a SYN followed by a FIN
+    S1: Connection established, not terminated
+    S2: Established and close attempt by originator
+    S3: Established and close attempt by responder
+    OTH: No SYN seen, setup outside trace
+    RSTOS0: Originator sent SYN then RST
+- name: src_bytes
+  desc: Number of data bytes from source to destination
+  type: int
+- name: dst_bytes
+  desc: Number of data bytes from destination to source
+  type: int
+- name: wrong_fragment
+  desc: Number of wrong fragments, value ranges from 0 to 3
+  type: int
+- name: hot
+  desc: Number of hot indicators
+  type: int
+- name: num_failed_logins
+  desc: Number of failed login attempts, value ranges from 0 to 4
+  type: int
+- name: logged_in
+  desc: Indicates login status
+  type: categorical
+  categories:
+    'no': Not logged in
+    'yes': Logged in
+- name: num_compromised
+  desc: Number of compromised conditions, value ranges from 0 to 4
+  type: int
+- name: root_shell
+  desc: Indicates if root shell access was obtained
+  type: categorical
+  categories:
+    none: No root shell
+    obtained: Root shell obtained
+- name: su_attempted
+  desc: number of su root command attempted, value ranges from 0 to 2
+  type: int
+- name: num_file_creations
+  desc: Number of file creation operations
+  type: int
+- name: num_access_files
+  desc: Number of operations on access control files, value ranges from 0 to 4
+  type: int
+- name: is_guest_login
+  desc: Indicates if login is a guest account
+  type: categorical
+  categories:
+    regular: Regular login
+    guest: Guest login
+- name: count
+  desc: Number of connections to the same host in past 2 seconds
+  type: int
+- name: srv_count
+  desc: Number of connections to the same service in past 2 seconds
+  type: int
+- name: serror_rate
+  desc: Percentage of connections that have SYN errors
+  type: float
+- name: rerror_rate
+  desc: Percentage of connections that have REJ errors
+  type: float
+- name: same_srv_rate
+  desc: Percentage of connections to the same service
+  type: float
+- name: diff_srv_rate
+  desc: Percentage of connections to different services
+  type: float
+- name: dst_host_count
+  desc: Number of connections to the same host
+  type: int
+- name: dst_host_same_srv_rate
+  desc: Percentage of connections to the same service
+  type: float
+- name: dst_host_serror_rate
+  desc: Percentage of connections that have SYN errors
+  type: float
+labels:
+- name: normal
+  value: 0
+  desc: Normal legitimate network connection
+- name: dos
+  value: 1
+  desc: Denial-of-service attacks (back, land, neptune, pod, smurf, teardrop)
+- name: probe
+  value: 2
+  desc: "Network surveillance and scanning attacks (ipsweep, nmap, portsweep, satan)[NOTE: This label is very infrequent in the dataset]"
+- name: r2l
+  value: 3
+  desc: "Remote to Local attacks - unauthorized access from remote machine (ftp_write, guess_passwd, imap, phf, warezclient)[NOTE: This label is very infrequent in the dataset]"
+- name: u2r
+  value: 4
+  desc: "User to Root attacks - privilege escalation to superuser (buffer_overflow, loadmodule, perl, rootkit)[NOTE: Tthis label is extremely rare in the dataset]"

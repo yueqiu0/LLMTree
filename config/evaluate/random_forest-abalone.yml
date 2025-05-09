@@ -5,6 +5,5 @@ base_configs:
 - ./common.yml
 
 config:
-  exp_name: llm_gen_tree-diabetes-baseline
-  template: template/basic.jinja
-  tree_only: True
+  exp_name: abalone-random_forest
+  tree_only: true

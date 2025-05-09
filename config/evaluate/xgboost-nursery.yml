@@ -1,0 +1,9 @@
+base_configs:
+- ../base/dataset/nursery.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+
+config:
+  exp_name: nursery-xgboost
+  tree_only: true
