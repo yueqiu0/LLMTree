@@ -136,7 +136,7 @@ class TabularSerializer(Serializer):
         return (
             SeperatorDecoder("\n", [x.name for x in self.meta.labels])
             .lower_cased()
-            .remove_tokens(["<", ">"])
+            .remove_tokens(["<", ">", " "])
             .remove_trailing([",", ".", '"', "'"])
         )
 
@@ -179,7 +179,7 @@ class ListSerializer(Serializer):
         return (
             SeperatorDecoder("\n", [x.name for x in self.meta.labels])
             .lower_cased()
-            .remove_tokens(["<", ">"])
+            .remove_tokens(["<", ">", " "])
             .remove_trailing([",", "."])
         )
 
@@ -218,7 +218,7 @@ class TextSerializer(Serializer):
         return (
             SeperatorDecoder("\n", [x.name for x in self.meta.labels])
             .lower_cased()
-            .remove_tokens(["<", ">"])
+            .remove_tokens(["<", ">", " "])
             .remove_trailing([",", "."])
         )
 

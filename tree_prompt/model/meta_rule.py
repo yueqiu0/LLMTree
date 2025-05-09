@@ -35,7 +35,7 @@ class MetaRule:
     def parse_rule(rule_str: str, meta) -> Optional['MetaRule']:
         """从规则字符串解析MetaRule"""
         # 提取特征名称、操作符、值和置信度
-        pattern = r'(.*?)\s*([<>=])\s*(.*?)\s*\[\s*confidence:\s*(\d+)\s*\]'
+        pattern = r'(.*?)\s*([<>=]+)\s*([\d\.]+)\s*\[\s*confidence:\s*(\d+)\s*\]'
         match = re.match(pattern, rule_str.strip())
         
         if not match:
