@@ -706,6 +706,13 @@ def evaluate(
     num_tests_per_round: int,
     with_llm: bool = True,
 ):
+    # 初始化token统计
+    token_stats = {
+        "tree_building": {"prompt": 0, "completion": 0, "total": 0},
+        "evaluation": [],
+        "total_tokens": 0
+    }
+    
     rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
     # --- 强制CoTDecisionTree二次LLM交互始终被执行 ---
@@ -713,7 +720,26 @@ def evaluate(
         global_log(f"[DEBUG][LLM] >>> 进入LLMDecisionTree二次LLM推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
         # 第一次：用LLM prompt生成规则
         global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+        
+        # 添加时间统计
+        fit_start_time = time.time()
         tree_model.fit(x_train, y_train)
+        fit_elapsed_time = time.time() - fit_start_time
+        global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+        
+        # 获取LLMDecisionTree的token统计
+        if hasattr(tree_model, 'get_token_stats'):
+            tree_token_stats = tree_model.get_token_stats()
+            global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
+            # 更新总token统计
+            if 'tree_building' in tree_token_stats:
+                token_stats['tree_building'] = tree_token_stats['tree_building']
+                token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+            if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
+                token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                for eval_token in tree_token_stats['evaluation']:
+                    token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+        
         rules = tree_model.get_rules()
         tree_model.rules = rules
         global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
@@ -748,9 +774,13 @@ def evaluate(
             raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
         raw_results = []
         results = []
-        for idx, responses in enumerate(runner.run(prompts)):
+        for idx, (responses, token_info) in enumerate(runner.run(prompts)):
+            # 记录token信息
+            token_stats["evaluation"].append(token_info)
+            token_stats["total_tokens"] += token_info["total_tokens"]
             global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
             global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
+            global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
@@ -773,6 +803,7 @@ def evaluate(
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
+                    "token_stats": token_stats,  # 添加token统计
                 }
                 return result_dict
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
@@ -792,7 +823,12 @@ def evaluate(
         # 其它树类型和本地推理逻辑保持不变
         if use_tree_rules or tree_only:
             if isinstance(tree_model, FederatedDecisionTree):
+                # 添加时间统计
+                fit_start_time = time.time()
                 all_tree_predict, _ = tree_model.predict(x_train, y_train, x_test)
+                fit_elapsed_time = time.time() - fit_start_time
+                global_log(f"[DEBUG] 树模型预测耗时: {fit_elapsed_time:.2f}秒")
+                
                 tree_aucs, tree_accuracies = [], []
                 for tree_predict in all_tree_predict:
                     tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
@@ -806,7 +842,26 @@ def evaluate(
                 if with_llm:
                     # 第一次：用LLM prompt生成规则
                     global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+                    
+                    # 添加时间统计
+                    fit_start_time = time.time()
                     tree_model.fit(x_train, y_train)
+                    fit_elapsed_time = time.time() - fit_start_time
+                    global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+                    
+                    # 获取LLMDecisionTree的token统计
+                    if hasattr(tree_model, 'get_token_stats'):
+                        tree_token_stats = tree_model.get_token_stats()
+                        global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
+                        # 更新总token统计
+                        if 'tree_building' in tree_token_stats:
+                            token_stats['tree_building'] = tree_token_stats['tree_building']
+                            token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                        if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
+                            token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                            for eval_token in tree_token_stats['evaluation']:
+                                token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                    
                     rules = tree_model.get_rules()
                     tree_model.rules = rules
                     global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
@@ -842,9 +897,13 @@ def evaluate(
                         raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
                     raw_results = []
                     results = []
-                    for idx, responses in enumerate(runner.run(prompts)):
+                    for idx, (responses, token_info) in enumerate(runner.run(prompts)):
+                        # 记录token信息
+                        token_stats["evaluation"].append(token_info)
+                        token_stats["total_tokens"] += token_info["total_tokens"]
                         global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
                         global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
+                        global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
                         expected_len = test_splits[idx][1] - test_splits[idx][0]
                         found = False
                         for response in responses:
@@ -867,6 +926,7 @@ def evaluate(
                             result_dict = {
                                 "record": prompts[0],
                                 "failed_raw_output": responses,
+                                "token_stats": token_stats,  # 添加token统计
                             }
                             return result_dict
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
@@ -885,7 +945,26 @@ def evaluate(
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
                     global_log("[DEBUG][LLM] 直接用规则本地推理，无LLM参与")
+                    
+                    # 添加时间统计
+                    fit_start_time = time.time()
                     tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
+                    fit_elapsed_time = time.time() - fit_start_time
+                    global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+                    
+                    # 获取LLMDecisionTree的token统计
+                    if hasattr(tree_model, 'get_token_stats'):
+                        tree_token_stats = tree_model.get_token_stats()
+                        global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
+                        # 更新总token统计
+                        if 'tree_building' in tree_token_stats:
+                            token_stats['tree_building'] = tree_token_stats['tree_building']
+                            token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                        if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
+                            token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                            for eval_token in tree_token_stats['evaluation']:
+                                token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                    
                     tree_results = tree_model.predict(x_test)
                     
                     # 新增：检查并转换预测结果类型
@@ -978,6 +1057,7 @@ def evaluate(
             "match_by_samples": [],
             "prompts": [],
             "trees": 1,
+            "token_stats": token_stats,  # 添加token统计信息
         }
 
     # 如果不是tree_only模式且不是LLMDecisionTree的with_llm模式
@@ -997,7 +1077,11 @@ def evaluate(
         raw_results = []
         results = []
 
-        for idx, responses in enumerate(runner.run(prompts)):
+        for idx, (responses, token_info) in enumerate(runner.run(prompts)):
+            # 记录token信息
+            token_stats["evaluation"].append(token_info)
+            token_stats["total_tokens"] += token_info["total_tokens"]
+            global_log(f"[DEBUG] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
@@ -1019,6 +1103,7 @@ def evaluate(
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
+                    "token_stats": token_stats,  # 添加token统计
                 }
                 return result_dict
 
@@ -1034,6 +1119,7 @@ def evaluate(
     result = {
         "tree_results": tree_results,
         "labels": y_test.tolist(),
+        "token_stats": token_stats,  # 添加token统计信息
     }
     
     # 计算基础准确率和AUC（用于决策树）
@@ -1103,6 +1189,9 @@ def main():
 
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
+    
+    # 添加总评估时间统计
+    eval_start_time = time.time()
 
     results = []
     meta, x, y = load_dataset(args.dataset_args)
@@ -1235,6 +1324,9 @@ def main():
         )
         global_log(f"Generated {len(train_cases)} balanced training cases")
         for train_x, train_y in train_cases:
+            # 添加开始时间统计
+            eval_start_time = time.time()
+            
             result = evaluate(
                 train_x,
                 train_y,
@@ -1250,6 +1342,14 @@ def main():
                 args.test_batch,
                 with_llm=args.with_llm,
             )
+            
+            # 计算总耗时
+            eval_elapsed_time = time.time() - eval_start_time
+            global_log(f"评估总耗时: {eval_elapsed_time:.2f}秒")
+            
+            # 确保结果中包含评估耗时
+            if isinstance(result, dict):
+                result["eval_elapsed_time"] = eval_elapsed_time
             
             # 处理二分类结果，将AUC从字典转换为单个值
             if len(np.unique(test_y)) <= 2:
@@ -1269,12 +1369,14 @@ def main():
                 if "auc" in result and isinstance(result["auc"], dict):
                     result["auc"] = format_auc_result(result["auc"], is_binary=True)
                     global_log(f"转换后的auc: {result['auc']}")
-
+            
             results.setdefault(train_size, []).append(result)
             bar.update(1)
 
+    # 计算总评估时间
+    eval_elapsed_time = time.time() - eval_start_time
+    global_log(f"总评估耗时: {eval_elapsed_time:.2f}秒")
     
-
     global_log("Saving results to {}...".format(output_file))
 
     if not output_file.parent.exists():
@@ -1286,9 +1388,43 @@ def main():
             output_file.parent / (output_file.stem + "-" + date + output_file.suffix)
         )
         global_log("Output file already exists, renamed to {}".format(target))
-    file_name = f"{args.exp_name}_{timestamp}.json"  # 结果文件添加时间戳
+    
+    # 处理所有结果中的二元分类AUC格式
+    for train_size, train_results in results.items():
+        for res in train_results:
+            # 检查是否为二元分类数据
+            if 'labels' in res and isinstance(res['labels'], list) and len(np.unique(res['labels'])) <= 2:
+                global_log(f"检测到二元分类数据，正在格式化AUC结果")
+                
+                # 处理tree_auc
+                if 'tree_auc' in res and isinstance(res['tree_auc'], dict):
+                    # 格式化二元分类的AUC结果
+                    try:
+                        if res['tree_auc'].get('macro') == res['tree_auc'].get('micro'):
+                            global_log(f"将tree_auc从字典格式转换为单值: {res['tree_auc']}")
+                            res['tree_auc'] = res['tree_auc']['macro']
+                    except Exception as e:
+                        global_log(f"转换tree_auc时出错: {e}")
+                
+                # 处理llm_tree_auc
+                if 'llm_tree_auc' in res and isinstance(res['llm_tree_auc'], dict):
+                    try:
+                        if res['llm_tree_auc'].get('macro') == res['llm_tree_auc'].get('micro'):
+                            global_log(f"将llm_tree_auc从字典格式转换为单值: {res['llm_tree_auc']}")
+                            res['llm_tree_auc'] = res['llm_tree_auc']['macro']
+                    except Exception as e:
+                        global_log(f"转换llm_tree_auc时出错: {e}")
+                
+                # 处理auc（如果存在）
+                if 'auc' in res and isinstance(res['auc'], dict):
+                    try:
+                        if res['auc'].get('macro') == res['auc'].get('micro'):
+                            global_log(f"将auc从字典格式转换为单值: {res['auc']}")
+                            res['auc'] = res['auc']['macro']
+                    except Exception as e:
+                        global_log(f"转换auc时出错: {e}")
+    
     output_file = Path(args.output_dir) / (file_name + ".json")
-
     global_log(f"Saving results to {output_file}...")
     if not output_file.parent.exists():
         output_file.parent.mkdir(parents=True)
@@ -1302,7 +1438,11 @@ def main():
         else:
             return obj.__dict__
     with open(output_file, "w") as output_file_fp:
-        output = {"args": args.__dict__, "results": results}
+        output = {
+            "args": args.__dict__, 
+            "results": results,
+            "total_evaluation_time": eval_elapsed_time  # 添加总评估时间
+        }
         json.dump(output, output_file_fp, indent=2, default=json_default_decode)
 
 
