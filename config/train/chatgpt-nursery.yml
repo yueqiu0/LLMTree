@@ -1,0 +1,10 @@
+base_configs:
+- ../base/dataset/nursery.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./strategy/unknown_class.yml
+- ./common.yml
+
+config:
+  exp_name: chatgpt-nursery
+
