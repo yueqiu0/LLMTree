@@ -501,37 +501,152 @@ def calc_accuracy(labels: list, results: list) -> float:
 def cot_calc_accuracy_auc(y_true, y_pred, meta):
     """
     专用于CoT字符串标签输出的准确率和AUC计算。
-    y_true, y_pred: 均为字符串标签
+    y_true, y_pred: 均为字符串标签或数值标签
     meta: DatasetMeta, 用于标签到数值的映射
     返回: (accuracy, auc)
     """
+    global_log(f"准确率计算 - 标签类型: {type(y_true[0])}, 预测类型: {type(y_pred[0])}")
+    
+    # 创建标签值到标签名称的映射
+    label_value_to_name = {}
+    for label in meta.labels:
+        label_value_to_name[label.value] = label.name
+    
+    global_log(f"标签映射关系: {label_value_to_name}")
+    
     # 准确率
     correct = 0
-    for yt, yp in zip(y_true, y_pred):
+    matches = []
+    for i, (yt, yp) in enumerate(zip(y_true, y_pred)):
+        match_type = "未匹配"
+        is_match = False
+        
         if isinstance(yt, str) and isinstance(yp, str):
             if yt.lower() == yp.lower():
                 correct += 1
-        else:
-            if yt == yp:
+                match_type = "字符串比较"
+                is_match = True
+        elif isinstance(yt, (int, float, np.integer, np.floating)) and isinstance(yp, str):
+            # 数值标签与字符串预测的比较
+            if yt in label_value_to_name and label_value_to_name[yt].lower() == yp.lower():
                 correct += 1
+                match_type = "数值-字符串映射比较"
+                is_match = True
+        elif isinstance(yt, str) and isinstance(yp, (int, float, np.integer, np.floating)):
+            # 字符串标签与数值预测的比较
+            label_value = meta.get_label_value(yt)
+            if label_value == yp:
+                correct += 1
+                match_type = "字符串-数值映射比较"
+                is_match = True
+        else:
+            # 两者都是数值
+            try:
+                if float(yt) == float(yp):
+                    correct += 1
+                    match_type = "数值比较"
+                    is_match = True
+            except (ValueError, TypeError):
+                # 不可比较的类型，输出警告
+                global_log(f"警告: 无法比较的标签类型 - 真实标签: {type(yt)}({yt}), 预测标签: {type(yp)}({yp})")
+        
+
+            
     accuracy = correct / len(y_true)
-    # AUC
-    y_true_num = [meta.get_label_value(y) for y in y_true]
-    y_pred_num = [meta.get_label_value(y) for y in y_pred]
-    if len(set(y_pred_num)) < 2:
-        auc = float('nan')
+    global_log(f"准确率计算结果: {correct}/{len(y_true)} = {accuracy:.4f}")
+    
+    # AUC计算前的详细日志
+    global_log(f"准备计算AUC - 标签值分布: {dict(zip(*np.unique(y_true, return_counts=True)))}")
+    global_log(f"预测值分布: {dict(zip(*np.unique(y_pred, return_counts=True)))}")
+    
+    # 转换标签为数值（如果需要）
+    if isinstance(y_true[0], str):
+        global_log("将字符串标签转换为数值...")
+        y_true_num = [meta.get_label_value(y) for y in y_true]
     else:
-        import sklearn.metrics
-        try:
-            auc = sklearn.metrics.roc_auc_score(y_true_num, y_pred_num)
-        except ValueError as e:
-            if 'unknown format is not supported' in str(e):
+        y_true_num = y_true
+        
+    if isinstance(y_pred[0], str):
+        y_pred_num = [meta.get_label_value(y) for y in y_pred]
+    else:
+        y_pred_num = y_pred
+    
+    # 确保所有值都是有效数值
+    y_true_num = np.array([float(y) if y is not None else 0.0 for y in y_true_num])
+    y_pred_num = np.array([float(y) if y is not None else 0.0 for y in y_pred_num])
+    
+    global_log(f"转换后 - 标签数值: {y_true_num[:5]}... (截断显示)")
+    global_log(f"转换后 - 预测数值: {y_pred_num[:5]}... (截断显示)")
+    
+    # 检查数据格式和类别数
+    unique_true = np.unique(y_true_num)
+    unique_pred = np.unique(y_pred_num)
+    
+    global_log(f"唯一标签值: {unique_true}, 唯一预测值: {unique_pred}")
+    
+    # 如果标签或预测只有一个类别，无法计算AUC
+    if len(unique_true) < 2 or len(unique_pred) < 2:
+        global_log(f"警告: 标签或预测只有一个类别，无法计算AUC (标签类别数={len(unique_true)}, 预测类别数={len(unique_pred)})")
+        return accuracy, float('nan')
+    
+    try:
+        # 多分类情况
+        if len(unique_true) > 2:
+            global_log(f"检测到多分类情况 (类别数={len(unique_true)}), 使用one-vs-rest方法计算AUC")
+            from sklearn.preprocessing import label_binarize
+            
+            # 确保classes包含所有可能的类别
+            all_classes = sorted(np.union1d(unique_true, unique_pred))
+            global_log(f"用于二值化的所有类别: {all_classes}")
+            
+            # 二进制化处理
+            y_true_bin = label_binarize(y_true_num, classes=all_classes)
+            y_pred_bin = label_binarize(y_pred_num, classes=all_classes)
+            
+            global_log(f"二值化后形状: y_true_bin={y_true_bin.shape}, y_pred_bin={y_pred_bin.shape}")
+            
+            try:
+                from sklearn.metrics import roc_auc_score
+                auc = roc_auc_score(y_true_bin, y_pred_bin, multi_class='ovr', average='macro')
+                global_log(f"多分类AUC计算成功: {auc}")
+                return accuracy, auc
+            except Exception as e:
+                global_log(f"多分类AUC计算失败: {e}")
+                if 'samples are not positive and negative' in str(e):
+                    global_log("可能是某些类别在二值化后没有正样本或负样本")
+                return accuracy, float('nan')
+        else:
+            # 二分类情况
+            global_log("检测到二分类情况，直接计算AUC")
+            from sklearn.metrics import roc_auc_score
+            
+            # 对于二分类，确保预测值是概率或决策值
+            if np.all(np.isin(y_pred_num, [0, 1])) or np.all(np.isin(y_pred_num, unique_true)):
+                global_log("预测值不是概率值，尝试转换为决策值...")
+                # 将类别映射到0和1（如果需要）
+                unique_classes = sorted(unique_true)
+                if not np.array_equal(unique_classes, [0, 1]):
+                    global_log(f"将类别 {unique_classes} 映射到 [0, 1]")
+                    y_true_mapped = np.where(y_true_num == unique_classes[0], 0, 1)
+                    y_pred_mapped = np.where(y_pred_num == unique_classes[0], 0, 1)
+                    
+                    auc = roc_auc_score(y_true_mapped, y_pred_mapped)
+                    global_log(f"使用映射后的类别计算AUC成功: {auc}")
+                    return accuracy, auc
+            
+            # 直接计算AUC
+            try:
+                auc = roc_auc_score(y_true_num, y_pred_num)
+                global_log(f"AUC计算成功: {auc}")
+                return accuracy, auc
+            except Exception as e:
+                global_log(f"AUC计算失败: {e}")
                 import warnings
                 warnings.warn(f"roc_auc_score failed: {e}. Returning NaN.")
-                auc = float('nan')
-            else:
-                raise
-    return accuracy, auc
+                return accuracy, float('nan')
+    except Exception as e:
+        global_log(f"AUC计算过程中发生意外错误: {e}")
+        return accuracy, float('nan')
 
 
 def evaluate(
@@ -553,19 +668,19 @@ def evaluate(
     # get tree's prediction rules & results
     # --- 强制CoTDecisionTree二次LLM交互始终被执行 ---
     if isinstance(tree_model, CoTDecisionTree) and with_llm:
-        global_log(f"[DEBUG][CoT] >>> 进入CoTDecisionTree二次LLM推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
-        # 第一次：用CoT prompt生成规则
-        global_log("[DEBUG][CoT] === 第一次LLM交互：生成规则 ===")
+        global_log(f"[DEBUG][LLM] >>> 进入CoTDecisionTree二次LLM推理分支 <<< use_tree_rules={use_tree_rules}, tree_only={tree_only}, with_llm={with_llm}")
+        # 第一次：用LLM prompt生成规则
+        global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
         tree_model.fit(x_train, y_train)
         rules = tree_model.get_rules()
         tree_model.rules = rules
-        global_log("[DEBUG][CoT] 规则生成完毕，规则内容如下：")
+        global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
         if isinstance(tree_model.rules, list):
             rules_str = "\n".join(str(rule) for rule in tree_model.rules)
             global_log(rules_str)
         else:
             global_log(str(tree_model.rules))
-        global_log("[DEBUG][CoT] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
+        global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
         prompts, test_splits, labels = gen_prompt(
             meta,
             master_template,
@@ -576,15 +691,14 @@ def evaluate(
             y_test,
             rules,
             num_tests_per_round,
-            with_llm=True,
         )
-        global_log(f"[DEBUG][CoT] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
+        global_log(f"[DEBUG][LLM] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
         if prompts and len(prompts) > 0:
-            global_log("[DEBUG][CoT] basic.jinja prompt内容如下：")
+            global_log("[DEBUG][LLM] basic.jinja prompt内容如下：")
             global_log(prompts[0])
-            global_log("[DEBUG][CoT] ===== end of basic.jinja prompt =====")
+            global_log("[DEBUG][LLM] ===== end of basic.jinja prompt =====")
         if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
-            global_log("[ERROR][CoT] basic.jinja prompt未能成功生成或内容为空！")
+            global_log("[ERROR][LLM] basic.jinja prompt未能成功生成或内容为空！")
             global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
             global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
             global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
@@ -593,14 +707,14 @@ def evaluate(
         raw_results = []
         results = []
         for idx, responses in enumerate(runner.run(prompts)):
-            global_log(f"[DEBUG][CoT] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
-            global_log(f"[DEBUG][CoT] LLM返回response candidates: {responses}")
+            global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
+            global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
             for response in responses:
-                global_log(f"[DEBUG][CoT] LLM response内容如下:\n{response}")
+                global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
-                global_log(f"[DEBUG][CoT] decode后结果: {results_batch}")
+                global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
                 if len(results_batch) == expected_len:
                     found = True
                     results += results_batch
@@ -608,19 +722,19 @@ def evaluate(
                     break
                 else:
                     global_log(
-                        "[DEBUG][CoT] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                        "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
                             expected_len, len(results_batch), response
                         )
                     )
             if not found:
-                global_log("[ERROR][CoT] Failed to find any valid response, skipping...")
+                global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
                 }
                 return result_dict
-        global_log(f"[DEBUG][CoT] 二次LLM推理最终labels: {labels}")
-        global_log(f"[DEBUG][CoT] 二次LLM推理最终results: {results}")
+        global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
+        global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
         tree_accuracy = calc_accuracy(labels, results)
         # 转换为01标签
         results_num = [meta.get_label_value(r) for r in results]
@@ -631,10 +745,10 @@ def evaluate(
             tree_auc = float('nan')
         else:
             tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
-        tree_predict = results_num
+        tree_results = results_num
         acc = tree_accuracy
         auc = tree_auc
-        global_log(f"[DEBUG][CoT] <<< 结束CoTDecisionTree二次LLM推理分支，已完成全部流程 >>>")
+        global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
     else:
         # 其它树类型和本地推理逻辑保持不变
         if use_tree_rules or tree_only:
@@ -652,17 +766,17 @@ def evaluate(
                 # 确保在调用 predict 之前调用 fit 方法
                 if with_llm:
                     # 第一次：用CoT prompt生成规则
-                    global_log("[DEBUG][CoT] === 第一次LLM交互：生成规则 ===")
+                    global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
                     tree_model.fit(x_train, y_train)
                     rules = tree_model.get_rules()
                     tree_model.rules = rules
-                    global_log("[DEBUG][CoT] 规则生成完毕，规则内容如下：")
+                    global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
                     if isinstance(tree_model.rules, list):
                         rules_str = "\n".join(str(rule) for rule in tree_model.rules)
                         global_log(rules_str)
                     else:
                         global_log(str(tree_model.rules))
-                    global_log("[DEBUG][CoT] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
+                    global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
                     prompts, test_splits, labels = gen_prompt(
                         meta,
                         master_template,
@@ -673,15 +787,15 @@ def evaluate(
                         y_test,
                         rules,
                         num_tests_per_round,
-                        with_llm=True,
+                
                     )
-                    global_log(f"[DEBUG][CoT] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
+                    global_log(f"[DEBUG][LLM] basic.jinja渲染后prompt数量: {len(prompts)}，test_splits: {test_splits}")
                     if prompts and len(prompts) > 0:
-                        global_log("[DEBUG][CoT] basic.jinja prompt内容如下：")
+                        global_log("[DEBUG][LLM] basic.jinja prompt内容如下：")
                         global_log(prompts[0])
-                        global_log("[DEBUG][CoT] ===== end of basic.jinja prompt =====")
+                        global_log("[DEBUG][LLM] ===== end of basic.jinja prompt =====")
                     if with_llm and (not prompts or len(prompts) == 0 or not prompts[0].strip()):
-                        global_log("[ERROR][CoT] basic.jinja prompt未能成功生成或内容为空！")
+                        global_log("[ERROR][LLM] basic.jinja prompt未能成功生成或内容为空！")
                         global_log(f"with_llm={with_llm}, rules类型={type(rules)}, rules内容示例={str(rules)[:200]}")
                         global_log(f"x_train shape: {getattr(x_train, 'shape', None)}, y_train shape: {getattr(y_train, 'shape', None)}")
                         global_log(f"x_test shape: {getattr(x_test, 'shape', None)}, y_test shape: {getattr(y_test, 'shape', None)}")
@@ -690,14 +804,14 @@ def evaluate(
                     raw_results = []
                     results = []
                     for idx, responses in enumerate(runner.run(prompts)):
-                        global_log(f"[DEBUG][CoT] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
-                        global_log(f"[DEBUG][CoT] LLM返回response candidates: {responses}")
+                        global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
+                        global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
                         expected_len = test_splits[idx][1] - test_splits[idx][0]
                         found = False
                         for response in responses:
-                            global_log(f"[DEBUG][CoT] LLM response内容如下:\n{response}")
+                            global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
                             results_batch = serializer.answer_decoder.decode(response)
-                            global_log(f"[DEBUG][CoT] decode后结果: {results_batch}")
+                            global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
                             if len(results_batch) == expected_len:
                                 found = True
                                 results += results_batch
@@ -705,19 +819,19 @@ def evaluate(
                                 break
                             else:
                                 global_log(
-                                    "[DEBUG][CoT] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                    "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
                                         expected_len, len(results_batch), response
                                     )
                                 )
                         if not found:
-                            global_log("[ERROR][CoT] Failed to find any valid response, skipping...")
+                            global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
                             result_dict = {
                                 "record": prompts[0],
                                 "failed_raw_output": responses,
                             }
                             return result_dict
-                    global_log(f"[DEBUG][CoT] 二次LLM推理最终labels: {labels}")
-                    global_log(f"[DEBUG][CoT] 二次LLM推理最终results: {results}")
+                    global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
+                    global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
                     tree_accuracy = calc_accuracy(labels, results)
                     # 转换为01标签
                     results_num = [meta.get_label_value(r) for r in results]
@@ -728,36 +842,52 @@ def evaluate(
                         tree_auc = float('nan')
                     else:
                         tree_auc = sklearn.metrics.roc_auc_score(y_test_num, results_num)
-                    tree_predict = results_num
+                    tree_results = results_num
                     acc = tree_accuracy
                     auc = tree_auc
-                    global_log(f"[DEBUG][CoT] <<< 结束CoTDecisionTree二次LLM推理分支，已完成全部流程 >>>")
+                    global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
-                    global_log("[DEBUG][CoT] 直接用规则本地推理，无LLM参与")
+                    global_log("[DEBUG][LLM] 直接用规则本地推理，无LLM参与")
                     tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
-                    tree_predict = tree_model.predict(x_test)
-                    # CoT输出为字符串，专用评测函数
-                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_predict, meta)
-                    global_log("[CoTDecisionTree] 直接用规则推理（未调用LLM）")
+                    tree_results = tree_model.predict(x_test)
+                    
+                    # 新增：检查并转换预测结果类型
+                    if isinstance(tree_results[0], str):
+                        global_log("[DEBUG] LLMDecisionTree返回的预测结果是字符串类型，转换为数值...")
+                        # 将字符串标签转换为对应的数值标签
+                        tree_results_numeric = []
+                        for label in tree_results:
+                            label_value = meta.get_label_value(label)
+                            if label_value is None:
+                                global_log(f"[WARNING] 无法找到标签 '{label}' 对应的数值")
+                                # 使用默认值
+                                label_value = meta.labels[0].value
+                            tree_results_numeric.append(label_value)
+                        tree_results = np.array(tree_results_numeric)
+                        global_log(f"[DEBUG] 转换后的预测结果: {tree_results[:5]}...")
+                    
+                    # LLM输出为字符串，专用评测函数
+                    tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, tree_results, meta)
+                    global_log("[LLMDecisionTree] 直接用规则推理（未调用LLM）")
                     global_log(f"规则数量: {len(tree_model.rules)}")
                     global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc}")
-                    results = tree_predict
+                    results = tree_results
                     acc = tree_accuracy
                     auc = tree_auc
             else:
                 # 其他类型的决策树
-                tree_predict, rules = tree_model.predict(
+                tree_results, rules = tree_model.predict(
                     x_train, y_train, x_test, export_rules=True
                 )
-                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_predict)
-                tree_accuracy = calc_accuracy(y_test, tree_predict)
+                tree_auc = sklearn.metrics.roc_auc_score(y_test, tree_results)
+                tree_accuracy = calc_accuracy(y_test, tree_results)
 
     if tree_only:
         return {
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
+            "tree_results": tree_results,
             "rules": rules if isinstance(tree_model, CoTDecisionTree) else None
         }
 
@@ -811,23 +941,55 @@ def evaluate(
 
         global_log("Accuracy/AUC: {}/{}".format(acc, auc))
 
-    result_dict = {
-        "record": {"prompt": prompts[0] if 'prompts' in locals() else None},
-        "labels": [meta.get_label_value(y) if isinstance(y, str) else int(y) for y in y_test],
-        "results": [meta.get_label_value(r) if isinstance(r, str) else int(r) for r in (results if 'results' in locals() else tree_predict)],
-        "auc": auc if 'auc' in locals() else tree_auc,
-        "accuracy": acc if 'acc' in locals() else tree_accuracy,
+    # 增加修改：始终保存tree的预测结果，即使AUC计算失败
+    result = {
+        "tree_results": tree_results,
+        "labels": y_test.tolist(),
     }
+    
+    # 计算基础准确率和AUC（用于决策树）
+    global_log("计算决策树准确率和AUC...")
+    tree_acc, tree_auc = cot_calc_accuracy_auc(
+        y_test, tree_results, meta
+    )
+    global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {tree_auc}")
+    
+    # 确保tree_auc被保存，即使值为NaN
+    result["tree_acc"] = tree_acc
+    result["tree_auc"] = tree_auc
+    
+    # 处理LLM预测（如果有）
+    if with_llm:
+        # 计算LLM+树的准确率和AUC
+        llm_tree_acc, llm_tree_auc = cot_calc_accuracy_auc(
+            y_test, results, meta
+        )
+        global_log(f"LLM+树准确率: {llm_tree_acc:.4f}, AUC: {llm_tree_auc}")
+        
+        # 增加LLM相关结果
+        result["llm_tree_acc"] = llm_tree_acc
+        result["llm_tree_auc"] = llm_tree_auc
+        result["llm_tree_results"] = results
+        result["prompts"] = prompts
+    
+    # 增加模型导出
+    try:
+        global_log("导出模型...")
+        result["model"] = tree_model.export_dict()
+        global_log("模型导出成功")
+    except Exception as e:
+        global_log(f"模型导出失败: {e}")
+        result["model_error"] = str(e)
+    
+    # 增加标签分布信息
+    try:
+        y_dist = dict(zip(*np.unique(y_test, return_counts=True)))
+        result["label_distribution"] = {str(k): int(v) for k, v in y_dist.items()}
+    except Exception as e:
+        global_log(f"无法计算标签分布: {e}")
+    
+    return result
 
-    if use_tree_rules or isinstance(tree_model, CoTDecisionTree):
-        result_dict.update({
-            "tree_auc": tree_auc,
-            "tree_accuracy": tree_accuracy,
-            "tree_results": tree_predict,
-            "rules": rules if isinstance(tree_model, CoTDecisionTree) else None
-        })
-
-    return result_dict
 
 
 def main():

@@ -430,6 +430,17 @@ class CoTDecisionTree:
                     return True
         return False
 
+    def export_dict(self) -> dict:
+        """导出决策树的规则和元数据为字典格式"""
+        return {
+            "meta": {
+                "features": [feature.name for feature in self.meta.features],
+                "labels": [label.name for label in self.meta.labels],
+            },
+            "max_depth": self.max_depth,
+            "rules": self.rules,
+        }
+
 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
