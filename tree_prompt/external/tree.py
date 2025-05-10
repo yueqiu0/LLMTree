@@ -69,7 +69,7 @@ class DecisionTree:
 
 
 class ToTDecisionTree:
-    def __init__(self, meta, max_depth, runner, log_file):
+    def __init__(self, meta, max_depth, runner, log_file, candidate_rules_per_node=3, voting_rounds=3):
         # 初始化基本属性
         self.meta = meta
         self.max_depth = max_depth
@@ -93,6 +93,206 @@ class ToTDecisionTree:
             "evaluation": [],
             "total_tokens": 0
         }
+        
+        # 添加规则选择参数
+        self.candidate_rules_per_node = candidate_rules_per_node  # 每个节点生成的规则候选数量
+        self.voting_rounds = voting_rounds  # 每个节点的投票轮数
+
+    def _vote_for_best_rules(self, rule_candidates, prompt_dict, current_depth, current_path):
+        """
+        对规则候选进行投票，选择最佳规则组
+        
+        Args:
+            rule_candidates: 规则候选列表
+            prompt_dict: 原始提示词字典
+            current_depth: 当前深度
+            current_path: 当前路径
+            
+        Returns:
+            最佳规则列表
+        """
+        if not rule_candidates:
+            return []
+            
+        self.logger.log(f"[规则选择] 开始对节点(深度={current_depth}, 路径={current_path or 'Root'})的规则进行投票")
+        self.logger.log(f"[规则选择] 规则候选数量: {len(rule_candidates)}")
+        
+        # 将规则按组组织 - 每次LLM响应生成的是一组规则（可能包含中间节点规则和叶子节点规则）
+        # 规则按生成顺序分组
+        rule_groups = []
+        current_group = []
+        
+        for rule in rule_candidates:
+            # 添加规则到当前组
+            current_group.append(rule)
+            
+            # 每两个规则为一组（一个分割规则和一个叶子规则）
+            if len(current_group) == 2:
+                rule_groups.append(current_group)
+                current_group = []
+        
+        # 处理剩余的规则
+        if current_group:
+            rule_groups.append(current_group)
+        
+        self.logger.log(f"[规则选择] 规则已按组组织，共 {len(rule_groups)} 组")
+        for i, group in enumerate(rule_groups):
+            self.logger.log(f"[规则选择] 规则组 {i+1}:")
+            for j, rule in enumerate(group):
+                self.logger.log(f"  规则 {j+1}: {rule}")
+        
+        # 对规则组进行投票
+        best_group_idx = self._vote_for_rule_groups(rule_groups, current_depth, current_path)
+        
+        if best_group_idx >= 0 and best_group_idx < len(rule_groups):
+            selected_rules = rule_groups[best_group_idx]
+            self.logger.log(f"[规则选择] 选中规则组 {best_group_idx+1}，包含 {len(selected_rules)} 条规则")
+            for idx, rule in enumerate(selected_rules):
+                self.logger.log(f"[规则选择] 选中规则 {idx+1}: {rule}")
+            return selected_rules
+        else:
+            self.logger.log(f"[规则选择] 未能选中有效规则组")
+            return []
+    
+    def _vote_for_rule_groups(self, rule_groups, current_depth, current_path):
+        """
+        对规则组进行投票
+        
+        Args:
+            rule_groups: 规则组列表，每组包含一组相关规则
+            current_depth: 当前深度
+            current_path: 当前路径
+            
+        Returns:
+            得票最多的规则组索引
+        """
+        if not rule_groups:
+            return -1
+            
+        self.logger.log(f"[规则投票] 开始对规则组投票, 规则组数: {len(rule_groups)}")
+        
+        # 如果只有一个规则组，直接返回
+        if len(rule_groups) == 1:
+            self.logger.log(f"[规则投票] 只有一个规则组，直接选择组 1")
+            return 0
+        
+        # 统计每组规则的投票数
+        votes = [0] * len(rule_groups)
+        
+        # 构建投票提示词
+        for round_idx in range(self.voting_rounds):
+            self.logger.log(f"[规则投票] 第 {round_idx+1} 轮投票开始")
+            
+            # 构建投票提示 - 使用英文提示更符合大模型训练分布
+            voting_prompt = f"""You are building a decision tree at depth {current_depth}. Select the best rule group from the following candidates.
+
+Current path: {current_path or "Root"}
+
+Rule groups:
+"""
+            
+            for i, group in enumerate(rule_groups):
+                voting_prompt += f"Group {i+1}:\n"
+                for rule in group:
+                    voting_prompt += f"  {rule}\n"
+                voting_prompt += "\n"
+                
+            voting_prompt += f"""
+Which group contains the best rules? Please ONLY respond with the group number (e.g., "Group 3").
+Do NOT include any explanation or reasoning in your response.
+"""
+            
+            # 发送投票请求
+            try:
+                for response, token_info in self.runner.run([voting_prompt]):
+                    self.logger.log(f"[规则投票] 收到投票响应")
+                    
+                    # 统计token
+                    if isinstance(token_info, dict):
+                        self.token_stats["tree_building"]["prompt"] += token_info.get('prompt_tokens', 0)
+                        self.token_stats["tree_building"]["completion"] += token_info.get('completion_tokens', 0)
+                        self.token_stats["tree_building"]["total"] += token_info.get('total_tokens', 0)
+                        self.token_stats["total_tokens"] += token_info.get('total_tokens', 0)
+                    
+                    # 解析投票结果
+                    for resp in response:
+                        # 尝试从响应中提取组号
+                        import re
+                        # 匹配 "Group X" 或 "组 X" 或 "X" 
+                        vote_match = re.search(r'(?:Group|组)?\s*(\d+)', resp)
+                        if vote_match:
+                            group_idx = int(vote_match.group(1)) - 1
+                            if 0 <= group_idx < len(rule_groups):
+                                votes[group_idx] += 1
+                                self.logger.log(f"[规则投票] 投票给规则组 {group_idx+1}")
+                            else:
+                                self.logger.log(f"[规则投票] 无效规则组索引: {group_idx+1}")
+                        else:
+                            self.logger.log(f"[规则投票] 无法解析投票结果: {resp[:100]}...")
+            except Exception as e:
+                self.logger.log(f"[规则投票] 投票过程出错: {str(e)}")
+        
+        # 找出得票最多的规则组
+        max_votes = max(votes) if votes else 0
+        best_group_indices = [i for i, v in enumerate(votes) if v == max_votes]
+        
+        # 如果有多个规则组得票相同，随机选择一个
+        if best_group_indices:
+            import random
+            best_group_idx = random.choice(best_group_indices)
+            self.logger.log(f"[规则投票] 投票结束，组 {best_group_idx+1} 获得最高票数: {max_votes}")
+            return best_group_idx
+        else:
+            self.logger.log(f"[规则投票] 投票失败，没有有效投票")
+            # 返回第一个规则组作为备选
+            if rule_groups:
+                self.logger.log(f"[规则投票] 使用默认规则组 1")
+                return 0
+            return -1
+    
+    def _generate_rule_candidates(self, prompt, current_depth, current_path):
+        """
+        生成多个规则候选
+        
+        Args:
+            prompt: 提示词
+            current_depth: 当前深度
+            current_path: 当前路径
+            
+        Returns:
+            规则候选列表
+        """
+        self.logger.log(f"[规则生成] 开始为节点(深度={current_depth}, 路径={current_path or 'Root'})生成规则候选")
+        rule_candidates = []
+        
+        # 多次查询LLM
+        for i in range(self.candidate_rules_per_node):
+            self.logger.log(f"[规则生成] 第 {i+1}/{self.candidate_rules_per_node} 次查询")
+            
+            try:
+                for response, token_info in self.runner.run([prompt]):
+                    self.logger.log(f"[规则生成] 收到LLM响应")
+                    
+                    # 统计token使用
+                    if isinstance(token_info, dict):
+                        self.token_stats["tree_building"]["prompt"] += token_info.get('prompt_tokens', 0)
+                        self.token_stats["tree_building"]["completion"] += token_info.get('completion_tokens', 0)
+                        self.token_stats["tree_building"]["total"] += token_info.get('total_tokens', 0)
+                        self.token_stats["total_tokens"] += token_info.get('total_tokens', 0)
+                    
+                    # 解析规则
+                    for resp in response:
+                        rules = self._extract_rule_texts(resp)
+                        self.logger.log(f"[规则生成] 提取到 {len(rules)} 条规则")
+                        rule_candidates.extend(rules)
+            except Exception as e:
+                self.logger.log(f"[规则生成] 生成规则时出错: {str(e)}")
+        
+        self.logger.log(f"[规则生成] 共生成 {len(rule_candidates)} 条规则候选")
+        for i, rule in enumerate(rule_candidates):
+            self.logger.log(f"[规则生成] 规则候选 {i+1}: {rule}")
+            
+        return rule_candidates
 
     def fit(self, x_train, y_train, with_llm=True):
         """训练决策树模型，生成规则，使用层序遍历构建树"""
@@ -105,6 +305,7 @@ class ToTDecisionTree:
             self._generate_default_rule()
             return
 
+        # 尝试训练模型
         try:
             # 如果不使用LLM，则生成简单的默认规则
             if not with_llm:
@@ -155,49 +356,52 @@ class ToTDecisionTree:
                 self.logger.log(f"[BUILD_TREE_PROMPT] 为节点(深度={current_depth}, 路径={current_path or 'Root'})生成提示")
                 self.logger.log(f"[BUILD_TREE_PROMPT] 提示长度: {len(prompt)} 字符")
                 
-                # 调用LLM
-                llm_responses = []
-                try:
-                    for response, token_info in self.runner.run([prompt]):
-                        self.logger.log(f"[BUILD_TREE_RESPONSE] 收到LLM响应")
-                        for idx, r in enumerate(response):
-                            self.logger.log(f"[BUILD_TREE_RESPONSE] [{idx}] 长度: {len(r)} 字符")
-                            llm_responses.append(r)
-                        
-                        # 统计token使用
-                        if isinstance(token_info, dict):
-                            self.token_stats["tree_building"]["prompt"] += token_info.get('prompt_tokens', 0)
-                            self.token_stats["tree_building"]["completion"] += token_info.get('completion_tokens', 0)
-                            self.token_stats["tree_building"]["total"] += token_info.get('total_tokens', 0)
-                            self.token_stats["total_tokens"] += token_info.get('total_tokens', 0)
+                # 修改：生成多个规则候选并投票选择最佳规则
+                rule_candidates = self._generate_rule_candidates(prompt, current_depth, current_path)
+                selected_rules = self._vote_for_best_rules(rule_candidates, prompt_dict, current_depth, current_path)
+                
+                if not selected_rules:
+                    self.logger.log(f"[ERROR] 无法获取有效规则，尝试使用LLM直接生成规则")
+                    # 退回到原始方式：直接调用LLM
+                    llm_responses = []
+                    try:
+                        for response, token_info in self.runner.run([prompt]):
+                            self.logger.log(f"[BUILD_TREE_RESPONSE] 收到LLM响应")
+                            for idx, r in enumerate(response):
+                                self.logger.log(f"[BUILD_TREE_RESPONSE] [{idx}] 长度: {len(r)} 字符")
+                                llm_responses.append(r)
                             
-                            self.logger.log(f"[TOKEN_INFO] prompt={token_info.get('prompt_tokens', 'N/A')}, completion={token_info.get('completion_tokens', 'N/A')}, total={token_info.get('total_tokens', 'N/A')}")
-                except Exception as e:
-                    self.logger.log(f"[ERROR] 调用LLM出错: {str(e)}")
-                    continue
+                            # 统计token使用
+                            if isinstance(token_info, dict):
+                                self.token_stats["tree_building"]["prompt"] += token_info.get('prompt_tokens', 0)
+                                self.token_stats["tree_building"]["completion"] += token_info.get('completion_tokens', 0)
+                                self.token_stats["tree_building"]["total"] += token_info.get('total_tokens', 0)
+                                self.token_stats["total_tokens"] += token_info.get('total_tokens', 0)
+                    except Exception as e:
+                        self.logger.log(f"[ERROR] 调用LLM出错: {str(e)}")
+                        continue
+                    
+                    # 处理LLM响应
+                    if not llm_responses:
+                        self.logger.log(f"[ERROR] 未收到LLM响应")
+                        continue
+                    
+                    # 解析规则 - 直接解析文本规则
+                    selected_rules = self._extract_rule_texts(llm_responses[0])
+                    if not selected_rules:
+                        self.logger.log(f"[ERROR] 无法提取规则文本")
+                        continue
                 
-                # 处理LLM响应
-                if not llm_responses:
-                    self.logger.log(f"[ERROR] 未收到LLM响应")
-                    continue
-                
-                # 解析规则 - 直接解析文本规则
-                rule_texts = self._extract_rule_texts(llm_responses[0])
-                if not rule_texts:
-                    self.logger.log(f"[ERROR] 无法提取规则文本")
-                    continue
-                
-                self.logger.log(f"[树构建] 从LLM响应中提取了 {len(rule_texts)} 条规则")
-                for i, rule_text in enumerate(rule_texts):
-                    self.logger.log(f"[树构建] 规则 {i+1}: {rule_text}")
+                # 处理选定的规则
+                self.logger.log(f"[树构建] 处理 {len(selected_rules)} 条选定规则")
                 
                 # 处理每条文本规则
-                for rule_idx, rule_text in enumerate(rule_texts):
+                for rule_idx, rule_text in enumerate(selected_rules):
                     # 检查是否是中间节点
                     is_node = rule_text.strip().endswith("[NODE]")
                     
                     # 记录规则类型
-                    self.logger.log(f"[树构建] 处理规则 {rule_idx+1}/{len(rule_texts)}: {rule_text}")
+                    self.logger.log(f"[树构建] 处理规则 {rule_idx+1}/{len(selected_rules)}: {rule_text}")
                     self.logger.log(f"[树构建] 规则类型: {'中间节点' if is_node else '叶子节点'}")
                     
                     # 解析规则文本并创建规则对象
@@ -315,7 +519,7 @@ class ToTDecisionTree:
                         current_node = child
                         found = True
                         break
-                        
+                
                 # 如果没有找到，创建新节点
                 if not found:
                     new_node = {
@@ -419,10 +623,10 @@ class ToTDecisionTree:
                 if not cond_match:
                     self.logger.log(f"[规则解析] [WARNING] 条件格式不匹配: {condition}")
                     continue
-                
+                    
                 feature, operator, value = cond_match.groups()
                 feature = feature.strip()
-                
+                    
                 # 尝试将值转换为数字
                 try:
                     if '.' in value:
@@ -431,7 +635,7 @@ class ToTDecisionTree:
                         value = int(value)
                 except ValueError:
                     pass
-                
+                    
                 self.logger.log(f"[规则解析] 解析条件: 特征={feature}, 操作符={operator}, 值={value}")
                 
                 final_conditions.append({
@@ -439,11 +643,11 @@ class ToTDecisionTree:
                     'operator': operator,
                     'value': value
                 })
-            
+                
             # 创建规则对象
             rule = {
                 'conditions': final_conditions,
-                'label': label.strip()
+                    'label': label.strip()
             }
             
             # 检查是否是NODE中间节点
@@ -524,7 +728,7 @@ class ToTDecisionTree:
     def get_token_stats(self):
         """返回token使用统计"""
         return self.token_stats
-        
+
     def predict(self, x_test):
         """Predict using the generated rules, 并统计每条规则命中样本数"""
         if not self.rules:
@@ -662,11 +866,9 @@ class ToTDecisionTree:
                     all_conditions_met = False
                     break
             
-            # 如果满足所有条件，返回True
             if all_conditions_met:
                 return True
                 
-        # 如果没有满足的规则，返回False
         return False
 
     def export_dict(self) -> dict:
@@ -1218,7 +1420,7 @@ class TreeModel:
                         elif operator == '<=': match = num_sample <= num_value
                         elif operator == '>': match = num_sample > num_value
                         elif operator == '<': match = num_sample < num_value
-                        elif operator in ['=', '==']: match = abs(num_sample - num_value) < 1e-6
+                        elif (operator == '=' or operator == '=='): match = abs(num_sample - num_value) < 1e-6
                         elif operator == '!=': match = abs(num_sample - num_value) >= 1e-6
                     else:
                         if operator in ['=', '==']: match = str_sample == str_value

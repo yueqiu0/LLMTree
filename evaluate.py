@@ -77,10 +77,10 @@ class SimpleTreeArgs:
 
 class LLMTreeArgs:
     def __init__(self):
-        self.max_depth = 3  # 默认最大深度
-
-        self.temperature = 0.7
-        #      self.num_rules = 10
+        self.max_depth: int = 5
+        self.hist_nbins: int = 10
+        self.candidate_rules: int = 3  # 添加候选规则数量参数
+        self.voting_rounds: int = 3    # 添加投票轮数参数
 
     def __repr__(self):
         return str(self.__dict__)
@@ -305,6 +305,10 @@ def parse_args() -> EvaluateArgs:
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
   
+    # 添加ToT决策树的投票参数
+    parser.add_argument("--candidate-rules", type=int, default=5, help="number of rule candidates per node (for ToT)")
+    parser.add_argument("--voting-rounds", type=int, default=5, help="number of voting rounds per node (for ToT)")
+
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -383,6 +387,10 @@ def parse_args() -> EvaluateArgs:
         tree_args_dict["max_depth"] = cml_args.max_depth
     if cml_args.num_trees is not None:
         tree_args_dict["num_trees"] = cml_args.num_trees
+    if cml_args.candidate_rules is not None:
+        tree_args_dict["candidate_rules"] = cml_args.candidate_rules
+    if cml_args.voting_rounds is not None:
+        tree_args_dict["voting_rounds"] = cml_args.voting_rounds
     if cml_args.output_dir is not None:
         args.output_dir = cml_args.output_dir
     if cml_args.random_seed is not None:
@@ -1343,6 +1351,8 @@ def main():
             max_depth=args.tree_args.max_depth,
             runner=runner,
             log_file=log_file_path,
+            candidate_rules_per_node=args.tree_args.candidate_rules,
+            voting_rounds=args.tree_args.voting_rounds,
         )
         global_log(f"ToTDecisionTree initialized with max_depth={args.tree_args.max_depth}")
     

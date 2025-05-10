@@ -11,12 +11,12 @@ from tree_prompt.model.strategy import clean_llm_response
 
 class OpenAIAPIRunner(Runner):
     def __init__(self, api_base: str, model_name: str, api_key: str, 
-                 temperature: float = 0.0,  # 设为0以获得最确定性的输出
-                 top_p: float = 0.0,        # 设为0以只考虑最可能的token
-                 top_k: int = 1,            # 只选择概率最高的token
-                 seed: int = 42,            # 固定随机种子
-                 presence_penalty: float = 0.0,  # 不惩罚重复出现的token
-                 frequency_penalty: float = 0.0, # 不惩罚频繁出现的token
+                 temperature: float = 0.9,  # 设为0以获得最确定性的输出
+                 top_p: float = 0.95,        # 设为0以只考虑最可能的token
+                 top_k: int = 50,            # 只选择概率最高的token
+                 seed: int = 0,            # 固定随机种子
+                 presence_penalty: float = 0.3,  # 不惩罚重复出现的token
+                 frequency_penalty: float = 0.3, # 不惩罚频繁出现的token
                  ) -> None:
         self.api_base = api_base
         self.api_key = api_key
@@ -96,12 +96,12 @@ class OpenAIAPIParallelRunner(ParallelRunner, OpenAIAPIRunner):
         interval: float,
         timeout: int,
         parallel_batch_size: int,
-        temperature: float = 0.0,
-        top_p: float = 0.0,
-        top_k: int = 1,
+        temperature: float = 0.9,
+        top_p: float = 0.95,
+        top_k: int = 50,
         seed: int = 42,
-        presence_penalty: float = 0.0,
-        frequency_penalty: float = 0.0,
+        presence_penalty: float = 0.3,
+        frequency_penalty: float = 0.3,
     ) -> None:
         OpenAIAPIRunner.__init__(
             self, api_base, model_name, api_key, 
