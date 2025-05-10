@@ -45,7 +45,6 @@ import time
 import sys
 import scipy.stats
 
-
 def _get_missing_fields(instance: any, prefix: str = None) -> list[str]:
     missing_fields = []
     for k, v in instance.__dict__.items():
@@ -569,11 +568,7 @@ def cot_calc_accuracy_auc(y_true, y_pred, meta, force_dict=False):
         if is_match:
             matches.append(f"样本{i}: {yt} == {yp} [{match_type}]")
     
-    # 添加详细的匹配统计
-    if matches:
-        global_log(f"前10个匹配样本: {matches[:10]}")
-        if len(matches) > 10:
-            global_log(f"... 及其他 {len(matches)-10} 个匹配")
+
             
     accuracy = correct / len(y_true)
     global_log(f"准确率计算结果: {correct}/{len(y_true)} = {accuracy:.4f}")
@@ -1058,6 +1053,7 @@ def evaluate(
             "prompts": [],
             "trees": 1,
             "token_stats": token_stats,  # 添加token统计信息
+            "train_elapsed": fit_elapsed_time  # 添加模型训练时间
         }
 
     # 如果不是tree_only模式且不是LLMDecisionTree的with_llm模式
@@ -1120,6 +1116,7 @@ def evaluate(
         "tree_results": tree_results,
         "labels": y_test.tolist(),
         "token_stats": token_stats,  # 添加token统计信息
+        "train_elapsed": fit_elapsed_time  # 添加模型训练时间
     }
     
     # 计算基础准确率和AUC（用于决策树）
@@ -1377,6 +1374,17 @@ def main():
     eval_elapsed_time = time.time() - eval_start_time
     global_log(f"总评估耗时: {eval_elapsed_time:.2f}秒")
     
+    # 打印每个训练集大小的平均训练耗时
+    for train_size, train_results in results.items():
+        total_time = 0.0
+        count = 0
+        for result in train_results:
+            if 'train_elapsed' in result:
+                total_time += result['train_elapsed']
+                count += 1
+        if count > 0:
+            global_log(f"训练样本数 {train_size} 的平均训练耗时: {total_time/count:.2f}秒 (共{count}次)")
+    
     global_log("Saving results to {}...".format(output_file))
 
     if not output_file.parent.exists():
@@ -1440,8 +1448,7 @@ def main():
     with open(output_file, "w") as output_file_fp:
         output = {
             "args": args.__dict__, 
-            "results": results,
-            "total_evaluation_time": eval_elapsed_time  # 添加总评估时间
+            "results": results
         }
         json.dump(output, output_file_fp, indent=2, default=json_default_decode)
 
