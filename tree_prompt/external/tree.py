@@ -70,19 +70,25 @@ class DecisionTree:
 
 class CoTDecisionTree:
     def __init__(self, meta, max_depth, runner, log_file):
-        self.meta = meta          # Dataset metadata
-        self.max_depth = max_depth  # Max tree depth
-        self.runner = runner      # LLM runner
-        self.log_file = log_file  # Log file path
-        self.rules = []           # List to store parsed rules
-        self.feature_names = [f.name for f in meta.features]  # Get feature names from metadata features
-        # 新增：原始特征名到当前数据列idx的映射
+        """初始化CoTDecisionTree"""
+        self.meta = meta  # DatasetMeta对象
+        self.max_depth = max_depth  # 树的最大深度
+        self.runner = runner  # Runner对象
+        self.rules = []  # 规则列表
+        self.log_file = log_file  # 日志文件路径
+        self.tree_rules = []
         self.feature_name_to_col = {f.name: idx for idx, f in enumerate(meta.features)}
         # Open log file in append mode with line buffering for real-time writing
         log_file_obj = open(self.log_file, 'a', encoding='utf-8', buffering=1)  # 1 means line buffering
-        self.logger = Logger(log_file_obj)  # Initialize logger with file object
-        # Ensure first log message marks the start
+        self.logger = Logger(log_file_obj)  # Initialize 
         self.logger.log(f"=== CoTDecision initialized at {datetime.now().isoformat()} ===")
+
+        # 添加token统计属性
+        self.token_stats = {
+            "tree_building": {"prompt": 0, "completion": 0, "total": 0},
+            "evaluation": [],
+            "total_tokens": 0
+        }
 
     def fit(self, x_train, y_train, with_llm=True):
         # 移除强制限制最大深度为3，直接使用self.max_depth
@@ -109,7 +115,23 @@ class CoTDecisionTree:
 
         # Get first response from generator
         response_generator = self.runner.run([prompt])
-        first_response = next(response_generator)
+        response_data = next(response_generator)
+        
+        # 处理新的返回格式：(response, token_info)
+        if isinstance(response_data, tuple) and len(response_data) == 2:
+            first_response, token_info = response_data
+            # 更新token统计
+            self.token_stats["tree_building"]["prompt"] += token_info["prompt_tokens"]
+            self.token_stats["tree_building"]["completion"] += token_info["completion_tokens"]
+            self.token_stats["tree_building"]["total"] += token_info["total_tokens"]
+            self.token_stats["total_tokens"] += token_info["total_tokens"]
+            
+            # 记录token使用情况
+            self.logger.log(f"[DEBUG] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
+        else:
+            # 兼容旧的格式
+            first_response = response_data
+            self.logger.log("[WARNING] 没有收到token统计信息，可能使用了旧版本的runner")
         self.logger.log("=== Starting LLM response logging ===")
         self.logger.log(f"Prompt sent to LLM:\n{prompt}")
         self.logger.file.flush()
@@ -441,6 +463,10 @@ class CoTDecisionTree:
             "rules": self.rules,
         }
 
+    # 添加方法来获取token统计数据
+    def get_token_stats(self):
+        """返回token使用统计信息"""
+        return self.token_stats
 
 class SimpleDecisionTree(DecisionTree):
     def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:

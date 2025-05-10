@@ -1,0 +1,37 @@
+name: diabetes
+target: diagnostically predict whether or not a patient has diabetes, based on certain
+  diagnostic measurements included in the dataset
+desc: ''
+label_meaning: diagnosis
+features:
+- name: Pregnancies
+  desc: number of times pregnant
+  type: int
+- name: Glucose
+  desc: plasma glucose concentration a 2 hours in an oral glucose tolerance test
+  type: int
+- name: Blood Pressure
+  desc: diastolic blood pressure (mm Hg)
+  type: int
+- name: Skin Thickness
+  desc: Triceps skin fold thickness (mm)
+  type: int
+- name: Insulin
+  desc: 2-Hour serum insulin (mu U/ml)
+  type: int
+- name: BMI
+  desc: Body mass index (weight in kg/(height in m)^2)
+  type: float
+- name: Diabetes Pedigree Function
+  desc: Diabetes pedigree function
+  type: float
+- name: Age
+  desc: Age (years)
+  type: int
+labels:
+- name: 'no'
+  value: 0
+  desc: the patient does not have diabetes
+- name: 'yes'
+  value: 1
+  desc: the patient has diabetes

@@ -403,6 +403,62 @@ def generate_CoT_tree_prompt(
         prompt_parts.append(f"- {label.name}: {desc}")
     prompt_parts.append("")
 
+    
+    # ------ 训练样本展示 ------
+    prompt_parts.append("# Training Samples")
+    prompt_parts.append("Here are some examples from the training dataset:")
+    
+    # 添加特征顺序说明
+    feature_names = [feat.name for feat in meta.features]
+    prompt_parts.append(f"For each line:")
+    prompt_parts.append(f"<{', '.join(feature_names)}> <RESULT>")
+    prompt_parts.append("")
+    
+    # 确定要展示的样本数量（最多10个）
+    num_samples_to_show = min(10, len(x_train))
+    
+    # 随机选择样本索引，以确保样本具有代表性
+    if num_samples_to_show < len(x_train):
+        import random
+        sample_indices = random.sample(range(len(x_train)), num_samples_to_show)
+    else:
+        sample_indices = range(len(x_train))
+    
+    # 遍历选定的样本，使用更简洁的格式展示
+    for i, idx in enumerate(sample_indices):
+        # 构建特征值字符串
+        feature_values = []
+        for feat_idx, feature in enumerate(meta.features):
+            value = x_train[idx, feat_idx]
+            # 根据特征类型决定格式化方式
+            if feature.type == "float" and isinstance(value, (float, np.float32, np.float64)):
+                # 浮点型特征保留3位小数
+                value_repr = f"{value:.3f}"
+            elif feature.type == "int" and isinstance(value, (float, np.float32, np.float64)):
+                # 整数型特征保持整数形式
+                if value.is_integer():
+                    value_repr = str(int(value))
+                else:
+                    value_repr = str(value)
+            else:
+                # 分类特征或其他类型直接转字符串
+                value_repr = str(value)
+            feature_values.append(value_repr)
+        
+        # 获取标签
+        label_value = y_train[idx]
+        label_name = "Unknown"
+        for label in meta.labels:
+            if label.value == label_value:
+                label_name = label.name
+                break
+        
+        # 使用简洁的一行格式展示样本
+        sample_str = f"({i+1}) {', '.join(feature_values)} {label_name}"
+        prompt_parts.append(sample_str)
+    
+    prompt_parts.append("")
+
     # ------ 决策树要求 ------
     prompt_parts.append("# Decision Tree Requirements")
     prompt_parts.append(f"please generate a decision tree with a maximum depth of {max_depth} (which means {max_depth-1} levels because the max_depth includes the root node).")
@@ -420,6 +476,7 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("9. For categorical features: Every '=' condition must be followed by a complementary '!=' condition to ensure exhaustive coverage of all category possibilities. ")
     prompt_parts.append("10. After splitting on a categorical feature (using '=' in any rule), all subsequent rules for that feature must use '!=' conditions. Example: If rule (1) uses 'size = big', then other rules  cannot use 'size = small' - they must use 'size != big' for further splits.")
     prompt_parts.append("11. A categorical feature can only be assigned ONE specific '=' value in the ENTIRE tree. Once a value is chosen (e.g. price = vhigh), other rules must use '!=' for this value instead of creating new '=' conditions with different values.")
+    prompt_parts.append("12. IMPORTANT: If the rules are already able to cover all the labels,please stop generating rules and do not generate any other rules.Wrong examples:(1) IF shell_weight >= 0.5 THEN older(2) IF shell_weight < 0.5 THEN younger(3) IF length >= 0.5 THEN older(4) IF length < 0.5 THEN younger(the later two rules are redundant)")
     prompt_parts.append("")
 
     # ------ 决策树大师引导与英文推理要求 ------
@@ -431,25 +488,29 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("Each rule must be a single line, start with a number in parentheses, and follow the format: (N) IF ... THEN ... Only use this format. Do NOT use any format like 'Rule N: ...' or with ELSE or jumps. All rules must be complete and mutually exclusive if needed.")
     prompt_parts.append("")
     
-    # Example Rules
-    prompt_parts.append("# Example Rules")
 
-    prompt_parts.append("(1) IF temperature >= 38 THEN high_fever")
-    prompt_parts.append("(2) IF temperature < 38 AND cough = True THEN suspect_infection")
-    prompt_parts.append("(3) IF temperature < 38 AND cough != True THEN normal")
-    prompt_parts.append("...")
-    
-    prompt_parts.append("(1) IF gender = 'male' AND age_group = 'senior' THEN high_risk")
-    prompt_parts.append("(2) IF gender = 'male' AND age_group != 'senior' THEN medium_risk")
-    prompt_parts.append("(3) IF gender != 'male' THEN low_risk")
-    prompt_parts.append("...")
-    
+    # Example Rules
+    prompt_parts.append("# Example: 1 level of split (only one condition per rule)")
+
+
+    prompt_parts.append("(1) IF gender = 'male' THEN high_risk")
+    prompt_parts.append("(1) IF gender != 'male' THEN low_risk")
+
+    # Two levels of split (depth = 2)
+    prompt_parts.append("# Example: 2 levels of split (two conditions per rule)")
     prompt_parts.append("(1) IF income >= 50000.50 AND credit_score >= 700 THEN approve")
-    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score >= 600 THEN review")
-    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 600 THEN reject")
-    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 600 THEN review")
+    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score < 700 THEN reject")
+    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 700 THEN approve")
+    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 700 THEN reject")
+    
+    prompt_parts.append("NOTE: This is a 2 levels of split, since some rules use 2 features:")
+    prompt_parts.append("(1) IF income >= 50000.50 THEN approve")
+    prompt_parts.append("(2) IF income < 50000.50 AND credit_score < 600 THEN approve")
+    prompt_parts.append("(3) IF income < 50000.50 AND credit_score >= 600 THEN reject")
     prompt_parts.append("...")
-    prompt_parts.append("# Example Rules")
+    
+    prompt_parts.append(f"Please generate corrected tree rules for a tree of max depth of {max_depth} (i.e., {max_depth - 1} levels of splits)")
+    prompt_parts.append(f"Remember you can use {max_depth - 1} features at most for one rule in the tree, and you should generate {2**(max_depth - 1)} rules at most.")
 
     
 

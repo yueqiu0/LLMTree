@@ -27,7 +27,7 @@ class OpenAIAPIRunner(Runner):
         self.presence_penalty = presence_penalty
         self.frequency_penalty = frequency_penalty
 
-    def run(self, messages: list[str]) -> Generator[list[str], None, None]:
+    def run(self, messages: list[str]) -> Generator[tuple[list[str], dict], None, None]:
         if self.api_base:
             openai.api_base = self.api_base
         openai.api_key = self.api_key
@@ -63,15 +63,26 @@ class OpenAIAPIRunner(Runner):
                     elif err_msg.find("maximum context length") != -1:
                         logger.log("Exceed context length, skipping...")
                         result = ""
+                        token_info = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                         break
                     raise e
 
                 result = response["choices"][0]["message"]["content"]
-                # usage = response["usage"]
-                # print(usage)
+
+                
+                # 提取token信息
+                token_info = {
+                    "prompt_tokens": response["usage"]["prompt_tokens"],
+                    "completion_tokens": response["usage"]["completion_tokens"],
+                    "total_tokens": response["usage"]["total_tokens"]
+                }
+                
+                
                 break
 
-            yield [result]
+            # 返回结果和token信息
+            yield [result], token_info
+    
 
 
 class OpenAIAPIParallelRunner(ParallelRunner, OpenAIAPIRunner):
