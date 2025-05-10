@@ -22,7 +22,18 @@ class ParallelRunner(Runner):
         message: str,
     ):
         try:
+            # 记录发送到LLM的完整提示词
+            logger.log(f"[RUNNER_PROMPT] START [{idx}] ===========================")
+            logger.log(message)
+            logger.log(f"[RUNNER_PROMPT] END [{idx}] =============================")
+            
             for results in self.runner(self, [message]):
+                # 记录LLM的完整响应
+                logger.log(f"[RUNNER_RESPONSE] START [{idx}] ======================")
+                for i, result in enumerate(results):
+                    logger.log(f"[RUNNER_RESPONSE] [{idx}-{i}] {result}")
+                logger.log(f"[RUNNER_RESPONSE] END [{idx}] ========================")
+                
                 queue.put((idx, results))
         except BaseException as e:
             logger.log("Exception occured in runner {}: {}".format(idx, e))

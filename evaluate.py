@@ -737,6 +737,17 @@ def evaluate(
         
         rules = tree_model.get_rules()
         tree_model.rules = rules
+        
+        # 添加打印树规则的代码
+        global_log("[树构建完成] ==================== 树规则列表 ====================")
+        if isinstance(rules, list):
+            for i, rule in enumerate(rules):
+                global_log(f"[规则 {i+1}]: {rule}")
+        else:
+            global_log(f"[警告] 规则不是列表类型: {type(rules)}")
+            global_log(f"规则内容: {rules}")
+        global_log("[树构建完成] ==================== 规则列表结束 ==================")
+        
         global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
         if isinstance(tree_model.rules, list):
             rules_str = "\n".join(str(rule) for rule in tree_model.rules)
@@ -859,6 +870,17 @@ def evaluate(
                     
                     rules = tree_model.get_rules()
                     tree_model.rules = rules
+                    
+                    # 添加打印树规则的代码
+                    global_log("[树构建完成] ==================== 树规则列表 ====================")
+                    if isinstance(rules, list):
+                        for i, rule in enumerate(rules):
+                            global_log(f"[规则 {i+1}]: {rule}")
+                    else:
+                        global_log(f"[警告] 规则不是列表类型: {type(rules)}")
+                        global_log(f"规则内容: {rules}")
+                    global_log("[树构建完成] ==================== 规则列表结束 ==================")
+                    
                     global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
                     if isinstance(tree_model.rules, list):
                         rules_str = "\n".join(str(rule) for rule in tree_model.rules)
@@ -960,6 +982,19 @@ def evaluate(
                             for eval_token in tree_token_stats['evaluation']:
                                 token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
                     
+                    # 添加获取和打印规则的代码
+                    rules = tree_model.get_rules()
+                    
+                    # 添加打印树规则的代码
+                    global_log("[树构建完成] ==================== 树规则列表 ====================")
+                    if isinstance(rules, list):
+                        for i, rule in enumerate(rules):
+                            global_log(f"[规则 {i+1}]: {rule}")
+                    else:
+                        global_log(f"[警告] 规则不是列表类型: {type(rules)}")
+                        global_log(f"规则内容: {rules}")
+                    global_log("[树构建完成] ==================== 规则列表结束 ==================")
+                    
                     tree_results = tree_model.predict(x_test)
                     
                     # 新增：检查并转换预测结果类型
@@ -999,6 +1034,17 @@ def evaluate(
                 tree_results, rules = tree_model.predict(
                     x_train, y_train, x_test, export_rules=True
                 )
+                
+                # 添加打印树规则的代码
+                global_log("[树构建完成] ==================== 树规则列表 ====================")
+                if isinstance(rules, list):
+                    for i, rule in enumerate(rules):
+                        global_log(f"[规则 {i+1}]: {rule}")
+                else:
+                    global_log(f"[警告] 规则不是列表类型: {type(rules)}")
+                    global_log(f"规则内容: {rules}")
+                global_log("[树构建完成] ==================== 规则列表结束 ==================")
+                
                 # 修改这里的直接AUC计算，使用cot_calc_accuracy_auc函数
                 if len(set(tree_results)) < 2:
                     global_log("[WARNING] 预测结果只有一个类别，AUC无法计算，返回NaN")

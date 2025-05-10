@@ -336,6 +336,15 @@ def generate_ToT_tree_prompt(
     生成决策树构建提示词
     返回值：dict，包括prompt、label_dist、num_examples等
     """
+    # 记录路径和深度信息
+    logger.log(f"[生成提示] =============== 节点信息 ===============")
+    logger.log(f"[生成提示] 当前路径: {current_path}")
+    logger.log(f"[生成提示] 当前深度: {depth}")
+    logger.log(f"[生成提示] 最大深度: {max_depth}")
+    if applied_rules:
+        logger.log(f"[生成提示] 已应用规则: {applied_rules}")
+    logger.log(f"[生成提示] =======================================")
+    
     # ================= 输入校验 =================
     if not hasattr(meta, 'features') or len(meta.features) == 0:
         logger.error("特征元数据为空，请检查meta文件")
@@ -353,147 +362,14 @@ def generate_ToT_tree_prompt(
             label = meta.find_label(float(val))
             label_name = label.name if label else f"未知({val})"
             label_dist[label_name] = int(count)
-    except Exception as e:
-        return {"prompt": "", "label_dist": {}, "num_examples": 0}
-
-    # ============== 示例数据生成 ==============
-    examples = []
-    try:
-        indices = np.random.choice(len(x_train), min(num_examples, len(x_train)), replace=False)
-        for idx in indices:
-            features = []
-            for i, feat in enumerate(meta.features):
-                val = x_train[idx][i]
-                if feat.is_categorical:
-                    val = feat.categories.get(str(val), f"未知({val})")
-                elif feat.type == "float":
-                    val = f"{float(val):.4f}"
-                features.append(f"{feat.name}={val}")
-            
-            label_val = float(y_train[idx])
-            label = meta.find_label(label_val)
-            label_name = label.name if label else "未知"
-            examples.append(f"{', '.join(features)} → {label_name}")
-    except Exception as e:
-        examples = []
-
-    # ============== 构建提示词 ==============
-    prompt_parts = []
-    
-    # ------ 元数据部分 ------
-    prompt_parts.append("# Dataset Information")
-    prompt_parts.append(f"Dataset: {getattr(meta, 'name', 'Unnamed Dataset')}")
-    prompt_parts.append(f"Target: {getattr(meta, 'target', 'Not Specified')}")
-    prompt_parts.append(f"Samples: {x_train.shape[0]}")
-    prompt_parts.append(f"Features: {len(meta.features)}")
-    prompt_parts.append("")
-
-    # ------ 特征定义 ------
-    prompt_parts.append("# Feature Definitions")
-    for feat in meta.features:
-        # 自动提取单位（如desc中有括号）
-        desc = getattr(feat, 'desc', 'No description')
-        unit = ''
-        import re
-        m = re.search(r'\(([^)]+)\)', desc)
-        if m:
-            unit = m.group(1)
-        if unit:
-            prompt_parts.append(f"- {feat.name}: {desc} [unit: {unit}]")
-        else:
-            prompt_parts.append(f"- {feat.name}: {desc}")
-        if feat.is_categorical:
-            categories = [f"{k}({v})" for k, v in feat.categories.items()]
-            prompt_parts.append(f"  Categories: {', '.join(categories)}")
-    prompt_parts.append("")
-
-    # ------ 标签定义 ------
-    prompt_parts.append("# Label Definitions")
-    for label in meta.labels:
-        desc = getattr(label, 'desc', 'No description')
-        prompt_parts.append(f"- {label.name}: {desc}")
-    prompt_parts.append("")
-    
-    # ------ 训练样本展示 ------
-    prompt_parts.append("# Training Samples")
-    prompt_parts.append("Here are some examples from the training dataset:")
-    
-    # 添加特征顺序说明
-    feature_names = [feat.name for feat in meta.features]
-    prompt_parts.append(f"For each line:")
-    prompt_parts.append(f"<{', '.join(feature_names)}> <RESULT>")
-    prompt_parts.append("")
-    
-    # 确定要展示的样本数量（最多10个）
-    num_samples_to_show = min(10, len(x_train))
-    
-    # 随机选择样本索引，以确保样本具有代表性
-    if num_samples_to_show < len(x_train):
-        import random
-        sample_indices = random.sample(range(len(x_train)), num_samples_to_show)
-    else:
-        sample_indices = range(len(x_train))
-    
-    # 遍历选定的样本，使用更简洁的格式展示
-    for i, idx in enumerate(sample_indices):
-        # 构建特征值字符串
-        feature_values = []
-        for feat_idx, feature in enumerate(meta.features):
-            value = x_train[idx, feat_idx]
-            # 根据特征类型决定格式化方式
-            if feature.type == "float" and isinstance(value, (float, np.float32, np.float64)):
-                # 浮点型特征保留3位小数
-                value_repr = f"{value:.3f}"
-            elif feature.type == "int" and isinstance(value, (float, np.float32, np.float64)):
-                # 整数型特征保持整数形式
-                if value.is_integer():
-                    value_repr = str(int(value))
-                else:
-                    value_repr = str(value)
-            else:
-                # 分类特征或其他类型直接转字符串
-                value_repr = str(value)
-            feature_values.append(value_repr)
         
-        # 获取标签
-        label_value = y_train[idx]
-        label_name = "Unknown"
-        for label in meta.labels:
-            if label.value == label_value:
-                label_name = label.name
-                break
-        
-        # 使用简洁的一行格式展示样本
-        sample_str = f"({i+1}) {', '.join(feature_values)} {label_name}"
-        prompt_parts.append(sample_str)
-    
-    prompt_parts.append("")
-    import traceback
-    if x_train is None:
-        logger.log("[ERROR] generate_ToT_tree_prompt: x_train is None!")
-        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError("generate_ToT_tree_prompt: x_train is None!")
-    if y_train is None:
-        logger.log("[ERROR] generate_ToT_tree_prompt: y_train is None!")
-        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError("generate_ToT_tree_prompt: y_train is None!")
-    if not hasattr(meta, 'features') or len(meta.features) == 0:
-        logger.log("特征元数据为空，请检查meta文件")
-        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
-        return {"prompt": "", "label_dist": {}, "num_examples": 0}
-    if not hasattr(x_train, 'shape'):
-        logger.log(f"[ERROR] generate_ToT_tree_prompt: x_train has no shape attribute, type: {type(x_train)}")
-        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
-        raise ValueError(f"generate_ToT_tree_prompt: x_train has no shape attribute, type: {type(x_train)}")
-    if x_train.shape[1] != len(meta.features):
-        logger.log(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
-        logger.log("Call stack:\n" + "".join(traceback.format_stack()))
+        # 记录标签分布
+        logger.log(f"[生成提示] 当前节点标签分布: {label_dist}")
+    except Exception as e:
+        logger.error(f"计算标签分布出错: {str(e)}")
         return {"prompt": "", "label_dist": {}, "num_examples": 0}
 
-
-
-
-    # ============== 构建新版英文任务描述和提示词 ==============
+    # ============== 构建英文任务描述和提示词 ==============
     prompt_parts = []
     prompt_parts.append("#Task Description")
     prompt_parts.append("You are a decision tree generator. Your task is to generate candidate split rules for the current node. Please strictly follow the requirements below.Please don't explain.")
@@ -512,41 +388,39 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("Final class labels must appear in leaf node rules")
     prompt_parts.append(f"Next split produces only leaves when parent's feature count ≥ 1")
     prompt_parts.append("## Input Context")
+    
+    # 显示当前路径，如果存在父节点条件则显示
+    display_path = "Root"
+    if current_path and current_path != "Root":
+        display_path = current_path
+    
     prompt_parts.append("**Current Path:** ")
-    prompt_parts.append(f"{current_path}")
-    prompt_parts.append("]\n")
+    prompt_parts.append(f"{display_path}")
+    prompt_parts.append("")
+    
+    # 显示当前深度
     prompt_parts.append("**Current_depth:** ")
     prompt_parts.append(f"{depth}")
-
-    # # ============== 数据集介绍部分 ==============
-    feature_lines = []
-    for feat in meta.features:
-        desc = getattr(feat, 'desc', 'No description')
-        unit = ''
-        m = re.search(r'\(([^)]+)\)', desc)
-        if m:
-            unit = m.group(1)
-        # 新增类型后缀
-        type_suffix = ''
-        if feat.type == 'float' or feat.type == 'int':
-            type_suffix = ' (cont)'
-        elif feat.is_categorical:
-            type_suffix = ' (Cate)'
-        line = f"{feat.name}{type_suffix}: {desc}"
-        if unit:
-            line += f" [unit: {unit}]"
-        if feat.is_categorical:
-            categories = [f"{k}({v})" for k, v in feat.categories.items()]
-            line += f" | Categories: {', '.join(categories)}"
-        feature_lines.append(line)
+    
+    # ===== 特征定义 =====
     prompt_parts.append("# Feature Definitions")
-    prompt_parts.append("; ".join(feature_lines))  # 用分号拼接，紧凑排列
-
-    label_lines = [f"{label.name}: {getattr(label, 'desc', 'No description')}" for label in meta.labels]
+    feature_defs = []
+    for feat in meta.features:
+        if feat.is_categorical:
+            categories = " | Categories: " + ", ".join([f"{k}({v})" for k, v in feat.categories.items()])
+            feature_defs.append(f"{feat.name} (Cate): {feat.desc}{categories}")
+        else:
+            feature_defs.append(f"{feat.name} (cont): {feat.desc}")
+    prompt_parts.append("; ".join(feature_defs))
+    
+    # ===== 标签定义 =====
     prompt_parts.append("# Label Definitions")
-    prompt_parts.append("; ".join(label_lines))  # 同样紧凑排列
-
-
+    label_defs = []
+    for label in meta.labels:
+        label_defs.append(f"{label.name}: {label.desc}")
+    prompt_parts.append("; ".join(label_defs))
+    
+    # ===== 示例说明 =====
     prompt_parts.append("## Examples")
     prompt_parts.append("parent is Root->generate one")
     prompt_parts.append("IF size = big THEN yes")
@@ -555,12 +429,12 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("parent is branch->Add AND condition")
     prompt_parts.append("IF age >= 9 AND height < 1.3 THEN [NODE]")
     prompt_parts.append("IF age >= 9 AND height < 1.3 THEN no")
-    prompt_parts.append("")
     
-
-    # ============== 最终组装 ==============
+    # 构建最终提示词
     full_prompt = "\n".join(prompt_parts)
-
+  
     return {
-        "prompt": full_prompt.strip(),
+        "prompt": full_prompt,
+        "label_dist": label_dist,
+        "num_examples": num_examples
     }
