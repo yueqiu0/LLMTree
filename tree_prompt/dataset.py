@@ -323,19 +323,151 @@ def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[in
 
 
 def generate_ToT_tree_prompt(
-meta: DatasetMeta,
+    meta: DatasetMeta,
     x_train: np.ndarray,
     y_train: np.ndarray,
-    max_depth: int = 3,  
+    max_depth: int = 3,  # 强制设置为3层深度
     num_examples: int = 5,
     current_path: str = "Root",
-    applied_rules: str = "None"
+    applied_rules: List[str] = [],
+    depth: int = 0,
 ) -> dict:
     """
     生成决策树构建提示词
     返回值：dict，包括prompt、label_dist、num_examples等
     """
     # ================= 输入校验 =================
+    if not hasattr(meta, 'features') or len(meta.features) == 0:
+        logger.error("特征元数据为空，请检查meta文件")
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+        
+    if x_train.shape[1] != len(meta.features):
+        logger.error(f"特征数量不匹配：数据有{x_train.shape[1]}列，元数据定义{len(meta.features)}个特征")
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+
+    # ============== 标签分布计算 =============
+    label_dist = {}
+    try:
+        unique_labels, label_counts = np.unique(y_train, return_counts=True)
+        for val, count in zip(unique_labels, label_counts):
+            label = meta.find_label(float(val))
+            label_name = label.name if label else f"未知({val})"
+            label_dist[label_name] = int(count)
+    except Exception as e:
+        return {"prompt": "", "label_dist": {}, "num_examples": 0}
+
+    # ============== 示例数据生成 ==============
+    examples = []
+    try:
+        indices = np.random.choice(len(x_train), min(num_examples, len(x_train)), replace=False)
+        for idx in indices:
+            features = []
+            for i, feat in enumerate(meta.features):
+                val = x_train[idx][i]
+                if feat.is_categorical:
+                    val = feat.categories.get(str(val), f"未知({val})")
+                elif feat.type == "float":
+                    val = f"{float(val):.4f}"
+                features.append(f"{feat.name}={val}")
+            
+            label_val = float(y_train[idx])
+            label = meta.find_label(label_val)
+            label_name = label.name if label else "未知"
+            examples.append(f"{', '.join(features)} → {label_name}")
+    except Exception as e:
+        examples = []
+
+    # ============== 构建提示词 ==============
+    prompt_parts = []
+    
+    # ------ 元数据部分 ------
+    prompt_parts.append("# Dataset Information")
+    prompt_parts.append(f"Dataset: {getattr(meta, 'name', 'Unnamed Dataset')}")
+    prompt_parts.append(f"Target: {getattr(meta, 'target', 'Not Specified')}")
+    prompt_parts.append(f"Samples: {x_train.shape[0]}")
+    prompt_parts.append(f"Features: {len(meta.features)}")
+    prompt_parts.append("")
+
+    # ------ 特征定义 ------
+    prompt_parts.append("# Feature Definitions")
+    for feat in meta.features:
+        # 自动提取单位（如desc中有括号）
+        desc = getattr(feat, 'desc', 'No description')
+        unit = ''
+        import re
+        m = re.search(r'\(([^)]+)\)', desc)
+        if m:
+            unit = m.group(1)
+        if unit:
+            prompt_parts.append(f"- {feat.name}: {desc} [unit: {unit}]")
+        else:
+            prompt_parts.append(f"- {feat.name}: {desc}")
+        if feat.is_categorical:
+            categories = [f"{k}({v})" for k, v in feat.categories.items()]
+            prompt_parts.append(f"  Categories: {', '.join(categories)}")
+    prompt_parts.append("")
+
+    # ------ 标签定义 ------
+    prompt_parts.append("# Label Definitions")
+    for label in meta.labels:
+        desc = getattr(label, 'desc', 'No description')
+        prompt_parts.append(f"- {label.name}: {desc}")
+    prompt_parts.append("")
+    
+    # ------ 训练样本展示 ------
+    prompt_parts.append("# Training Samples")
+    prompt_parts.append("Here are some examples from the training dataset:")
+    
+    # 添加特征顺序说明
+    feature_names = [feat.name for feat in meta.features]
+    prompt_parts.append(f"For each line:")
+    prompt_parts.append(f"<{', '.join(feature_names)}> <RESULT>")
+    prompt_parts.append("")
+    
+    # 确定要展示的样本数量（最多10个）
+    num_samples_to_show = min(10, len(x_train))
+    
+    # 随机选择样本索引，以确保样本具有代表性
+    if num_samples_to_show < len(x_train):
+        import random
+        sample_indices = random.sample(range(len(x_train)), num_samples_to_show)
+    else:
+        sample_indices = range(len(x_train))
+    
+    # 遍历选定的样本，使用更简洁的格式展示
+    for i, idx in enumerate(sample_indices):
+        # 构建特征值字符串
+        feature_values = []
+        for feat_idx, feature in enumerate(meta.features):
+            value = x_train[idx, feat_idx]
+            # 根据特征类型决定格式化方式
+            if feature.type == "float" and isinstance(value, (float, np.float32, np.float64)):
+                # 浮点型特征保留3位小数
+                value_repr = f"{value:.3f}"
+            elif feature.type == "int" and isinstance(value, (float, np.float32, np.float64)):
+                # 整数型特征保持整数形式
+                if value.is_integer():
+                    value_repr = str(int(value))
+                else:
+                    value_repr = str(value)
+            else:
+                # 分类特征或其他类型直接转字符串
+                value_repr = str(value)
+            feature_values.append(value_repr)
+        
+        # 获取标签
+        label_value = y_train[idx]
+        label_name = "Unknown"
+        for label in meta.labels:
+            if label.value == label_value:
+                label_name = label.name
+                break
+        
+        # 使用简洁的一行格式展示样本
+        sample_str = f"({i+1}) {', '.join(feature_values)} {label_name}"
+        prompt_parts.append(sample_str)
+    
+    prompt_parts.append("")
     import traceback
     if x_train is None:
         logger.log("[ERROR] generate_ToT_tree_prompt: x_train is None!")
@@ -370,7 +502,7 @@ meta: DatasetMeta,
     prompt_parts.append("Directly assign final class labels to leaf nodes")
     prompt_parts.append("Mark intermediate nodes with [NODE]")
     prompt_parts.append("Always inherit parent path conditions")
-    prompt_parts.append(f"Parent has features >= {max_depth-2} ->next split only produces leaf nodes")
+    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes must terminate as leaves")
     prompt_parts.append(f"")
     prompt_parts.append("#Structural Constraints")
     prompt_parts.append("Each split must form complete complementary conditions")
@@ -383,6 +515,8 @@ meta: DatasetMeta,
     prompt_parts.append("**Current Path:** ")
     prompt_parts.append(f"{current_path}")
     prompt_parts.append("]\n")
+    prompt_parts.append("**Current_depth:** ")
+    prompt_parts.append(f"{depth}")
 
     # # ============== 数据集介绍部分 ==============
     feature_lines = []
