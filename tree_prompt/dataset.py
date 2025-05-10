@@ -386,22 +386,8 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("Categorical features use explicit category combinations,using = and !=")
     prompt_parts.append("Path conditions are automatically inherited without repetition")
     prompt_parts.append("Final class labels must appear in leaf node rules")
-    prompt_parts.append(f"Next split produces only leaves when parent's feature count ≥ 1")
-    prompt_parts.append("## Input Context")
-    
-    # 显示当前路径，如果存在父节点条件则显示
-    display_path = "Root"
-    if current_path and current_path != "Root":
-        display_path = current_path
-    
-    prompt_parts.append("**Current Path:** ")
-    prompt_parts.append(f"{display_path}")
-    prompt_parts.append("")
-    
-    # 显示当前深度
-    prompt_parts.append("**Current_depth:** ")
-    prompt_parts.append(f"{depth}")
-    
+
+
     # ===== 特征定义 =====
     prompt_parts.append("# Feature Definitions")
     feature_defs = []
@@ -479,14 +465,42 @@ def generate_ToT_tree_prompt(
     
     # ===== 示例说明 =====
     prompt_parts.append("## Examples")
-    prompt_parts.append("parent is Root->generate one")
+
+    prompt_parts.append(f"parent is Root->generate one (EXCEPTION: when parent is ROOT and depth is {max_depth-1}, generate ONLY leaves)")
     prompt_parts.append("IF size = big THEN yes")
     prompt_parts.append("IF size != big THEN [NODE]")
     prompt_parts.append("")
     prompt_parts.append("parent is branch->Add AND condition")
     prompt_parts.append("IF age >= 9 AND height < 1.3 THEN [NODE]")
-    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN no")
+    prompt_parts.append("IF age >= 9 AND height >= 1.3 THEN no")
     
+    prompt_parts.append("Incorrect examples(useless split rules)")
+    prompt_parts.append("IF age >= 9 AND height < 1.3 THEN no")
+    prompt_parts.append("IF age >= 9 AND height >= 1.3 THEN no")
+    prompt_parts.append("explanation: the split rule is useless because label is always no(the same label)")
+    
+    prompt_parts.append("## Input Context")
+    
+    # 显示当前路径，如果存在父节点条件则显示
+    display_path = "Root"
+    if current_path and current_path != "Root":
+        display_path = current_path
+    
+
+
+    prompt_parts.append("All possible labels:")
+    for label in meta.labels:
+        prompt_parts.append(f"{label.name}")
+        
+    prompt_parts.append("**Current Path:** ")
+    prompt_parts.append(f"{display_path}")
+    prompt_parts.append("")
+    
+    # 显示当前深度
+    prompt_parts.append("**Current_depth:** ")
+    prompt_parts.append(f"{depth}")
+    
+    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes MUST terminate as leaves")    
     # 构建最终提示词
     full_prompt = "\n".join(prompt_parts)
   
