@@ -402,7 +402,62 @@ def generate_LLM_tree_prompt(
         desc = getattr(label, 'desc', 'No description')
         prompt_parts.append(f"- {label.name}: {desc}")
     prompt_parts.append("")
-
+    
+    # ------ 训练样本展示 ------
+    prompt_parts.append("# Training Samples")
+    prompt_parts.append("Here are some examples from the training dataset:")
+    
+    # 添加特征顺序说明
+    feature_names = [feat.name for feat in meta.features]
+    prompt_parts.append(f"For each line:")
+    prompt_parts.append(f"<{', '.join(feature_names)}> <RESULT>")
+    prompt_parts.append("")
+    
+    # 确定要展示的样本数量（最多10个）
+    num_samples_to_show = min(10, len(x_train))
+    
+    # 随机选择样本索引，以确保样本具有代表性
+    if num_samples_to_show < len(x_train):
+        import random
+        sample_indices = random.sample(range(len(x_train)), num_samples_to_show)
+    else:
+        sample_indices = range(len(x_train))
+    
+    # 遍历选定的样本，使用更简洁的格式展示
+    for i, idx in enumerate(sample_indices):
+        # 构建特征值字符串
+        feature_values = []
+        for feat_idx, feature in enumerate(meta.features):
+            value = x_train[idx, feat_idx]
+            # 根据特征类型决定格式化方式
+            if feature.type == "float" and isinstance(value, (float, np.float32, np.float64)):
+                # 浮点型特征保留3位小数
+                value_repr = f"{value:.3f}"
+            elif feature.type == "int" and isinstance(value, (float, np.float32, np.float64)):
+                # 整数型特征保持整数形式
+                if value.is_integer():
+                    value_repr = str(int(value))
+                else:
+                    value_repr = str(value)
+            else:
+                # 分类特征或其他类型直接转字符串
+                value_repr = str(value)
+            feature_values.append(value_repr)
+        
+        # 获取标签
+        label_value = y_train[idx]
+        label_name = "Unknown"
+        for label in meta.labels:
+            if label.value == label_value:
+                label_name = label.name
+                break
+        
+        # 使用简洁的一行格式展示样本
+        sample_str = f"({i+1}) {', '.join(feature_values)} {label_name}"
+        prompt_parts.append(sample_str)
+    
+    prompt_parts.append("")
+    
     # ------ 决策树要求 ------
     prompt_parts.append("# Decision Tree Requirements")
     prompt_parts.append(f"please generate a decision tree with a maximum depth of {max_depth} (which means {max_depth-1} levels because the max_depth includes the root node).")
