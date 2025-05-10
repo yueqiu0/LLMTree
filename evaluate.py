@@ -708,6 +708,22 @@ def evaluate(
         "total_tokens": 0
     }
     
+    # 如果是CoTDecisionTree，每次评估都创建一个新实例，确保token统计独立
+    if isinstance(tree_model, CoTDecisionTree):
+        tree_model = CoTDecisionTree(
+            meta=tree_model.meta,
+            max_depth=tree_model.max_depth,
+            runner=tree_model.runner,
+            log_file=tree_model.log_file
+        )
+        # 确保新实例有新的token_stats
+        tree_model.token_stats = {
+            "tree_building": {"prompt": 0, "completion": 0, "total": 0},
+            "evaluation": [],
+            "total_tokens": 0
+        }
+        global_log("[DEBUG] 为当前评估创建了新的CoTDecisionTree实例，确保token统计独立")
+    
     rules = []  # 保证所有分支下rules都已定义
     # get tree's prediction rules & results
     # --- 强制CoTDecisionTree二次CoT交互始终被执行 ---
@@ -727,12 +743,12 @@ def evaluate(
             global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
             # 更新总token统计
             if 'tree_building' in tree_token_stats:
-                token_stats['tree_building'] = tree_token_stats['tree_building']
-                token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                tree_model.token_stats['tree_building'] = tree_token_stats['tree_building']
+                tree_model.token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
             if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
-                token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                tree_model.token_stats['evaluation'].extend(tree_token_stats['evaluation'])
                 for eval_token in tree_token_stats['evaluation']:
-                    token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                    tree_model.token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
         
         rules = tree_model.get_rules()
         tree_model.rules = rules
@@ -770,8 +786,8 @@ def evaluate(
         results = []
         for idx, (responses, token_info) in enumerate(runner.run(prompts)):
             # 记录token信息
-            token_stats["evaluation"].append(token_info)
-            token_stats["total_tokens"] += token_info["total_tokens"]
+            tree_model.token_stats['evaluation'].append(token_info)
+            tree_model.token_stats['total_tokens'] += token_info["total_tokens"]
             global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
             global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
             global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
@@ -797,7 +813,7 @@ def evaluate(
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
-                     "token_stats": token_stats,  # 添加token统计
+                     "token_stats": tree_model.token_stats,  # 添加token统计
                 }
                 return result_dict
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
@@ -927,12 +943,12 @@ def evaluate(
                         global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
                         # 更新总token统计
                         if 'tree_building' in tree_token_stats:
-                            token_stats['tree_building'] = tree_token_stats['tree_building']
-                            token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                            tree_model.token_stats['tree_building'] = tree_token_stats['tree_building']
+                            tree_model.token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
                         if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
-                            token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                            tree_model.token_stats['evaluation'].extend(tree_token_stats['evaluation'])
                             for eval_token in tree_token_stats['evaluation']:
-                                token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                                tree_model.token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
                     
                     tree_results = tree_model.predict(x_test)
                     
@@ -1026,7 +1042,7 @@ def evaluate(
             "match_by_samples": [],
             "prompts": [],
             "trees": 1,
-            "token_stats": token_stats,  # 添加token统计信息
+            "token_stats": tree_model.token_stats,  # 添加token统计信息
             "train_elapsed": fit_elapsed_time  # 添加模型训练时间
         }
         
@@ -1050,8 +1066,8 @@ def evaluate(
 
         for idx, (responses, token_info) in enumerate(runner.run(prompts)):
             # 记录token信息
-            token_stats["evaluation"].append(token_info)
-            token_stats["total_tokens"] += token_info["total_tokens"]
+            tree_model.token_stats['evaluation'].append(token_info)
+            tree_model.token_stats['total_tokens'] += token_info["total_tokens"]
             global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
             expected_len = test_splits[idx][1] - test_splits[idx][0]
             found = False
@@ -1074,7 +1090,7 @@ def evaluate(
                 result_dict = {
                     "record": prompts[0],
                     "failed_raw_output": responses,
-                    "token_stats": token_stats,  # 添加token统计
+                    "token_stats": tree_model.token_stats,  # 添加token统计
                 }
                 return result_dict
 
@@ -1090,7 +1106,7 @@ def evaluate(
     result = {
         "tree_results": tree_results,
         "labels": y_test.tolist(),
-        "token_stats": token_stats,  # 添加token统计信息
+        "token_stats": tree_model.token_stats,  # 添加token统计信息
         "train_elapsed": fit_elapsed_time  # 添加模型训练时间
     }
     
@@ -1299,6 +1315,18 @@ def main():
         global_log(f"Generated {len(train_cases)} balanced training cases")
 
         for train_x, train_y in train_cases:
+            # 为每个训练样本创建新的树模型实例，确保token统计不会累积
+            if args.tree_type == "CoT":
+                current_tree_model = CoTDecisionTree(
+                    meta=meta,
+                    max_depth=args.tree_args.max_depth,
+                    runner=runner,
+                    log_file=log_file_path,
+                )
+                global_log(f"[DEBUG] 为当前训练样本创建了新的CoTDecisionTree实例")
+            else:
+                current_tree_model = tree_model  # 其他类型的树直接使用原始实例
+            
             result = evaluate(
                 train_x,
                 train_y,
@@ -1308,7 +1336,7 @@ def main():
                 master_template,
                 serializer,
                 meta,
-                tree_model,
+                current_tree_model,  # 使用新创建的树模型实例
                 args.use_tree_rules,
                 args.tree_only,
                 args.test_batch,
