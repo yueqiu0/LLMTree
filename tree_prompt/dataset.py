@@ -492,16 +492,17 @@ def generate_LLM_tree_prompt(
     
     # Example Rules
     prompt_parts.append("# Example: 1 level of split (only one condition per rule)")
-    prompt_parts.append("(1) IF temperature >= 38 THEN high_fever")
-    prompt_parts.append("(2) IF temperature < 38 THEN normal")
-    prompt_parts.append("...")
+
+
+    prompt_parts.append("(1) IF gender = 'male' THEN high_risk")
+    prompt_parts.append("(1) IF gender != 'male' THEN low_risk")
 
     # Two levels of split (depth = 2)
     prompt_parts.append("# Example: 2 levels of split (two conditions per rule)")
     prompt_parts.append("(1) IF income >= 50000.50 AND credit_score >= 700 THEN approve")
-    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score >= 600 THEN reject")
-    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 600 THEN reject")
-    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 600 THEN reject")
+    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score < 700 THEN reject")
+    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 700 THEN approve")
+    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 700 THEN reject")
     
     prompt_parts.append("NOTE: This is a 2 levels of split, since some rules use 2 features:")
     prompt_parts.append("(1) IF income >= 50000.50 THEN approve")
