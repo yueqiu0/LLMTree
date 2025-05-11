@@ -270,13 +270,18 @@ class CoTDecisionTree:
             # 解析条件(支持AND连接的多个条件)
             for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
                 cond = cond.strip()
-                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|\w+)$', cond)
+                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
                 if not cond_match:
                     self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                     continue
                     
                 feature, operator, value = cond_match.groups()
                 feature = feature.strip()
+                
+                # 移除值两端的引号（如果存在）
+                if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
+                    value = value[1:-1]
+                
                 if feature not in self.feature_name_to_col:
                     self.logger.log(f"[ERROR] Unknown feature '{feature}'")
                     continue
@@ -284,7 +289,7 @@ class CoTDecisionTree:
                 try:
                     if '.' in value:
                         value = float(value)
-                    else:
+                    elif value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
                         value = int(value)
                 except ValueError:
                     pass
@@ -371,6 +376,12 @@ class CoTDecisionTree:
                     if 'condition' in sub_rule:
                         conditions.append(sub_rule['condition'])
             then_label = rule.get('label', '')
+            
+            # 跳过标签为[NODE]的规则
+            if then_label == '[NODE]':
+                self.logger.log(f"[INFO] 跳过中间节点规则: {idx}")
+                continue
+                
             rule_text = f"({idx}) IF {' AND '.join(conditions)} THEN {then_label}"
             if not conditions:
                 self.logger.log(f"[ERROR] 规则{idx}条件为空，rule内容: {rule}")
@@ -786,6 +797,8 @@ class TreeModel:
                         continue
                     feature, operator, value = cond_match.groups()
                     feature = ' '.join(feature.split())
+                    if value.startswith("'") and value.endswith("'") or value.startswith('"') and value.endswith('"'):
+                        value = value[1:-1]  # 去除引号
                     parsed_conditions.append({'feature': feature, 'operator': operator, 'value': value})
                 if parsed_conditions:
                     rules.append({'conditions': parsed_conditions, 'label': consequence})

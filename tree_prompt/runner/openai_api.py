@@ -40,7 +40,7 @@ class OpenAIAPIRunner(Runner):
                     response = openai.ChatCompletion.create(
                         model=self.model_name,
                         messages=[message],
-                        max_tokens=2048,
+                        max_tokens=4096,
                         temperature=self.temperature,
                         top_p=self.top_p,
                         top_k=self.top_k,

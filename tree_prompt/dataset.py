@@ -65,6 +65,12 @@ class DatasetMeta:
     def label_count(self) -> int:
         return len(self.labels)
 
+    def get_default_label(self) -> float:
+        """返回默认标签（第一个标签的值）作为回退选项"""
+        if not self.labels:
+            return 0.0  # 如果没有标签，返回0
+        return self.labels[0].value
+
     def shuffle_features(self, indices: list[int]):
         self.features = [self.features[i] for i in indices]
 
