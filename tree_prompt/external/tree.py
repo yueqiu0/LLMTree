@@ -1037,6 +1037,11 @@ Do NOT include any explanation or reasoning in your response.
                 then_label = str(rule)
                 self.logger.log(f"[WARNING] 规则类型为字符串: {then_label}")
                 
+            # 跳过标签为[NODE]的规则
+            if then_label.strip() == '[NODE]':
+                self.logger.log(f"[INFO] 跳过中间节点规则 {idx}: IF {' AND '.join(conditions)} THEN {then_label}")
+                continue
+            
             rule_text = f"({idx}) IF {' AND '.join(conditions)} THEN {then_label}"
             if not conditions:
                 self.logger.log(f"[WARNING] 规则{idx}条件为空，rule内容: {rule}")
