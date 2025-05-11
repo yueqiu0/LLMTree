@@ -414,7 +414,7 @@ def generate_LLM_tree_prompt(
     prompt_parts.append("")
     
     # 确定要展示的样本数量（最多10个）
-    num_samples_to_show = min(10, len(x_train))
+    num_samples_to_show = len(x_train)
     
     # 随机选择样本索引，以确保样本具有代表性
     if num_samples_to_show < len(x_train):
