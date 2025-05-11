@@ -780,7 +780,7 @@ class TreeModel:
                 conds = [c.strip() for c in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)]
                 parsed_conditions = []
                 for cond in conds:
-                    cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>)\s*([\-]?[\d.]+|\w+)$', cond)
+                    cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
                     if not cond_match:
                         self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                         continue
