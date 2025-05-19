@@ -272,7 +272,8 @@ class LLMDecisionTree:
             # 解析条件(支持AND连接的多个条件)
             for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
                 cond = cond.strip()
-                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|\w+)$', cond)
+                # 修改正则表达式，使其支持带引号的值
+                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|\w+|\'[^\']*\'|\"[^\"]*\")$', cond)
                 if not cond_match:
                     self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                     continue
@@ -282,6 +283,9 @@ class LLMDecisionTree:
                 if feature not in self.feature_name_to_col:
                     self.logger.log(f"[ERROR] Unknown feature '{feature}'")
                     continue
+                
+                # 去除值两边的引号
+                value = value.strip('\'"')
                     
                 try:
                     if '.' in value:
