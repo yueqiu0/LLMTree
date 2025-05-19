@@ -577,6 +577,11 @@ Do NOT include any explanation or reasoning in your response.
             if not line or not line.startswith("IF "):
                 continue
             rule_texts.append(line)
+            
+            # 只保留前两条规则
+            if len(rule_texts) >= 2:
+                self.logger.log(f"[规则提取] 只保留前两条规则，过滤后续规则")
+                break
         
         return rule_texts
     
