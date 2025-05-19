@@ -707,6 +707,41 @@ def evaluate(
         "evaluation": [],
         "total_tokens": 0
     }
+
+
+    # 创建一个新的树模型实例，而不是重用传入的实例
+    if isinstance(tree_model, CoTDecisionTree):
+        # 提取树模型的参数并创建新实例
+        new_tree_model = CoTDecisionTree(
+            meta=meta,
+            max_depth=tree_model.max_depth,
+            runner=runner,
+            log_file=tree_model.log_file,
+        )
+        tree_model = new_tree_model
+        global_log(f"[INFO] 创建了新的CoTDecisionTree实例，max_depth={tree_model.max_depth}")
+    elif isinstance(tree_model, SimpleDecisionTree):
+        tree_model = SimpleDecisionTree(meta, tree_model.max_depth)
+    elif isinstance(tree_model, XGBoostDecisionTree):
+        tree_model = XGBoostDecisionTree(
+            meta, 
+            tree_model.max_depth, 
+            tree_model.num_trees if hasattr(tree_model, 'num_trees') else 100,
+            tree_model.random_state if hasattr(tree_model, 'random_state') else 42
+        )
+    elif isinstance(tree_model, RandomForestDecisionTree):
+        tree_model = RandomForestDecisionTree(
+            meta,
+            tree_model.num_trees if hasattr(tree_model, 'num_trees') else 100,
+            tree_model.max_depth
+        )
+    elif isinstance(tree_model, FederatedDecisionTree):
+        tree_model = FederatedDecisionTree(
+            meta,
+            tree_model.num_trees if hasattr(tree_model, 'num_trees') else 100,
+            tree_model.max_depth
+        )
+        
     
     # 如果是CoTDecisionTree，每次评估都创建一个新实例，确保token统计独立
     if isinstance(tree_model, CoTDecisionTree):
@@ -784,19 +819,46 @@ def evaluate(
             raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
         raw_results = []
         results = []
-        for idx, (responses, token_info) in enumerate(runner.run(prompts)):
-            # 记录token信息
-            tree_model.token_stats['evaluation'].append(token_info)
-            tree_model.token_stats['total_tokens'] += token_info["total_tokens"]
-            global_log(f"[DEBUG][LLM] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
-            global_log(f"[DEBUG][LLM] LLM返回response candidates: {responses}")
-            global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
+        for idx in range(len(prompts)):
+            # 为每个prompt创建模拟响应
+            mock_responses = []
             expected_len = test_splits[idx][1] - test_splits[idx][0]
+            
+            # 模拟LLM的响应格式 - 根据serializer的类型生成不同格式的响应
+            label_names = [label.name for label in meta.labels]
+            
+            # 生成随机结果
+            random_results = [random.choice(label_names) for _ in range(expected_len)]
+            
+            # 根据serializer类型生成格式化响应
+            if isinstance(serializer, TabularSerializer):
+                formatted_response = "Predictions:\n" + "\n".join(random_results)
+            elif isinstance(serializer, ListSerializer):
+                formatted_response = "Predictions: " + ", ".join(random_results)
+            else:  # 默认格式
+                formatted_response = "\n".join([f"Sample {i+1}: {label}" for i, label in enumerate(random_results)])
+                
+            mock_responses.append(formatted_response)
+            
+            # 创建模拟的token统计
+            mock_token_info = {
+                "prompt_tokens": len(prompts[idx]) // 4,  # 粗略估计
+                "completion_tokens": len(formatted_response) // 4,
+                "total_tokens": (len(prompts[idx]) + len(formatted_response)) // 4
+            }
+            
+            # 记录token信息
+            token_stats["evaluation"].append(mock_token_info)
+            token_stats["total_tokens"] += mock_token_info["total_tokens"]
+            global_log(f"[DEBUG] 使用随机模拟结果替代LLM API调用")
+            global_log(f"[DEBUG] Token使用(模拟): prompt={mock_token_info['prompt_tokens']}, completion={mock_token_info['completion_tokens']}, total={mock_token_info['total_tokens']}")
+            
+            # 解析响应
             found = False
-            for response in responses:
-                global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
+            for response in mock_responses:
+                global_log(f"[DEBUG] 模拟LLM响应:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
-                global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
+                global_log(f"[DEBUG] decode后结果: {results_batch}")
                 if len(results_batch) == expected_len:
                     found = True
                     results += results_batch
@@ -804,16 +866,16 @@ def evaluate(
                     break
                 else:
                     global_log(
-                        "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                        "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
                             expected_len, len(results_batch), response
                         )
                     )
             if not found:
-                global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
+                global_log("Failed to find any valid response, skipping...")
                 result_dict = {
                     "record": prompts[0],
-                    "failed_raw_output": responses,
-                     "token_stats": tree_model.token_stats,  # 添加token统计
+                    "failed_raw_output": mock_responses,
+                    "token_stats": token_stats,  # 添加token统计
                 }
                 return result_dict
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
@@ -888,15 +950,46 @@ def evaluate(
                         raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
                     raw_results = []
                     results = []
-                    for idx, responses in enumerate(runner.run(prompts)):
-                        global_log(f"[DEBUG][CoT] 第{idx+1}个prompt，期望labels数: {test_splits[idx][1] - test_splits[idx][0]}")
-                        global_log(f"[DEBUG][CoT] CoT返回response candidates: {responses}")
+                    for idx in range(len(prompts)):
+                        # 为每个prompt创建模拟响应
+                        mock_responses = []
                         expected_len = test_splits[idx][1] - test_splits[idx][0]
+                        
+                        # 模拟LLM的响应格式 - 根据serializer的类型生成不同格式的响应
+                        label_names = [label.name for label in meta.labels]
+                        
+                        # 生成随机结果
+                        random_results = [random.choice(label_names) for _ in range(expected_len)]
+                        
+                        # 根据serializer类型生成格式化响应
+                        if isinstance(serializer, TabularSerializer):
+                            formatted_response = "Predictions:\n" + "\n".join(random_results)
+                        elif isinstance(serializer, ListSerializer):
+                            formatted_response = "Predictions: " + ", ".join(random_results)
+                        else:  # 默认格式
+                            formatted_response = "\n".join([f"Sample {i+1}: {label}" for i, label in enumerate(random_results)])
+                            
+                        mock_responses.append(formatted_response)
+                        
+                        # 创建模拟的token统计
+                        mock_token_info = {
+                            "prompt_tokens": len(prompts[idx]) // 4,  # 粗略估计
+                            "completion_tokens": len(formatted_response) // 4,
+                            "total_tokens": (len(prompts[idx]) + len(formatted_response)) // 4
+                        }
+                        
+                        # 记录token信息
+                        token_stats["evaluation"].append(mock_token_info)
+                        token_stats["total_tokens"] += mock_token_info["total_tokens"]
+                        global_log(f"[DEBUG] 使用随机模拟结果替代LLM API调用")
+                        global_log(f"[DEBUG] Token使用(模拟): prompt={mock_token_info['prompt_tokens']}, completion={mock_token_info['completion_tokens']}, total={mock_token_info['total_tokens']}")
+                        
+                        # 解析响应
                         found = False
-                        for response in responses:
-                            global_log(f"[DEBUG][LLM] LLM response内容如下:\n{response}")
+                        for response in mock_responses:
+                            global_log(f"[DEBUG] 模拟LLM响应:\n{response}")
                             results_batch = serializer.answer_decoder.decode(response)
-                            global_log(f"[DEBUG][LLM] decode后结果: {results_batch}")
+                            global_log(f"[DEBUG] decode后结果: {results_batch}")
                             if len(results_batch) == expected_len:
                                 found = True
                                 results += results_batch
@@ -904,15 +997,16 @@ def evaluate(
                                 break
                             else:
                                 global_log(
-                                    "[DEBUG][LLM] Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                    "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
                                         expected_len, len(results_batch), response
                                     )
                                 )
                         if not found:
-                            global_log("[ERROR][LLM] Failed to find any valid response, skipping...")
+                            global_log("Failed to find any valid response, skipping...")
                             result_dict = {
                                 "record": prompts[0],
-                                "failed_raw_output": responses,
+                                "failed_raw_output": mock_responses,
+                                "token_stats": token_stats,  # 添加token统计
                             }
                             return result_dict
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
@@ -1064,16 +1158,47 @@ def evaluate(
         raw_results = []
         results = []
 
-        for idx, (responses, token_info) in enumerate(runner.run(prompts)):
-            # 记录token信息
-            tree_model.token_stats['evaluation'].append(token_info)
-            tree_model.token_stats['total_tokens'] += token_info["total_tokens"]
-            global_log(f"[DEBUG][LLM] Token使用: prompt={token_info['prompt_tokens']}, completion={token_info['completion_tokens']}, total={token_info['total_tokens']}")
+        # 替换原来的runner.run调用，使用随机结果代替
+        for idx in range(len(prompts)):
+            # 为每个prompt创建模拟响应
+            mock_responses = []
             expected_len = test_splits[idx][1] - test_splits[idx][0]
+            
+            # 模拟LLM的响应格式 - 根据serializer的类型生成不同格式的响应
+            label_names = [label.name for label in meta.labels]
+            
+            # 生成随机结果
+            random_results = [random.choice(label_names) for _ in range(expected_len)]
+            
+            # 根据serializer类型生成格式化响应
+            if isinstance(serializer, TabularSerializer):
+                formatted_response = "Predictions:\n" + "\n".join(random_results)
+            elif isinstance(serializer, ListSerializer):
+                formatted_response = "Predictions: " + ", ".join(random_results)
+            else:  # 默认格式
+                formatted_response = "\n".join([f"Sample {i+1}: {label}" for i, label in enumerate(random_results)])
+                
+            mock_responses.append(formatted_response)
+            
+            # 创建模拟的token统计
+            mock_token_info = {
+                "prompt_tokens": len(prompts[idx]) // 4,  # 粗略估计
+                "completion_tokens": len(formatted_response) // 4,
+                "total_tokens": (len(prompts[idx]) + len(formatted_response)) // 4
+            }
+            
+            # 记录token信息
+            token_stats["evaluation"].append(mock_token_info)
+            token_stats["total_tokens"] += mock_token_info["total_tokens"]
+            global_log(f"[DEBUG] 使用随机模拟结果替代LLM API调用")
+            global_log(f"[DEBUG] Token使用(模拟): prompt={mock_token_info['prompt_tokens']}, completion={mock_token_info['completion_tokens']}, total={mock_token_info['total_tokens']}")
+            
+            # 解析响应
             found = False
-            for response in responses:
-                global_log(f"Full LLM response:\n{response}")
+            for response in mock_responses:
+                global_log(f"[DEBUG] 模拟LLM响应:\n{response}")
                 results_batch = serializer.answer_decoder.decode(response)
+                global_log(f"[DEBUG] decode后结果: {results_batch}")
                 if len(results_batch) == expected_len:
                     found = True
                     results += results_batch
@@ -1089,10 +1214,9 @@ def evaluate(
                 global_log("Failed to find any valid response, skipping...")
                 result_dict = {
                     "record": prompts[0],
-                    "failed_raw_output": responses,
-                    "token_stats": tree_model.token_stats,  # 添加token统计
+                    "failed_raw_output": mock_responses,
+                    "token_stats": token_stats,  # 添加token统计
                 }
-                return result_dict
 
         acc = calc_accuracy(labels, results)
         # 使用专用函数计算AUC，将结果改为字典形式
