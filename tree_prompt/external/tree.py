@@ -270,7 +270,17 @@ class CoTDecisionTree:
             # 解析条件(支持AND连接的多个条件)
             for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
                 cond = cond.strip()
-                cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
+                
+                # 新增：移除整个条件周围的反引号
+                if cond.startswith('`') and '`' in cond[1:]:
+                    # 找到闭合的反引号
+                    close_idx = cond.find('`', 1)
+                    if close_idx > 0:
+                        # 提取反引号内的内容作为条件
+                        inner_cond = cond[1:close_idx].strip()
+                        cond = inner_cond + cond[close_idx+1:].strip()
+                
+                cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
                 if not cond_match:
                     self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                     continue
@@ -791,7 +801,18 @@ class TreeModel:
                 conds = [c.strip() for c in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)]
                 parsed_conditions = []
                 for cond in conds:
-                    cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
+                    cond = cond.strip()
+                    
+                    # 新增：移除整个条件周围的反引号
+                    if cond.startswith('`') and '`' in cond[1:]:
+                        # 找到闭合的反引号
+                        close_idx = cond.find('`', 1)
+                        if close_idx > 0:
+                            # 提取反引号内的内容作为条件
+                            inner_cond = cond[1:close_idx].strip()
+                            cond = inner_cond + cond[close_idx+1:].strip()
+                    
+                    cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
                     if not cond_match:
                         self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                         continue
