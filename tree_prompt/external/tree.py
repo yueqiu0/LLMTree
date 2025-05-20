@@ -873,6 +873,9 @@ Do NOT include any explanation or reasoning in your response.
                     label_value = self.meta.get_label_value(rule_label)
                     if label_value is not None:
                         prediction = label_value
+                        # 找到有效的叶子节点规则后，结束匹配
+                        self.logger.log(f"[DEBUG] 匹配到叶子节点规则 {idx+1}: {rule_label} -> {label_value}")
+                        break
                     else:
                         # 如果找不到对应的标签值，记录警告并使用默认标签
                         self.logger.log(f"[WARNING] 找不到标签 '{rule_label}' 对应的值，使用默认标签")
@@ -880,18 +883,24 @@ Do NOT include any explanation or reasoning in your response.
                             prediction = self.meta.labels[0].value
                         else:
                             prediction = 0
-                    break
+                        break
+            
+            # 记录命中的规则
             if matched_rule_idx is not None:
                 rule_hit_count[matched_rule_idx] += 1
-                predictions.append(prediction)
-            else:
+            
+            # 如果没有匹配到有效的预测值，使用默认标签
+            if prediction is None:
                 # 使用默认标签值
                 if hasattr(self.meta, 'labels') and self.meta.labels:
                     default_label_value = self.meta.labels[0].value
                 else:
                     default_label_value = 0
-                self.logger.log(f"[DEBUG] 样本未匹配任何规则，使用默认标签值: {default_label_value}")
-                predictions.append(default_label_value)
+                self.logger.log(f"[DEBUG] 样本未匹配到有效的叶子节点规则，使用默认标签值: {default_label_value}")
+                prediction = default_label_value
+            
+            predictions.append(prediction)
+            
         # 输出每条规则命中数
         for idx, count in enumerate(rule_hit_count):
             self.logger.log(f"[规则{idx+1}] 命中样本数: {count}")
@@ -983,6 +992,11 @@ Do NOT include any explanation or reasoning in your response.
                     break
             
             if all_conditions_met:
+                # 检查这条规则是否是中间节点规则
+                if isinstance(r, dict) and 'label' in r and r.get('label', '').strip() in ['[NODE]', 'NODE']:
+                    # 如果是中间节点规则，不要立即返回，继续检查其他规则
+                    self.logger.log(f"[DEBUG] 匹配到中间节点规则，继续匹配其他规则")
+                    continue
                 return True
                 
         return False
