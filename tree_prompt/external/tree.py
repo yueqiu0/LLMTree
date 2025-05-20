@@ -253,23 +253,31 @@ class CoTDecisionTree:
             self.logger.log("No BEGIN_TREE/END_TREE block found, using full response")
             
         rules = []
-        rule_pattern = re.compile(r'^\s*(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
+        # 修改正则表达式，使其能匹配前面带有破折号和空格的规则
+        # 例如: "- (1) IF feature > value THEN label"
+        rule_pattern = re.compile(r'^\s*(?:-\s*)?(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
         
-        for line in tree_block.split('\n'):
+        # 记录每行文本及其解析结果，方便调试
+        self.logger.log("[DEBUG] 开始逐行解析规则:")
+        for line_idx, line in enumerate(tree_block.split('\n')):
             line = line.strip()
             if not line or line.startswith('#') or line.lower().startswith('note:'):
                 continue
                 
+            self.logger.log(f"[DEBUG] 解析第{line_idx+1}行: '{line}'")
             match = rule_pattern.match(line)
             if not match:
+                self.logger.log(f"[DEBUG] 第{line_idx+1}行不符合规则格式")
                 continue
                 
             condition, label = match.groups()
+            self.logger.log(f"[DEBUG] 提取到条件: '{condition}', 标签: '{label}'")
             conditions = []
             
             # 解析条件(支持AND连接的多个条件)
-            for cond in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE):
+            for cond_idx, cond in enumerate(re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)):
                 cond = cond.strip()
+                self.logger.log(f"[DEBUG] 解析条件 {cond_idx+1}: '{cond}'")
                 
                 # 新增：移除整个条件周围的反引号
                 if cond.startswith('`') and '`' in cond[1:]:
@@ -279,10 +287,12 @@ class CoTDecisionTree:
                         # 提取反引号内的内容作为条件
                         inner_cond = cond[1:close_idx].strip()
                         cond = inner_cond + cond[close_idx+1:].strip()
+                        self.logger.log(f"[DEBUG] 移除反引号后的条件: '{cond}'")
                 
-                cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
+                # 使用更灵活的正则表达式匹配条件
+                cond_match = re.match(r'^(?:`?([\w_][\w\s\-_\.]+)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d\.]+|[\'\"]?[\w\s\-]+[\'\"]?)$', cond)
                 if not cond_match:
-                    self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
+                    self.logger.log(f"[DEBUG] 条件格式不匹配: '{cond}'")
                     continue
                     
                 feature, operator, value = cond_match.groups()
@@ -291,9 +301,10 @@ class CoTDecisionTree:
                 # 移除值两端的引号（如果存在）
                 if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
                     value = value[1:-1]
+                    self.logger.log(f"[DEBUG] 移除引号后的值: '{value}'")
                 
                 if feature not in self.feature_name_to_col:
-                    self.logger.log(f"[ERROR] Unknown feature '{feature}'")
+                    self.logger.log(f"[ERROR] 未知特征: '{feature}'")
                     continue
                     
                 try:
@@ -304,6 +315,7 @@ class CoTDecisionTree:
                 except ValueError:
                     pass
                     
+                self.logger.log(f"[DEBUG] 解析结果: 特征='{feature}', 操作符='{operator}', 值='{value}'")
                 conditions.append({
                     'feature': feature,
                     'operator': operator,
@@ -311,14 +323,22 @@ class CoTDecisionTree:
                 })
                 
             if conditions:  # 只添加有效的规则
-                rules.append({
+                rule = {
                     'conditions': conditions,
                     'label': label.strip()
-                })
+                }
+                rules.append(rule)
+                self.logger.log(f"[DEBUG] 成功添加规则: {rule}")
+            else:
+                self.logger.log(f"[DEBUG] 第{line_idx+1}行未能提取到有效条件，跳过")
                 
         self.logger.log(f"Successfully parsed {len(rules)} rules")
         if not rules:
             self.logger.log("[ERROR] Failed to parse any valid rules!")
+            # 打印出完整的响应内容以便调试
+            self.logger.log("[ERROR] 完整响应内容:")
+            for idx, line in enumerate(response.split('\n')):
+                self.logger.log(f"[Line {idx+1}] {line}")
             
         return rules
 
@@ -788,7 +808,7 @@ class TreeModel:
             tree_block = response
             self.logger.log("No BEGIN_TREE/END_TREE block found, using full response for rule extraction.")
         # 只解析 N. IF ... THEN ... 格式的规则
-        rule_pattern = re.compile(r'^\s*(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
+        rule_pattern = re.compile(r'^\s*(?:-\s*)?(?:\(?\d+\)?[\.)]?)?\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$', re.IGNORECASE)
         for line in tree_block.split('\n'):
             line = line.strip()
             if not line or line.startswith('#') or line.lower().startswith('note:'):
@@ -812,7 +832,7 @@ class TreeModel:
                             inner_cond = cond[1:close_idx].strip()
                             cond = inner_cond + cond[close_idx+1:].strip()
                     
-                    cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
+                    cond_match = re.match(r'^(?:`?([\w_][\w\s\-_\.]+)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d\.]+|[\'\"]?[\w\s\-]+[\'\"]?)$', cond)
                     if not cond_match:
                         self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                         continue
