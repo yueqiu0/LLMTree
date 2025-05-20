@@ -563,7 +563,7 @@ Do NOT include any explanation or reasoning in your response.
         return visualization
     
     def _extract_rule_texts(self, response):
-        """从LLM响应中提取规则文本"""
+        """从LLM响应中提取规则文本，并验证规则特征是否匹配"""
         if not response:
             return []
         
@@ -580,10 +580,121 @@ Do NOT include any explanation or reasoning in your response.
             
             # 只保留前两条规则
             if len(rule_texts) >= 2:
-                self.logger.log(f"[规则提取] 只保留前两条规则，过滤后续规则")
+                self.logger.log(f"[规则提取] 已提取两条规则，过滤后续规则")
                 break
         
+        # 验证规则对是否有效（特征必须完全相同，只有最后一个条件的操作符可能不同）
+        if len(rule_texts) == 2:
+            self.logger.log("[规则验证] 开始验证规则对")
+            
+            # 解析两条规则的条件
+            rule1_conditions = self._extract_conditions_from_rule_text(rule_texts[0])
+            rule2_conditions = self._extract_conditions_from_rule_text(rule_texts[1])
+            
+            # 检查提取的条件是否有效
+            if not rule1_conditions or not rule2_conditions:
+                self.logger.log("[规则验证] 无法提取规则条件，规则对无效")
+                return []
+                
+            # 检查条件数量是否一致
+            if len(rule1_conditions) != len(rule2_conditions):
+                self.logger.log(f"[规则验证] 条件数量不匹配 ({len(rule1_conditions)} vs {len(rule2_conditions)})，规则对无效")
+                return []
+                
+            # 逐个比较特征名和值
+            for i in range(len(rule1_conditions) - 1):  # 除了最后一个条件外
+                # 检查特征名
+                if rule1_conditions[i]['feature'] != rule2_conditions[i]['feature']:
+                    self.logger.log(f"[规则验证] 特征不匹配: {rule1_conditions[i]['feature']} vs {rule2_conditions[i]['feature']}，规则对无效")
+                    return []
+                
+                # 检查值
+                if rule1_conditions[i]['value'] != rule2_conditions[i]['value']:
+                    self.logger.log(f"[规则验证] 值不匹配: {rule1_conditions[i]['value']} vs {rule2_conditions[i]['value']}，规则对无效")
+                    return []
+                
+                # 检查操作符（非最后一个条件的操作符应相同）
+                if rule1_conditions[i]['operator'] != rule2_conditions[i]['operator']:
+                    self.logger.log(f"[规则验证] 非最后一个条件的操作符不匹配: {rule1_conditions[i]['operator']} vs {rule2_conditions[i]['operator']}，规则对无效")
+                    return []
+            
+            # 检查最后一个条件
+            last_idx = len(rule1_conditions) - 1
+            
+            # 检查最后一个条件的特征是否相同
+            if rule1_conditions[last_idx]['feature'] != rule2_conditions[last_idx]['feature']:
+                self.logger.log(f"[规则验证] 最后一个条件的特征不匹配，规则对无效")
+                return []
+            
+            # 检查最后一个条件的值是否相同
+            if rule1_conditions[last_idx]['value'] != rule2_conditions[last_idx]['value']:
+                self.logger.log(f"[规则验证] 最后一个条件的值不匹配: {rule1_conditions[last_idx]['value']} vs {rule2_conditions[last_idx]['value']}，规则对无效")
+                return []
+            
+            # 检查最后一个条件的操作符是否互补
+            op1 = rule1_conditions[last_idx]['operator']
+            op2 = rule2_conditions[last_idx]['operator']
+            valid_op_pairs = [('<', '>='), ('>=', '<'), ('<=', '>'), ('>', '<='), ('=', '!='), ('!=', '='), ('==', '!='), ('!=', '==')]
+            
+            if (op1, op2) not in valid_op_pairs and (op2, op1) not in valid_op_pairs:
+                self.logger.log(f"[规则验证] 最后一个条件的操作符不是互补关系: {op1} vs {op2}，规则对无效")
+                return []
+            
+            # 验证通过
+            self.logger.log("[规则验证] 规则对验证通过")
+            return rule_texts
+        
+        # 如果不是正好两条规则，返回空列表
+        if len(rule_texts) != 2:
+            self.logger.log(f"[规则验证] 提取到 {len(rule_texts)} 条规则，需要正好2条规则，规则对无效")
+            return []
+            
         return rule_texts
+        
+    def _extract_conditions_from_rule_text(self, rule_text):
+        """从规则文本中提取条件列表"""
+        try:
+            # 匹配 IF-THEN 结构
+            match = re.match(r'IF\s+(.+?)\s+THEN\s+(.+)', rule_text, re.IGNORECASE)
+            if not match:
+                self.logger.log(f"[规则解析] 规则格式不匹配: {rule_text}")
+                return []
+                
+            conditions_text = match.group(1)
+            
+            # 拆分AND条件
+            condition_parts = re.split(r'\s+AND\s+', conditions_text, flags=re.IGNORECASE)
+            
+            parsed_conditions = []
+            for condition in condition_parts:
+                # 新增：移除整个条件周围的反引号
+                if condition.startswith('`') and '`' in condition[1:]:
+                    # 找到闭合的反引号
+                    close_idx = condition.find('`', 1)
+                    if close_idx > 0:
+                        # 提取反引号内的内容作为条件
+                        inner_cond = condition[1:close_idx].strip()
+                        condition = inner_cond + condition[close_idx+1:].strip()
+                
+                # 解析特征、操作符和值
+                cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', condition.strip())
+                if not cond_match:
+                    self.logger.log(f"[规则解析] 条件格式不匹配: {condition}")
+                    continue
+                    
+                feature, operator, value = cond_match.groups()
+                feature = feature.strip()
+                
+                parsed_conditions.append({
+                    'feature': feature,
+                    'operator': operator,
+                    'value': value
+                })
+                
+            return parsed_conditions
+        except Exception as e:
+            self.logger.log(f"[规则解析] 提取条件时出错: {str(e)}")
+            return []
     
     def _parse_single_rule(self, rule_text, current_path):
         """解析单条规则文本为规则对象"""
@@ -1371,7 +1482,7 @@ class TreeModel:
                 conds = [c.strip() for c in re.split(r'\s+AND\s+', condition, flags=re.IGNORECASE)]
                 parsed_conditions = []
                 for cond in conds:
-                    cond_match = re.match(r'^([\w_][\w\s\-_]*)\s*(<=|>=|<|>)\s*([\-]?[\d.]+|\w+)$', cond)
+                    cond_match = re.match(r'^(?:`?([\w_][\w\s\-_]*)`?)\s*(<=|>=|<|>|=|==|!=)\s*([\-]?[\d.]+|[\'\"]?[\w\s]+[\'\"]?)$', cond)
                     if not cond_match:
                         self.logger.log(f"[DEBUG] Invalid condition format: '{cond}'")
                         continue
