@@ -17,76 +17,6 @@ features:
     tcp: TCP protocol
     udp: UDP protocol
     icmp: ICMP protocol
-- name: service
-  desc: Network service on the destination
-  type: categorical
-  categories:
-    http: HTTP service
-    smtp: SMTP service
-    ftp: FTP service
-    ftp_data: FTP data transfer
-    telnet: Telnet service
-    finger: Finger service
-    domain_u: Domain Name Service
-    auth: Authentication service
-    ecr_i: ECR Internet protocol
-    other: Other services
-    private: Private service
-    pop_3: POP version 3
-    eco_i: ECO Internet protocol
-    ntp_u: Network Time Protocol
-    urp_i: URP Internet protocol
-    domain: Domain Name Service
-    time: Time service
-    ssh: Secure Shell
-    imap4: IMAP version 4
-    daytime: Daytime service
-    ctf: Common Trace Facility
-    name: Name service
-    whois: WHOIS service
-    mtp: Mail Transfer Protocol
-    gopher: Gopher service
-    rje: Remote Job Entry
-    link: Link service
-    remote_job: Remote Job
-    X11: X Window System
-    Z39_50: Z39.50 information retrieval
-    uucp: Unix-to-Unix Copy
-    netbios_ns: NetBIOS Name Service
-    netbios_dgm: NetBIOS Datagram Service
-    netbios_ssn: NetBIOS Session Service
-    supdup: SUPDUP Protocol
-    hostnames: Host Names Server
-    login: Login service
-    exec: Remote execution
-    shell: Shell
-    printer: Printer service
-    efs: Extended File System
-    courier: Courier service
-    systat: System Statistics
-    netstat: Network Statistics
-    uucp_path: UUCP Path Service
-    klogin: Kerberos login
-    kshell: Kerberos shell
-    sunrpc: SUN Remote Procedure Call
-    sql_net: SQL Network
-    vmnet: Virtual Machine Network
-    bgp: Border Gateway Protocol
-    csnet_ns: CSNET Name Service
-    pop_2: POP version 2
-    nntp: Network News Transfer Protocol
-    iso_tsap: ISO Transport Service Access Point
-    echo: Echo service
-    discard: Discard service
-    IRC: Internet Relay Chat
-    tim_i: TIM internet protocol
-    red_i: RED internet protocol
-    ldap: LDAP directory service
-    http_443: HTTPS secure web service
-    tftp_u: Trivial File Transfer Protocol UDP
-    pm_dump: Performance Monitor dump
-    nnsp: Network News Service Protocol
-    icmp: Internet Control Message Protocol
 - name: flag
   desc: Normal or error status of the connection
   type: categorical
@@ -103,10 +33,10 @@ features:
     OTH: No SYN seen, setup outside trace
     RSTOS0: Originator sent SYN then RST
 - name: src_bytes
-  desc: Number of data bytes from source to destination
+  desc: Number of data bytes from source to destination (bytes)
   type: int
 - name: dst_bytes
-  desc: Number of data bytes from destination to source
+  desc: Number of data bytes from destination to source (bytes)
   type: int
 - name: wrong_fragment
   desc: Number of wrong fragments, value ranges from 0 to 3
