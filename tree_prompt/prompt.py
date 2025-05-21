@@ -64,11 +64,9 @@ class Serializer:
         return None
         
     def unknown_correction_example(self) -> str:
-        """生成处理未知预测的示例文本"""
-        # 获取标签名称列表
+        
         label_names = [label.name for label in self.meta.labels]
         
-        # 构建示例文本 - 使用简单的 yes/no 示例
         example = f"""
 Incorrect output for 4 lines:
 {label_names[0]}
@@ -225,7 +223,7 @@ class TextSerializer(Serializer):
 
 class CustomDecoder:
     def decode(self, text):
-        # 处理多行文本格式
+     
         lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
         return lines
 

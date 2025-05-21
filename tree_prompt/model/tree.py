@@ -30,17 +30,14 @@ class Condition:
         return cond
 
     def merged(self, other: "Condition") -> "Condition":
-        # the order matters!
         assert self.feature == other.feature
 
-        # categorical
         if self.is_categorical:
             intersection = self.categories.intersection(other.categories)
-            if len(intersection) == 0 or len(intersection) == len(self.categories):
+            if not intersection or len(intersection) == len(self.categories):
                 return None
             return Condition.categorical(self.feature, intersection)
 
-        # numerical
         if self.lower is None:
             lower = other.lower
         elif other.lower is None:
@@ -49,6 +46,7 @@ class Condition:
             return None
         else:
             lower = other.lower
+            
         if self.upper is None:
             upper = other.upper
         elif other.upper is None:
@@ -58,7 +56,7 @@ class Condition:
         else:
             upper = other.upper
 
-        if upper is not None and lower is not None and upper <= lower:
+        if upper and lower and upper <= lower:
             return None
 
         return Condition.numerical(self.feature, lower, upper)
@@ -74,18 +72,17 @@ class RulePath:
 
     @staticmethod
     def from_conditions(conditions: list[Condition], value: float) -> "RulePath":
-        """从条件列表创建规则路径"""
         rule = RulePath()
         rule.value = value
         
         for cond in conditions:
             if cond.feature not in rule.conditions:
                 rule.conditions[cond.feature] = cond
-            elif rule.conditions[cond.feature] is None:
+            elif not rule.conditions[cond.feature]:
                 return None
             else:
                 merged = rule.conditions[cond.feature].merged(cond)
-                if merged is None:
+                if not merged:
                     return None
                 rule.conditions[cond.feature] = merged
         
@@ -115,10 +112,7 @@ class Node:
             self.used_features = parent.used_features.copy()
 
     def get_samples(self) -> np.ndarray:
-        """获取节点样本，确保始终返回数组"""
-        if self.samples is None:
-            return np.array([], dtype=int)
-        return self.samples
+        return self.samples if self.samples is not None else np.array([], dtype=int)
 
     def get_used_features(self) -> Set[int]:
         return self.used_features
@@ -149,38 +143,27 @@ class Node:
         self.is_categorical = None
 
     def freeze(self) -> None:
-        """冻结节点，不再参与分裂"""
         self.freezed = True
-        # 如果是叶子节点，确保leaf_class保持不变
         if self.is_leaf and self.leaf_class == -1:
-            logger.log("冻结未知类别(-1)叶子节点")
+            logger.log("Freezing unknown class (-1) leaf node")
         else:
-            logger.log(f"冻结节点，预测值: {self.leaf_class}")
+            logger.log(f"Freezing node with prediction: {self.leaf_class}")
 
     def next_node(self, feat_value: float | str | int) -> "Node":
         if self.is_leaf:
             return None
         if not self.is_categorical:
-            if feat_value < self.split_value:
-                return self.left_child
-            else:
-                return self.right_child
+            return self.left_child if feat_value < self.split_value else self.right_child
 
         assert type(feat_value) == type(self.split_value)
-        if feat_value == self.split_value:
-            return self.left_child
-        else:
-            return self.right_child
+        return self.left_child if feat_value == self.split_value else self.right_child
 
     def _dfs(self, on_node, callback_after_recurse=None):
-        """深度优先遍历树，确保处理空节点"""
-        # 检查节点是否存在
         if self is None:
             return
         
         on_node(self)
         
-        # 继续递归子节点，确保它们存在
         if not self.is_leaf:
             if self.left_child is not None:
                 self.left_child._dfs(on_node, callback_after_recurse)
@@ -191,7 +174,6 @@ class Node:
             callback_after_recurse(self)
 
     def predict(self, x: np.ndarray) -> int:
-        """预测单个样本的类别"""
         if self.is_leaf:
             return self.leaf_class
         
@@ -199,29 +181,24 @@ class Node:
         if self.is_categorical:
             if feature_value == self.split_value:
                 return self.left_child.predict(x) if self.left_child else -1
-            else:
-                return self.right_child.predict(x) if self.right_child else -1
+            return self.right_child.predict(x) if self.right_child else -1
         else:
             if feature_value < self.split_value:
                 return self.left_child.predict(x) if self.left_child else -1
-            else:
-                return self.right_child.predict(x) if self.right_child else -1
+            return self.right_child.predict(x) if self.right_child else -1
 
     def to_graphviz_node(self, node_id: str, features: list[str] = None, classes: list[str] = None) -> str:
-        """将节点转换为Graphviz节点表示"""
         if self.is_leaf:
-            # 修复: 正确处理-1（未知）类别
             if self.leaf_class == -1:
-                return f'  {node_id} [label="-1"]'  # 显示为-1或unknown
+                return f'  {node_id} [label="-1"]'
             
             label = str(self.leaf_class)
-            if classes is not None and 0 <= self.leaf_class < len(classes):
+            if classes and 0 <= self.leaf_class < len(classes):
                 label = classes[self.leaf_class]
             return f'  {node_id} [label="{label}"]'
         
-        # 非叶子节点的表示保持不变
         feature_name = str(self.split_feature)
-        if features is not None and 0 <= self.split_feature < len(features):
+        if features and 0 <= self.split_feature < len(features):
             feature_name = features[self.split_feature]
         
         if self.is_categorical:
@@ -231,37 +208,24 @@ class Node:
 
     @property
     def prediction(self) -> int:
-        """获取节点的预测值"""
         return self.leaf_class
 
     @prediction.setter
     def prediction(self, value: int) -> None:
-        """设置节点的预测值"""
-        # 修复: 不要替换-1值
-        self.leaf_class = value  # 直接设置，保留-1值
-        logger.log(f"设置节点预测值为: {value}")
+        self.leaf_class = value
+        logger.log(f"Setting node prediction to: {value}")
 
 
 class TreeBase:
     def predict_one(self, x: np.ndarray) -> int:
         raise NotImplementedError()
 
-    def to_graphviz(
-        self,
-        features: list[str] = None,
-        classes: list[str] = None,
-    ):
+    def to_graphviz(self, features: list[str] = None, classes: list[str] = None):
         import graphviz
+        return graphviz.Source(self.to_graphviz_source(features, classes))
 
-        source = self.to_graphviz_source(features, classes)
-        return graphviz.Source(source)
-
-    def to_graphviz_source(
-        self,
-        features: list[str] = None,
-        classes: list[str] = None,
-        graph_name: str = None,
-    ) -> str:
+    def to_graphviz_source(self, features: list[str] = None, 
+                         classes: list[str] = None, graph_name: str = None) -> str:
         raise NotImplementedError()
 
 
@@ -277,57 +241,47 @@ class DecisionTree(TreeBase):
         self.root_node.samples = np.arange(len(train_x))
 
     def _go_left(self, x: np.ndarray, node: Node) -> bool:
-        """判断样本是否应该去左子树"""
         if node.is_leaf:
             return False
             
         feature = node.split_feature
         split_value = node.split_value
         
-        # 如果分裂值为None，说明节点还未完成分裂
         if split_value is None:
             return False
         
         if node.is_categorical:
-            # 类别型特征
             return x[feature] == split_value
         else:
-            # 数值型特征
             try:
                 return float(x[feature]) < float(split_value)
             except (ValueError, TypeError):
-                logger.log(f"警告: 无法比较特征值 {x[feature]} 和分裂点 {split_value}")
+                logger.log(f"Warning: Cannot compare feature value {x[feature]} with split {split_value}")
                 return False
 
     def next_to_split(self) -> Node:
-        """获取下一个要分裂的节点"""
         def _dfs(node: Node) -> Node:
-            if node is None or node.freezed:
+            if not node or node.freezed:
                 return None
                 
             if node.is_leaf:
-                # 打印叶节点样本标签信息
                 if hasattr(self, 'train_y') and self.train_y is not None:
                     samples = node.get_samples()
-                    if len(samples) > 0:
+                    if samples.size > 0:
                         labels = self.train_y[samples]
                         unique_labels, counts = np.unique(labels, return_counts=True)
-                        label_dist = {int(label): count for label, count in zip(unique_labels, counts)}
-                        logger.log(f"叶节点({id(node)})样本标签分布: {label_dist}, 预测标签: {node.leaf_class}")
+                        logger.log(f"Leaf node samples: {dict(zip(unique_labels.astype(int), counts))}, Prediction: {node.leaf_class}")
                 return node
             
-            # 如果节点未完成分裂（split_value为None），返回该节点
             if node.split_value is None:
                 if hasattr(self, 'train_y') and self.train_y is not None:
                     samples = node.get_samples()
-                    if len(samples) > 0:
+                    if samples.size > 0:
                         labels = self.train_y[samples]
                         unique_labels, counts = np.unique(labels, return_counts=True)
-                        label_dist = {int(label): count for label, count in zip(unique_labels, counts)}
-                        logger.log(f"未分裂节点({id(node)})样本标签分布: {label_dist}")
+                        logger.log(f"Unsplitted node samples: {dict(zip(unique_labels.astype(int), counts))}")
                 return node
             
-            # 检查左右子树的样本是否正确
             left_samples = []
             right_samples = []
             
@@ -338,124 +292,85 @@ class DecisionTree(TreeBase):
                     else:
                         right_samples.append(idx)
                 except Exception as e:
-                    logger.log(f"警告: 分配样本时出错: {e}")
+                    logger.log(f"Error assigning sample: {e}")
                     continue
-            
-            # 打印分裂后的样本标签分布
-            if hasattr(self, 'train_y') and self.train_y is not None:
-                if len(left_samples) > 0:
-                    left_labels = self.train_y[left_samples]
-                    left_unique, left_counts = np.unique(left_labels, return_counts=True)
-                    left_dist = {int(label): count for label, count in zip(left_unique, left_counts)}
-                    logger.log(f"分裂后左子节点({id(node.left_child) if node.left_child else 'None'})样本标签分布: {left_dist}")
-                
-                if len(right_samples) > 0:
-                    right_labels = self.train_y[right_samples]
-                    right_unique, right_counts = np.unique(right_labels, return_counts=True)
-                    right_dist = {int(label): count for label, count in zip(right_unique, right_counts)}
-                    logger.log(f"分裂后右子节点({id(node.right_child) if node.right_child else 'None'})样本标签分布: {right_dist}")
-            
-            if len(left_samples) > 0:
+
+            if left_samples:
                 node.left_child.samples = np.array(left_samples)
-            if len(right_samples) > 0:
+            if right_samples:
                 node.right_child.samples = np.array(right_samples)
             
-            # 递归检查左右子树
             left_result = _dfs(node.left_child)
-            if left_result is not None:
+            if left_result:
                 return left_result
             
             return _dfs(node.right_child)
         
         return _dfs(self.root_node)
-
     def predict_one(self, x: np.ndarray) -> int:
-        """预测单个样本的类别"""
         node = self.root_node
-        # 检查根节点是否为空
-        if node is None:
-            return -1  # 返回未知类别
+        if not node:
+            return -1
         
-        while node is not None and not node.is_leaf:
+        while node and not node.is_leaf:
             if self._go_left(x, node):
                 node = node.left_child
             else:
                 node = node.right_child
             
-            # 检查子节点是否为空
-            if node is None:
-                return -1  # 子节点为空，返回未知类别
+            if not node:
+                return -1
             
-        # 如果节点存在并且是叶节点，返回其类别
-        return node.leaf_class if node is not None else -1
+        return node.leaf_class if node else -1
 
     def predict(self, x: np.ndarray) -> np.ndarray:
-        """预测样本的类别"""
         predictions = np.zeros(x.shape[0], dtype=int)
         
         for i in range(x.shape[0]):
             node = self.root_node
-            # 检查根节点是否为None
-            if node is None:
-                predictions[i] = -1  # 如果根节点为None，返回未知类别
+            if not node:
+                predictions[i] = -1
                 continue
             
-            while node is not None and not node.is_leaf:
+            while node and not node.is_leaf:
                 if self._go_left(x[i], node):
                     node = node.left_child
                 else:
                     node = node.right_child
                 
-                # 检查子节点是否为None
-                if node is None:
-                    # 子节点为None，设置为未知类别并跳出循环
+                if not node:
                     predictions[i] = -1
                     break
                 
-            # 如果节点存在且是叶节点，使用其类别值
-            if node is not None:
-                predictions[i] = node.leaf_class
-            else:
-                # 如果节点是None（例如在上面的break之后），使用未知类别
-                predictions[i] = -1
+            predictions[i] = node.leaf_class if node else -1
         
         return predictions
 
     def predict_raw(self, x: np.ndarray) -> list[int]:
-        """预测样本的原始类别（包括unknown）"""
         return self.predict(x)
 
     def export_paths(self) -> list[RulePath]:
-        """导出所有规则路径"""
         paths = []
         
         def _dfs(node: Node, conditions: list[Condition] = None) -> None:
-            if conditions is None:
+            if not conditions:
                 conditions = []
                 
             if node.is_leaf:
-                # 创建规则路径
-                path = RulePath.from_conditions(conditions, node.leaf_class)
-                if path is not None:
+                if path := RulePath.from_conditions(conditions, node.leaf_class):
                     paths.append(path)
                 return
                 
-            if node.split_feature is None:
+            if not node.split_feature:
                 return
                 
-            # 创建左子树条件（小于或等于分裂值）
             if node.is_categorical:
                 left_cond = Condition.categorical(node.split_feature, {node.split_value})
+                right_cond = Condition.categorical(node.split_feature, set())
             else:
                 left_cond = Condition.numerical(node.split_feature, None, node.split_value)
-                
-            # 创建右子树条件（大于分裂值）
-            if node.is_categorical:
-                right_cond = Condition.categorical(node.split_feature, set())  # 不等于分裂值
-            else:
                 right_cond = Condition.numerical(node.split_feature, node.split_value, None)
             
-            # 递归遍历左右子树
             if node.left_child:
                 _dfs(node.left_child, conditions + [left_cond])
             if node.right_child:
@@ -465,72 +380,56 @@ class DecisionTree(TreeBase):
         return paths
 
     def get_rules(self) -> list[RulePath]:
-        """获取所有决策路径规则"""
         rules = []
         
         def _collect_rules(node, conditions, collect_leaf):
-            if node is None:
+            if not node:
                 return
             
             if node.is_leaf and collect_leaf:
-                # 确保叶节点有有效的标签
-                if hasattr(node, 'leaf_class') and node.leaf_class is not None:
-                    # 添加调试信息
-                    logger.log(f"收集到叶节点规则，标签值: {node.leaf_class}")
-                    rule = RulePath.from_conditions(conditions.copy(), node.leaf_class)
-                    if rule:
+                if node.leaf_class is not None:
+                    logger.log(f"Collected leaf node rule with label: {node.leaf_class}")
+                    if rule := RulePath.from_conditions(conditions.copy(), node.leaf_class):
                         rules.append(rule)
                 return
             
-            # 非叶节点或不收集叶节点的情况
-            feature = node.split_feature
-            if feature is None:
+            if not node.split_feature:
                 return
             
-            # 左子树的条件
             if node.is_categorical:
-                left_cond = Condition.categorical(feature, {node.split_value})
+                left_cond = Condition.categorical(node.split_feature, {node.split_value})
+                right_values = self.categories_map[node.split_feature] - {node.split_value}
+                right_cond = Condition.categorical(node.split_feature, right_values)
             else:
-                left_cond = Condition.numerical(feature, None, node.split_value)
+                left_cond = Condition.numerical(node.split_feature, None, node.split_value)
+                right_cond = Condition.numerical(node.split_feature, node.split_value, None)
             
             conditions.append(left_cond)
             _collect_rules(node.left_child, conditions, collect_leaf)
             conditions.pop()
-            
-            # 右子树的条件
-            if node.is_categorical:
-                right_cond = Condition.categorical(feature, 
-                    set(self._get_other_categorical_values(feature, node.split_value)))
-            else:
-                right_cond = Condition.numerical(feature, node.split_value, None)
             
             conditions.append(right_cond)
             _collect_rules(node.right_child, conditions, collect_leaf)
             conditions.pop()
         
         _collect_rules(self.root_node, [], True)
-        logger.log(f"总共收集了 {len(rules)} 条规则")
+        logger.log(f"Total rules collected: {len(rules)}")
         return rules
 
     def export_nodes_dict(self) -> dict:
-        """导出节点字典，供序列化使用"""
         return self._export_nodes(self.root_node)
         
     def export(self) -> dict:
-        """导出完整模型"""
         return {
             "nodes": self._export_nodes(self.root_node),
             "args": {
                 "max_depth": self.max_depth,
-                "categories": {
-                    str(k): list(v) for k, v in self.categories_map.items()
-                },
+                "categories": {str(k): list(v) for k, v in self.categories_map.items()},
             },
         }
 
     def _export_nodes(self, node: Node) -> dict:
-        """导出节点"""
-        if node is None:
+        if not node:
             return None
             
         return {
@@ -543,14 +442,13 @@ class DecisionTree(TreeBase):
 
     @staticmethod
     def load_nodes_dict(nodes_dict: dict, max_depth: int, categories_map: dict) -> "DecisionTree":
-        """从字典加载模型"""
         tree = DecisionTree(max_depth, categories_map)
         
         def _load_node(node_dict: dict) -> Node:
-            if node_dict is None:
+            if not node_dict:
                 return None
                 
-            node = Node(None, 1)  # depth will be set later
+            node = Node(None, 1)
             node.split_feature = node_dict["feature"]
             node.split_value = node_dict["split_value"]
             node.leaf_class = node_dict["prediction"]
@@ -561,120 +459,70 @@ class DecisionTree(TreeBase):
         tree.root_node = _load_node(nodes_dict)
         return tree
 
-    def to_graphviz_source(
-        self,
-        features: list[str] = None,
-        classes: list[str] = None,
-        graph_name: str = None,
-    ) -> str:
+    def to_graphviz_source(self, features: list[str] = None, 
+                          classes: list[str] = None, graph_name: str = None) -> str:
         lines = []
         self.root_node._id = "0"
 
         def on_node(node: Node):
-            """处理没有子节点的情况"""
             if not node.is_leaf:
-                left = node.left_child
-                right = node.right_child
-                
-                # 检查节点是否存在才添加ID和连接
-                if left is not None:
-                    left._id = node._id + "1"
-                    lines.append(f"{node._id} -> {left._id} [label=yes]")
-                
-                if right is not None:
-                    right._id = node._id + "2"
-                    lines.append(f"{node._id} -> {right._id} [label=no]")
+                if node.left_child:
+                    node.left_child._id = node._id + "1"
+                    lines.append(f"{node._id} -> {node.left_child._id} [label=yes]")
+                if node.right_child:
+                    node.right_child._id = node._id + "2"
+                    lines.append(f"{node._id} -> {node.right_child._id} [label=no]")
 
-            if node.is_leaf:
-                node_label = (
-                    (classes[node.leaf_class] if node.leaf_class >= 0 else "Unknown")
-                    if classes
-                    else node.leaf_class
-                )
-            else:
-                node_label = (
-                    f"{features[node.split_feature] if features else node.split_feature}"
-                    + (" = " if node.is_categorical else " < ")
-                    + f"{node.split_value}?"
-                )
-
+            node_label = (f"{classes[node.leaf_class]}" if node.is_leaf and classes else 
+                         f"{node.leaf_class}" if node.is_leaf else
+                         f"{features[node.split_feature] if features else node.split_feature}"
+                         f"{' == ' if node.is_categorical else ' < '}{node.split_value}?")
             lines.append(f'{node._id} [label="{node_label}"]')
 
-        self.root_node._dfs(on_node, None)
-
-        return (
-            f"digraph {graph_name if graph_name else 'G'}"
-            + " {\n  "
-            + "\n  ".join(lines)
-            + "\n}"
-        )
+        self.root_node._dfs(on_node)
+        return f"digraph {graph_name or 'G'} {{\n  " + "\n  ".join(lines) + "\n}}"
 
     def _assign_node_label(self, node):
-        """分配节点标签（使用多数类）"""
-        # 获取节点样本
         samples = node.get_samples()
-        if len(samples) == 0:
+        if not samples.size:
             return
         
-        # 获取样本标签
         labels = self.train_y[samples]
-        
-        # 使用字典统计每个标签的出现次数，处理不连续标签
         label_counts = {}
         for label in labels:
-            label_int = int(label)  # 确保转换为整数
-            if label_int not in label_counts:
-                label_counts[label_int] = 0
-            label_counts[label_int] += 1
+            label_int = int(label)
+            label_counts[label_int] = label_counts.get(label_int, 0) + 1
         
-        # 找出出现次数最多的标签
         if label_counts:
             majority_label = max(label_counts.items(), key=lambda x: x[1])[0]
-            node.set_prediction(majority_label)
-            logger.log(f"节点分配标签: {majority_label}, 样本标签分布: {label_counts}")
-        else:
-            logger.log("警告: 节点没有样本，无法分配标签")
+            node.leaf_class = majority_label
+            logger.log(f"Assigned label: {majority_label}, distribution: {label_counts}")
 
     def to_dict(self) -> dict:
-        """将决策树转换为字典"""
         return {
             "nodes": self._nodes_to_dict(self.root_node),
-            "num_classes": max(self._get_available_predictions()) + 1,  # 考虑-1标签
+            "num_classes": max(self._get_available_predictions()) + 1,
         }
         
     def _nodes_to_dict(self, node) -> dict:
-        """将节点转换为字典"""
-        result = {"id": id(node)}
-        
-        # 处理叶节点
-        if node.is_leaf:
-            result["value"] = node.leaf_class
-            # 对-1做特殊标记
-            if node.leaf_class == -1:
-                result["unknown"] = True
-            return result
-        
-        # ... 其余节点转换代码 ...
+        return {"id": id(node)} if not node else {
+            "id": id(node),
+            "value": node.leaf_class,
+            "unknown": node.leaf_class == -1
+        }
 
     def _get_available_predictions(self) -> list[int]:
-        """获取可用的预测值列表，包括-1表示未知类别"""
-        return [-1, *range(max(1, np.max(self.train_y) + 1) if hasattr(self, 'train_y') and len(self.train_y) > 0 else 1)]
+        return [-1, *range(max(1, np.max(self.train_y) + 1) if hasattr(self, 'train_y') and self.train_y.size else 1)]
 
     def find_non_leaf_nodes(self):
-        """返回所有非叶子节点"""
         nodes = []
-        
         def traverse(node):
-            if node is None:
-                return
-            if not node.is_leaf:
+            if node and not node.is_leaf:
                 nodes.append(node)
-                traverse(node.left_child)  # 使用正确的属性名
-                traverse(node.right_child)  # 使用正确的属性名
-        
+                traverse(node.left_child)
+                traverse(node.right_child)
         traverse(self.root_node)
         return nodes
-
 class RandomForest(TreeBase):
     def __init__(
         self,

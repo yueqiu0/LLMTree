@@ -66,7 +66,7 @@ class DatasetMeta:
         self.name = name
         self.desc = desc
         self.target = target
-        self.label_meaning = label_meaning  # 确保初始化时保存label_meaning
+        self.label_meaning = label_meaning  
         self.features = features or []
         self.labels = labels or []
         self.feature_shuffle_map: dict[int, int] = {}
@@ -130,14 +130,13 @@ class DatasetMeta:
         name = meta_dict.get('name', '')
         desc = meta_dict.get('desc', '')
         target = meta_dict.get('target', '')
-        label_meaning = meta_dict.get('label_meaning', '')  # 确保从字典中提取label_meaning
-        
-        # 创建DatasetMeta实例时传入label_meaning
+        label_meaning = meta_dict.get('label_meaning', '') 
+    
         return cls(
             name=name,
             desc=desc,
             target=target,
-            label_meaning=label_meaning,  # 确保传递label_meaning
+            label_meaning=label_meaning,
             features=[DatasetMeta.Feature.from_dict(f) for f in meta_dict.get('features', [])],
             labels=[DatasetMeta.Label.from_dict(l) for l in meta_dict.get('labels', [])]
         )
@@ -162,7 +161,6 @@ def _dummy(num_features: int) -> DatasetMeta:
     )
     return meta
 
-
 def load_dataset(
     args: DatasetArgs,
 ) -> tuple[DatasetMeta, np.ndarray, np.ndarray]:
@@ -177,38 +175,20 @@ def load_dataset(
     else:
         raise ValueError("Unknown dataset format: {}".format(args.format))
 
-    # 在打乱前先收集原始特征名称
     original_feature_names = [feature.name for feature in meta.features]
     
-    # shuffle
     indices = np.arange(x.shape[0])
     np.random.shuffle(indices)
     x = x[indices]
     y = y[indices]
 
     if args.shuffle_column:
-        # ===== 特征打乱和映射日志 =====
         indices = np.arange(x.shape[1])
         np.random.shuffle(indices)
         x = x[:, indices]
         
-        # 创建明确的分隔线，使日志更易识别
-        logger.log("\n" + "="*50)
-        logger.log("【特征随机打乱映射】")
-        
-        # 保存并输出详细的映射关系
         feature_shuffle_map = {new_idx: int(old_idx) for new_idx, old_idx in enumerate(indices)}
-        logger.log(f"特征随机打乱映射字典: {feature_shuffle_map}")
         
-        # 详细的名称对应表，便于可视化调试
-        logger.log("详细特征映射关系:")
-        for new_idx, old_idx in feature_shuffle_map.items():
-            old_feature_name = original_feature_names[old_idx] if old_idx < len(original_feature_names) else f"未知特征({old_idx})"
-            logger.log(f"  训练特征 {new_idx} ← 原始特征 {old_idx} ({old_feature_name})")
-        
-        logger.log("="*50 + "\n")
-        
-        # 更新元数据中的特征顺序和映射信息
         meta.shuffle_features(indices)
         meta.feature_shuffle_map = feature_shuffle_map
     
@@ -253,12 +233,10 @@ def sample_balanced(
 
 
 def create_feature_ranking_prompt(meta: DatasetMeta) -> str:
-    """创建用于特征重要性排序的提示"""
     prompt = f"""As a data analyst, you need to determine which features are most important for predicting {meta.label_meaning or "the target variable"}.
 
 Dataset Information:
 """
-    # 添加数据集目标描述
     if meta.target:
         prompt += f"Task: {meta.target}\n\n"
     
@@ -266,7 +244,6 @@ Dataset Information:
     for i, feat in enumerate(meta.features):
         prompt += f"{i+1}. {feat.name}: {feat.desc or 'No description available'}\n"
         
-        # 添加对类别型特征值的详细描述
         if feat.is_categorical and feat.categories:
             prompt += "   Possible values:\n"
             for cat_value, cat_desc in feat.categories.items():
@@ -274,7 +251,6 @@ Dataset Information:
     
     prompt += f"\nTarget Variable: {meta.label_meaning or 'The output'}\n"
     
-    # 添加标签的详细描述
     prompt += "Possible values:\n"
     for label in meta.labels:
         desc = f" ({label.desc})" if label.desc else ""
@@ -290,48 +266,30 @@ Feature Ranking: """
 
 
 def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[int]:
-    """获取LLM对特征重要性的排序"""
     prompt = create_feature_ranking_prompt(meta)
-    logger.log(f"请求特征重要性排序，提示词:\n{prompt}")
     
     for responses in runner.run([prompt]):
         for response in responses:
-            logger.log(f"收到LLM响应:\n{response}")
-            
-            # 尝试从回复中提取特征排序
             try:
-                # 首先尝试直接查找逗号分隔的数字列表
                 number_lists = re.findall(r'(\d+(?:\s*,\s*\d+)*)', response)
                 for number_list in number_lists:
-                    # 分割并转换为整数列表
                     ranking = [int(num.strip()) - 1 for num in number_list.split(',')]
                     
-                    # 验证排序的有效性
                     if (len(ranking) == meta.feature_count() and 
                         all(0 <= x < meta.feature_count() for x in ranking) and
                         len(set(ranking)) == len(ranking)):
-                        logger.log(f"成功解析特征排序: {ranking}")
                         return ranking
-                    else:
-                        logger.log(f"跳过无效的特征排序: {ranking} (长度={len(ranking)}, 期望长度={meta.feature_count()})")
                 
-                # 如果没有找到有效的排序，尝试查找单独的数字
                 numbers = re.findall(r'\b(\d+)\b', response)
                 if numbers:
                     ranking = [int(num) - 1 for num in numbers]
                     if (len(ranking) == meta.feature_count() and 
                         all(0 <= x < meta.feature_count() for x in ranking) and
                         len(set(ranking)) == len(ranking)):
-                        logger.log(f"通过单独数字解析特征排序: {ranking}")
                         return ranking
-                    else:
-                        logger.log(f"跳过无效的单独数字排序: {ranking}")
                 
             except Exception as e:
-                logger.log(f"解析特征排序时出错: {str(e)}")
                 continue
     
-    # 如果无法获取有效的排序，返回默认顺序
     default_order = list(range(meta.feature_count()))
-    logger.log(f"无法获取有效的特征排序，使用默认顺序: {default_order}")
     return default_order
