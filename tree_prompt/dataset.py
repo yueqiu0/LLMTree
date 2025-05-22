@@ -263,33 +263,3 @@ Please return your answer as a comma-separated list of feature indices, ordered 
 
 Feature Ranking: """
     return prompt
-
-
-def get_feature_importance_ranking(meta: DatasetMeta, runner: Runner) -> list[int]:
-    prompt = create_feature_ranking_prompt(meta)
-    
-    for responses in runner.run([prompt]):
-        for response in responses:
-            try:
-                number_lists = re.findall(r'(\d+(?:\s*,\s*\d+)*)', response)
-                for number_list in number_lists:
-                    ranking = [int(num.strip()) - 1 for num in number_list.split(',')]
-                    
-                    if (len(ranking) == meta.feature_count() and 
-                        all(0 <= x < meta.feature_count() for x in ranking) and
-                        len(set(ranking)) == len(ranking)):
-                        return ranking
-                
-                numbers = re.findall(r'\b(\d+)\b', response)
-                if numbers:
-                    ranking = [int(num) - 1 for num in numbers]
-                    if (len(ranking) == meta.feature_count() and 
-                        all(0 <= x < meta.feature_count() for x in ranking) and
-                        len(set(ranking)) == len(ranking)):
-                        return ranking
-                
-            except Exception as e:
-                continue
-    
-    default_order = list(range(meta.feature_count()))
-    return default_order
