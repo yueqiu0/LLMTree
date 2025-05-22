@@ -1,0 +1,63 @@
+\documentclass{article}
+\usepackage{xcolor}
+\usepackage{listings}
+
+% ===== 颜色配置 =====
+\definecolor{system}{RGB}{230,145,56}    % 橙色 - 系统指令
+\definecolor{variable}{RGB}{192,0,0}     % 红色 - 变量/标签
+\definecolor{blockedge}{RGB}{32,74,135}  % 蓝色 - 块边界
+\definecolor{fixed}{RGB}{0,0,0}          % 黑色 - 固定文本
+
+% ===== 代码块样式 =====
+\lstdefinestyle{prompt}{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{white},
+    frame=tb,
+    framesep=4pt,
+    rulecolor=\color{gray!30},
+    escapechar=*,
+    emphstyle=\color{variable},
+    keywords={younger, older},
+    morecomment=[l][\color{blockedge}]{<},  % 块边界颜色
+    morecomment=[l][\color{system}]{You are}, % 系统指令
+    commentstyle=\color{fixed}
+}
+
+\begin{document}
+
+\begin{lstlisting}[style=prompt,caption={Abalone Age Prediction Prompt},label=lst:abalone]
+*[System Instruction]*\color{system}
+You are a good data analyst that can find patterns of given data. You will be given a list of rules that you must follow, and you should predict the output of the given data based on the rules and your observation. Please don't give explanations.*[\color{fixed}]
+
+*[Data Schema]*\color{blockedge}
+Here's your task. The data below is used to *\color{variable}predict the age of abalone*\color{fixed} from physical measurements.
+
+The data consists of the following features:
+% for feature in dataset.features %
+    *[feature.name, feature.description]*
+% endfor %
+*[Label Definitions]*\color{variable}
+The data consists of the following features:
+% for feature in dataset.features %
+    *[feature.name, feature.description]*
+% endfor %
+{% block format_descriptions %}
+Here's how the data will be presented. For each line:
+    *[features]*, <RESULT>
+{% endblock %}
+
+*[Examples]*\color{system}
+These are some known data points:
+(1) 0.065, 0.257, 0.370, 0.090, infant, 0.065, 0.126, 0.280 younger*[\color{fixed}]
+
+*[Prediction Rule]*\color{blockedge}
+For data points that are not covered by any rule, you should predict the result based on your observation.*[\color{fixed}]
+
+*[Prediction Request]*\color{variable}
+Please make prediction on the following 8 lines containing "<RESULT>", filling "<RESULT>" with one of "younger", "older", and reply each prediction in a new line. Make sure there are exactly 8 lines.
+
+(1) 0.288, 1.368, 0.650, 0.155, male, 0.365, 0.619, 0.520 <RESULT>
+(2) 0.174, 0.902, 0.605, 0.130, infant, 0.260, 0.432, 0.435 <RESULT>
+... (其他6条数据保持相同格式)
+\end{lstlisting}
+\end{document}
