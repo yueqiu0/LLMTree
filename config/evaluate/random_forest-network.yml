@@ -1,9 +1,0 @@
-base_configs:
-- ../base/dataset/network.yml
-- ../base/common.yml
-- ./tree/random_forest.yml
-- ./common.yml
-
-config:
-  exp_name: network-random_forest
-  tree_only: true 

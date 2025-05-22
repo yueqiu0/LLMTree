@@ -1,9 +1,0 @@
-base_configs:
-- ../base/dataset/car.yml
-- ../base/runner/chatgpt.yml
-- ../base/common.yml
-- ./strategy/feature_bagging.yml
-- ./common.yml
-
-config:
-  exp_name: chatgpt-car
