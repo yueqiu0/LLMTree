@@ -77,22 +77,31 @@ These experiments are to evaluate the performance of our approach with GPT-3.5 o
 **Examples:**
 
 ```bash
-# OT/LLM+OT
-python3 train.py --config config/train/chatgpt-diabetes.yml --train-sizes 8
-# LLM
-python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml --use-tree-rules 0
+# LLMT
+git checkout feature/pre_meta_rule_sup_known&&python3 train.py --config config/train/chatgpt-diabetes.yml 
 # DT/LLM+DT
-python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml --use-tree-rules 1
+git checkout main&&python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml --use-tree-rules 1
 # XGB
-python3 evaluate.py --config config/evaluate/xgboost-diabetes.yml
-```
+git checkout main&&python3 evaluate.py --config config/evaluate/xgboost-diabetes.yml
 
+# IO-Tree
+git checkout tree_gen_by_llm_directly&&python evaluate.py  --config config/evaluate/llm_gen_directly-diabetes.yml --tree-type LLM --with-llm 0 
+#CoT
+git checkout CoT_Tree&&python evaluate.py  --config config/evaluate/CoT-diabetes.yml --tree-type CoT --with-llm 0 
+#ToT
+git checkout  fix/ToT_tree&& python evaluate.py  --config config/evaluate/ToT-diabetes.yml -tree-type ToT --with-llm 0 
+
+```
 ### Reproduction of Table 2
 
 These experiments are to evaluate our approach's performance with multiple trees using feature bagging. The training size is fixed to 8.
 
 - To train our model (OT/LLM+OT), use `chatgpt-<dataset>-multiple.yml` in `config/train`.
 - To evaluate RF, use `random_forest-<dataset>.yml` in `config/evaluate`.
+- To evaluate XGB, use `xgboost-<dataset>.yml` in `config/evaluate`.
+- To evaluate CoT, use `CoT-<dataset>.yml` in `config/evaluate`.
+- To evaluate ToT, use `ToT-<dataset>.yml` in `config/evaluate`.
+- To evaluate IO-Tree, use `llm_gen_directly-<dataset>.yml` in `config/evaluate`.
 
 **Examples:**
 
@@ -103,17 +112,14 @@ python3 train.py --config config/train/chatgpt-diabetes-multiple.yml --train-siz
 python3 evaluate.py --config config/evaluate/random_forest-diabetes.yml --train-sizes 8
 ```
 
-### Reproduction of Table 3
 
-These experiments are to study the effect of unknown option. The training size is fixed to 8.
-
-- To evaluate our model without the unknown class, use `chatgpt-<dataset>-known.yml` in `config/evaluate`.
 
 **Examples:**
 
 ```bash
-# LLM+OT (no unknown class)
-python3 train.py --config config/train/chatgpt-diabetes-known.yml --train-sizes 8
+#LLMT
+git checkout feature/pre_meta_rule_sup_known&&python3 train.py --config config/train/chatgpt-diabetes.yml 
+
 ```
 
 ## Experiment Settings
@@ -136,9 +142,6 @@ These are the settings for training our model.
 
 ```yaml
 config:
-  # experiment name [--exp-name]
-  exp_name: chatgpt-diabetes
-
   # training strategy (unknown_class, known_class, feature_bagging) [--strategy]
   strategy: unknown_class
   # training strategy arguments
@@ -147,8 +150,6 @@ config:
     num_trees: 3
     # max depth of tree [--max-depth]
     max_depth: 3
-    # number of bins of histogram [--hist-nbins]
-    hist_nbins: 10
 
   # runner type (openai_api) [--runner]
   runner: openai_api
@@ -159,7 +160,7 @@ config:
     # openai api base url (for non-openai APIs) [--openai-api-base]
     openai_api_base: https://localhost:7800/v1
     # model name [--model-name]
-    model_name: gpt-3.5-turbo-0613
+    model_name:  Qwen/Qwen2.5-72B-Instruct-Turbo
     # maximum number of parallel request [--parallel-batch-size]
     parallel_batch_size: 6
     # time in seconds between two requests [--request-interval]
@@ -192,8 +193,10 @@ config:
   test_size: 100
   # number of test samples per query [--test-batch]
   test_batch: 8
-  # prompt template (jinja2 file) [--template]
-  template: template/train/basic.jinja
+  # prompt template for generationg rules (jinja2 file) [--template]
+  template: template/train/meta_rule.jinja
+  #prompt template for supervising tree generation (jinja2 file) [--template]
+  supervise_template: template/train/supervision.jinja
   # table-to-text serializer type (tabular, text, list) [--serializer]
   serializer: tabular
 ```
@@ -203,10 +206,10 @@ config:
 Most of evaluation settings are the same as training settings, except for the following:
 
 **Not applicable for evaluation**
-
 - `strategy`
 - `strategy_args`
 - `train_batch`
+
 
 **Only applicable for evaluation**
 
@@ -224,11 +227,13 @@ config:
     max_depth: 3
     # number of trees (only for xgboost and random_forest) [--num-trees]
     num_trees: 3
+  with-llm: 0
+  #whether to use LLM to reason with the tree generated
 ```
 
 ### Base Configuration Files
 
-To consistently share some settings across different tasks (e.g. dataset, runner, credentials), you can configure them in a seperate file and "import" them using `base_configs` in the main config, with their relative paths. We provide a set of base configurations we use in our experiments at `config/base/**`, `config/train/strategy/*`, `config/train/common.yml`, `config/evaluate/tree/*` and `config/evaluate/common.yml`.
+To consistently share some settings across different tasks (e.g. dataset, runner, credentials), you can configure them in a seperate file and "import" them using `base_configs` in the main config, with their relative paths. We provide a set of base configurations we use in our experiments at `config/base/**`,, `config/train/common.yml`, `config/evaluate/tree/*` and `config/evaluate/common.yml`.
 
 ```yaml
 base_configs:
@@ -240,53 +245,4 @@ base_configs:
 
 config:
   exp_name: chatgpt-diabetes
-```
-
-## Utility Tools
-
-We provide two utility tools to help visualize and analyze experimental results.
-
-### Decision Tree Visualization (visualize_trees.py)
-
-Visualize decision tree models generated by LLMs, supporting both single trees and forest structures.
-
-#### Basic Usage
-```bash
-python visualize_trees.py <json_file> [metadata_file] [options]
-```
-
-#### Options
-- `--merge`: Display multiple trees in a single image
-- `--box`: Use rectangular nodes (ellipse is default)
-- All outputs saved in the `output/visualize` directory
-
-#### Examples
-```bash
-# Basic visualization
-python visualize_trees.py output/train/chatgpt-car.json dataset/car/meta.yml
-
-# Merged forest visualization
-python visualize_trees.py output/train/chatgpt-car.json dataset/car/meta.yml --merge
-
-# Specify rectangular nodes
-python visualize_trees.py output/train/chatgpt-diabetes-1.json dataset/diabetes/meta.yml  --box
-```
-
-### Performance Comparison Tool (compare_results.py)
-
-Compare LLM model performance with and without tree rules assistance, generating visualizations and analysis reports.
-
-#### Basic Usage
-```bash
-python compare_results.py <no_tree_rules_json> <with_tree_rules_json> <output_filename> [--test_file <test_file>]
-```
-
-#### Output
-- Performance comparison visualizations
-- Detailed Markdown analysis report
-- All outputs saved in the `output/visualize` directory
-
-#### Examples
-```bash
-python compare_results.py output/eval/car_base.json output/eval/car_with_tree.json car_comparison
 ```
