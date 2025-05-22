@@ -1,6 +1,6 @@
 # Tree-as-a-Prompt
 
-The code of paper [Tree-as-a-Prompt: Boosting Black-Box Large Language Models on Few-Shot Classification of Tabular Data]().
+The code of paper [From Prompts to Trees: Effective LLM-Guided TreeGeneration for Few-Shot Tabular Classification]().
 
 ## Setup
 
@@ -36,10 +36,9 @@ For ChatGPT experiments, you need to have an OpenAI API key. Please note that th
 
 ### Deploy Vicuna/Llama2 (Optional)
 
-We recommend using [FastChat](https://github.com/lm-sys/FastChat) to deploy an OpenAI API service of Vicuna/Llama2. Please refer to the documentation for deployment details.
+We recommend using [TogetherAI]( https://api.together.xyz/v1) to deploy an OpenAI API service of  Qwen/Qwen2.5-72B-Instruct-Turbo. Please refer to the documentation for deployment details.
 
-The model used in our experiments is [`lmsys/vicuna-7b-v1.5`](https://huggingface.co/lmsys/vicuna-7b-v1.5).
-
+The model used in our experiments is [ Qwen/Qwen2.5-72B-Instruct-Turbo]
 ## Run Experiments
 
 We provide a set of experiment configurations to reproduce our results. Since `temperature` is set to 0, the result is expected to be mostly deterministic, but it can still vary across runs, so we can't guarantee the reproducibility.
@@ -58,7 +57,7 @@ export OPENAI_API_KEY=sk-xxx
 python train.py --config config/train/<config-name>.yml --train-sizes <size> 
 ```
 
-**Run `evaluate.py` to evaluate baselines.** You need to specify the provided configuration file (in `config/evaluate`) and whether to incorporate decision rules from the tree (`--use-tree-rules`).
+**Run `evaluate.py` to evaluate baselines.** You need to specify the provided configuration file (in `config/evaluate`) .
 
 ```
 python3 evaluate.py --config config/evaluate/<config-name>.yml --use-tree-rules <0|1>
@@ -70,9 +69,9 @@ For more details about the experiment settings, please refer to the [Experiment 
 
 These experiments are to evaluate the performance of our approach with GPT-3.5 on different datasets.
 
-- To train our model (OT/LLM+OT), use `chatgpt-<dataset>.yml` in `config/train`.
-- To evaluate baselines (LLM/DT/LLM+DT), use `chatgpt-<dataset>.yml` in `config/evaluate`.
-- To evaluate XGB, use `xgboost-<dataset>.yml` in `config/evaluate`.
+- To train our model (LLMT),change to the `feature/pre_meta_rule_sup_known` branch and use `chatgpt-<dataset>.yml` in `config/train`.
+- To evaluate baselines (DT,IO-Tree,CoT,ToT), change to the right branches I mentioned below and use `chatgpt-<dataset>.yml` in `config/evaluate`.
+- To evaluate XGB,change to the `main` branch and use `xgboost-<dataset>.yml` in `config/evaluate`.
 
 **Examples:**
 
@@ -80,10 +79,11 @@ These experiments are to evaluate the performance of our approach with GPT-3.5 o
 # LLMT
 git checkout feature/pre_meta_rule_sup_known&&python3 train.py --config config/train/chatgpt-diabetes.yml 
 # DT/LLM+DT
-git checkout main&&python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml --use-tree-rules 1
+git checkout main&&python3 evaluate.py --config config/evaluate/chatgpt-diabetes.yml 
 # XGB
 git checkout main&&python3 evaluate.py --config config/evaluate/xgboost-diabetes.yml
-
+#RF
+git checkout main&&python3 evaluate.py  --config config/evaluate/random_forest_diabetes.yml
 # IO-Tree
 git checkout tree_gen_by_llm_directly&&python evaluate.py  --config config/evaluate/llm_gen_directly-diabetes.yml --tree-type LLM --with-llm 0 
 #CoT
