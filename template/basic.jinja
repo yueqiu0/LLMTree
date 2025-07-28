@@ -9,10 +9,12 @@ Here's your task. The data below is used to {{ meta.target }}.{%- endif %}
 
 {% block features_intro -%}
 The data consists of the following features:
-{% for feat in meta.features %}
- ({{ loop.index }}) {{ feat.name }}{%if feat.desc %}: {{ feat.desc }}{% endif %}{{" "}}
+{% set feats = meta.features | shuffle %}
+{% for feat in feats %}
+ ({{ loop.index }}) {{ feat.name }}{% if feat.desc %}: {{ feat.desc }}{% endif %}{{" "}}
 {%- endfor %}
 {%- endblock %}
+
 
 {% block labels_intro -%}
 For each data, the result can ONLY be one of the following:

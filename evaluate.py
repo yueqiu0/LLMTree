@@ -819,6 +819,7 @@ def main():
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
         )
+        env.filters["shuffle"] = lambda seq: random.sample(seq, len(seq))
         master_template = env.get_template(master_template_path.name)
 
     results: dict[int, list[dict]] = {}
