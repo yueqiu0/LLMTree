@@ -1,0 +1,81 @@
+name: vehicle
+target: Classify vehicle type based on silhouette attributes
+desc: >
+  The dataset contains 18 features describing shape attributes extracted from vehicle silhouettes.
+  Features include measures like compactness, circularity, aspect ratios, skewness, and kurtosis.
+
+label_meaning: Vehicle class labels
+  - van:Van
+  - saab:Saab
+  - bus:Bus
+  - opel Opel
+
+features:
+  - name: COMPACTNESS
+    desc: Measure of compactness of the vehicle silhouette
+    type: int
+  - name: CIRCULARITY
+    desc: Measure of circularity of the vehicle silhouette
+    type: int
+  - name: DISTANCE_CIRCULARITY
+    desc: Distance circularity feature
+    type: int
+  - name: RADIUS_RATIO
+    desc: Ratio between major and minor radius
+    type: float
+  - name: PR.AXIS_ASPECT_RATIO
+    desc: Aspect ratio of the principal axis
+    type: int
+  - name: MAX.LENGTH_ASPECT_RATIO
+    desc: Aspect ratio of the maximum length
+    type: int
+  - name: SCATTER_RATIO
+    desc: Scatter ratio of the silhouette
+    type: float
+  - name: ELONGATEDNESS
+    desc: Elongatedness measure of the silhouette
+    type: int
+  - name: PR.AXIS_RECTANGULARITY
+    desc: Rectangularity of principal axis
+    type: int
+  - name: MAX.LENGTH_RECTANGULARITY
+    desc: Rectangularity of maximum length
+    type: int
+  - name: SCALED_VARIANCE_MAJOR
+    desc: Scaled variance about the major axis
+    type: float
+  - name: SCALED_VARIANCE_MINOR
+    desc: Scaled variance about the minor axis
+    type: float
+  - name: SCALED_RADIUS_OF_GYRATION
+    desc: Scaled radius of gyration of the silhouette
+    type: float
+  - name: SKEWNESS_ABOUT_MAJOR
+    desc: Skewness about the major axis
+    type: int
+  - name: SKEWNESS_ABOUT_MINOR
+    desc: Skewness about the minor axis
+    type: int
+  - name: KURTOSIS_ABOUT_MAJOR
+    desc: Kurtosis about the major axis
+    type: int
+  - name: KURTOSIS_ABOUT_MINOR
+    desc: Kurtosis about the minor axis
+    type: int
+  - name: HOLLOWS_RATIO
+    desc: Ratio of hollows in the silhouette
+    type: int
+
+labels:
+  - name: van
+    value: 0
+    desc: Van vehicle class
+  - name: saab
+    value: 1
+    desc: Saab vehicle class
+  - name: bus
+    value: 2
+    desc: Bus vehicle class
+  - name: opel
+    value: 3
+    desc: Opel vehicle class

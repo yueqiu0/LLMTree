@@ -1,0 +1,29 @@
+name: iris
+target: Predict the species of iris plant based on flower dimensions
+desc: ''
+label_meaning: Iris species (Setosa, Versicolor, Virginica)
+
+features:
+  - name: sepallength
+    desc: Sepal length in centimeters
+    type: float
+  - name: sepalwidth
+    desc: Sepal width in centimeters
+    type: float
+  - name: petallength
+    desc: Petal length in centimeters
+    type: float
+  - name: petalwidth
+    desc: Petal width in centimeters
+    type: float
+
+labels:
+  - name: Iris-setosa
+    value: 0
+    desc: Setosa species of Iris
+  - name: Iris-versicolor
+    value: 1
+    desc: Versicolor species of Iris
+  - name: Iris-virginica
+    value: 2
+    desc: Virginica species of Iris

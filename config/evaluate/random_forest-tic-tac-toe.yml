@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/tic-tac-toe.yml
+- ../base/common.yml
+- ./tree/random_forest.yml
+- ./common.yml
+config:
+  exp_name: tic-tac-toe-random_forest
+  tree_only: true

@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/balance-scale.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: balance-scale-xgboost
+  tree_only: true

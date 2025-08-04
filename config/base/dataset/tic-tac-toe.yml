@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/tic-tac-toe/data.csv
+    meta_file: dataset/tic-tac-toe/meta.yml
+    format: csv
+    shuffle_column: true

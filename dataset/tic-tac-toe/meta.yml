@@ -1,0 +1,81 @@
+name: tic-tac-toe
+target: Predict whether the final board configuration is a winning state (positive) or not (negative)
+desc: |
+  Each attribute represents the state of one square on the tic-tac-toe board:
+  '0' for player X, '1' for player O, '2' for blank. The label indicates whether
+  player X has won (positive) or not (negative).
+
+label_meaning: game result
+
+features:
+  - name: top-left-square
+    desc: Top-left square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: top-middle-square
+    desc: Top-middle square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: top-right-square
+    desc: Top-right square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: middle-left-square
+    desc: Middle-left square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: middle-middle-square
+    desc: Middle-middle square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: middle-right-square
+    desc: Middle-right square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: bottom-left-square
+    desc: Bottom-left square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: bottom-middle-square
+    desc: Bottom-middle square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+  - name: bottom-right-square
+    desc: Bottom-right square state
+    type: categorical
+    categories:
+      "0": player X
+      "1": player O
+      "2": blank
+
+labels:
+  - name: positive
+    value: 0
+    desc: Player X has won
+  - name: negative
+    value: 1
+    desc: Player X has not won

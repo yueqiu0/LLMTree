@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/electricity.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./strategy/feature_bagging.yml
+- ./common.yml
+config:
+  exp_name: chatgpt-electricity

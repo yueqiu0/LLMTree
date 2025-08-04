@@ -1,0 +1,46 @@
+name: contraceptive_choice
+target: Predict the current contraceptive method choice for married women
+desc: Based on Indonesian data, predict the current contraceptive method choice for married women.
+label_meaning: >
+  contraceptive method used:
+  0 = no-use, 1 = long-term method, 2 = short-term method
+
+features:
+  - name: Wifes_age
+    desc: Wife's age in years
+    type: int
+  - name: Wifes_education
+    desc: Wife's education level (1=low, 2=medium-low, 3=medium-high, 4=high)
+    type: int
+  - name: Husbands_education
+    desc: Husband's education level (same coding as above)
+    type: int
+  - name: Number_of_children_ever_born
+    desc: Number of children ever born
+    type: int
+  - name: Wifes_religion
+    desc: Wife's religion (1 = non-Islam, 0 = Islam)
+    type: int
+  - name: Wifes_now_working?
+    desc: Whether wife is now working (1 = yes, 0 = no)
+    type: int
+  - name: Husbands_occupation
+    desc: Husband's occupation category (1=low, 2=medium-low, 3=medium-high, 4=high)
+    type: int
+  - name: Standard-of-living_index
+    desc: Standard-of-living index (1=low, 2=medium-low, 3=medium-high, 4=high)
+    type: int
+  - name: Media_exposure
+    desc: Media exposure (1 = good, 0 = not good)
+    type: int
+
+labels:
+  - name: no-use
+    value: 1
+    desc: No contraceptive method used
+  - name: long-term
+    value: 2
+    desc: Long-term contraceptive method used
+  - name: short-term
+    value: 3
+    desc: Short-term contraceptive method used

@@ -4,9 +4,7 @@ target: diagnostically predict whether or not a patient has diabetes, based on c
 desc: ''
 label_meaning: diagnosis
 features:
-- name: Pregnancies
-  desc: number of times pregnant
-  type: int
+- desc: right-weight
 - name: Glucose
   desc: plasma glucose concentration a 2 hours in an oral glucose tolerance test
   type: int
