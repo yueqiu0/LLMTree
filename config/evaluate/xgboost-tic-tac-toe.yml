@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/tic-tac-toe.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: tic-tac-toe-xgboost
+  tree_only: true

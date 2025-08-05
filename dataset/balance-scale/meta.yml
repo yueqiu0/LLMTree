@@ -1,0 +1,27 @@
+name: balance-scale
+target: Classify the balance scale into one of three classes (left heavier, balanced, right heavier) based on four attributes representing weights and distances on each side of the scale.
+desc: ''
+label_meaning: class of the balance scale:'L' means left heavier, 'B' means balanced, 'R' means right heavier
+features:
+- name: Left-Weight
+  desc: Weight on the left side of the scale (integer 1 to 5)
+  type: int
+- name: Left-Distance
+  desc: Distance of the weight on the left side from the fulcrum (integer 1 to 5)
+  type: int
+- name: Right-Weight
+  desc: Weight on the right side of the scale (integer 1 to 5)
+  type: int
+- name: Right-Distance
+  desc: Distance of the weight on the right side from the fulcrum (integer 1 to 5)
+  type: int
+labels:
+- name: L
+  value: 0
+  desc: left side is heavier
+- name: B
+  value: 1
+  desc: balanced
+- name: R
+  value: 2
+  desc: right side is heavier

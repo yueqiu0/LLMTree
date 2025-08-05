@@ -1,0 +1,43 @@
+name: electricity
+target: Predict whether the electricity price in New South Wales (NSW) will go UP or DOWN relative to a 24-hour moving average
+desc: >
+  Data collected from the Australian NSW electricity market (May 1996 – Dec 1998).
+  Attributes normalized between 0 and 1; shipping between states included.
+
+label_meaning:
+  UP: NSW price increased relative to 24h moving average
+  DOWN: NSW price decreased or stayed relative to 24h moving average
+
+features:
+  - name: date
+    desc: Normalized date value between 0 and 1 (from May 7 1996 to Dec 5 1998)
+    type: float
+  - name: day
+    desc: Day of the week (1–7), normalized between 0 and 1
+    type: float
+  - name: period
+    desc: Time slot in half-hour intervals (1–48), normalized between 0 and 1
+    type: float
+  - name: nswprice
+    desc: NSW electricity price, normalized between 0 and 1
+    type: float
+  - name: nswdemand
+    desc: NSW electricity demand, normalized between 0 and 1
+    type: float
+  - name: vicprice
+    desc: Victoria electricity price, normalized between 0 and 1
+    type: float
+  - name: vicdemand
+    desc: Victoria electricity demand, normalized between 0 and 1
+    type: float
+  - name: transfer
+    desc: Scheduled electricity transfer between NSW and Victoria, normalized between 0 and 1
+    type: float
+
+labels:
+  - name: UP
+    value: 0
+    desc: Price increased relative to the prior 24-hour average
+  - name: DOWN
+    value: 1
+    desc: Price decreased or remained relative to the prior 24-hour average

@@ -1,0 +1,54 @@
+name: wine
+target: Classify wines based on chemical analysis of different constituents.
+desc: ''
+label_meaning: Three types of wine cultivar (class 1, 2, or 3)
+features:
+  - name: Alcohol
+    desc: Alcohol content (% by volume)
+    type: float
+  - name: Malic_acid
+    desc: Malic acid content (g/l)
+    type: float
+  - name: Ash
+    desc: Ash content (g/l)
+    type: float
+  - name: Alcalinity_of_ash
+    desc: Alcalinity of ash (measured in mmol of Na2O)
+    type: float
+  - name: Magnesium
+    desc: Magnesium content (mg/l)
+    type: float
+  - name: Total_phenols
+    desc: Total phenol content (g/l)
+    type: float
+  - name: Flavanoids
+    desc: Flavanoid phenol content (g/l)
+    type: float
+  - name: Nonflavanoid_phenols
+    desc: Non-flavonoid phenol content (g/l)
+    type: float
+  - name: Proanthocyanins
+    desc: Proanthocyanins content (g/l)
+    type: float
+  - name: Color_intensity
+    desc: Color intensity (arbitrary units)
+    type: float
+  - name: Hue
+    desc: Hue (ratio)
+    type: float
+  - name: OD280/OD315_of_diluted_wines
+    desc: Absorbance ratio of diluted wines at 280 and 315 nm
+    type: float
+  - name: Proline
+    desc: Proline content (mg/l)
+    type: int
+labels:
+  - name: class_1
+    value: 1
+    desc: Wine cultivar class 1
+  - name: class_2
+    value: 2
+    desc: Wine cultivar class 2
+  - name: class_3
+    value: 3
+    desc: Wine cultivar class 3
