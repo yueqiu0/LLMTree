@@ -227,30 +227,52 @@ class CoTDecisionTree:
         """
         import re
         self.logger.log(f"Raw LLM response (first 500 chars): {str(response)[:500]}")
-        
+
         if not response or not isinstance(response, str):
             self.logger.log("Error: Invalid or empty LLM response")
             return []
-            
-        # 提取BEGIN_TREE/END_TREE之间的内容
-        begin_pat = re.compile(r'BEGIN[_ ]?TREE', re.IGNORECASE)
-        end_pat = re.compile(r'END[_ ]?TREE', re.IGNORECASE)
-        lines = response.split('\n')
+
+        # 更稳健的 BEGIN/END 模式：允许空格/下划线/不可见空白；加词边界避免误匹配 FRIEND_TREE/END_TREES
+        _ws = r'[\s_\u00a0\u200b-\u200f\u202a-\u202e]*'
+        begin_pat = re.compile(rf'\bBEGIN{_ws}TREE\b', re.IGNORECASE)
+        end_pat   = re.compile(rf'\bEND{_ws}TREE\b',   re.IGNORECASE)
+
+        lines = response.splitlines()
         begin_idx = end_idx = None
-        
-        for i, line in enumerate(lines):
-            if begin_pat.search(line):
-                begin_idx = i
-            if end_pat.search(line):
-                end_idx = i
-                break
-                
-        if begin_idx is not None and end_idx is not None and end_idx > begin_idx:
-            tree_block = '\n'.join(lines[begin_idx+1:end_idx])
-            self.logger.log(f"Found BEGIN_TREE/END_TREE block (lines {begin_idx+1}-{end_idx})")
+
+        # 先找所有成对块，取“最后一个”
+        block_pat = re.compile(rf'(?is)\bBEGIN{_ws}TREE\b\s*(.*?)\s*\bEND{_ws}TREE\b')
+        _matches = list(block_pat.finditer(response))
+
+        if _matches:
+            m = _matches[-1]  # 优先从文末选择
+            tree_block = m.group(1)
+            begin_idx = response.count('\n', 0, m.start())
+            end_idx   = response.count('\n', 0, m.end())
+            self.logger.log(f"Found BEGIN_TREE/END_TREE block (last; lines {begin_idx+1}-{end_idx})")
         else:
-            tree_block = response
-            self.logger.log("No BEGIN_TREE/END_TREE block found, using full response")
+            # 回退：以“最后一个 END”为基准，向前寻找最近的 BEGIN
+            last_end = None
+            for me in end_pat.finditer(response):
+                last_end = me  # 迭代结束时即最后一个 END
+
+            if last_end:
+                last_begin = None
+                for mb in begin_pat.finditer(response, 0, last_end.start()):
+                    last_begin = mb  # 迭代结束时即最后一个、且在 END 之前的 BEGIN
+
+                if last_begin and last_begin.end() <= last_end.start():
+                    tree_block = response[last_begin.end():last_end.start()]
+                    begin_idx = response.count('\n', 0, last_begin.start())
+                    end_idx   = response.count('\n', 0, last_end.start())
+                    self.logger.log(f"Found BEGIN_TREE/END_TREE block (from last END; lines {begin_idx+1}-{end_idx})")
+                else:
+                    tree_block = response
+                    self.logger.log("END_TREE found without a preceding BEGIN_TREE, using full response")
+            else:
+                tree_block = response
+                self.logger.log("No BEGIN_TREE/END_TREE block found, using full response")
+
             
         rules = []
         # 修改正则表达式，使其能匹配前面带有破折号和空格的规则

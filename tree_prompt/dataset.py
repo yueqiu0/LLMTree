@@ -385,28 +385,34 @@ def generate_CoT_tree_prompt(
 
     # ------ 特征定义 ------
     prompt_parts.append("# Feature Definitions")
+    
     for feat in meta.features:
-        # 自动提取单位（如desc中有括号）
-        desc = getattr(feat, 'desc', 'No description')
-        unit = ''
+        # 自动提取单位（如 desc 中有括号）
+        desc = getattr(feat, 'desc', 'No description') or 'No description'
         import re
+        unit = ''
         m = re.search(r'\(([^)]+)\)', desc)
         if m:
-            unit = m.group(1)
-        if unit:
-            prompt_parts.append(f"- {feat.name}: {desc} [unit: {unit}]")
-        else:
-            prompt_parts.append(f"- {feat.name}: {desc}")
-        if feat.is_categorical:
-            categories = [f"{k}({v})" for k, v in feat.categories.items()]
-            prompt_parts.append(f"  Categories: {', '.join(categories)}")
-    prompt_parts.append("")
+            unit = m.group(1).strip()
 
-    # ------ 标签定义 ------
-    prompt_parts.append("# Label Definitions")
-    for label in meta.labels:
-        desc = getattr(label, 'desc', 'No description')
-        prompt_parts.append(f"- {label.name}: {desc}")
+        # 新增：类型标记
+        type_tag = 'categorical' if getattr(feat, 'is_categorical', False) else 'numerical'
+
+        # 主行：在 {feat.name} 后紧跟 (Type: ...)
+        if unit:
+            prompt_parts.append(f"- {feat.name} (Type: {type_tag}): {desc} [unit: {unit}]")
+        else:
+            prompt_parts.append(f"- {feat.name} (Type: {type_tag}): {desc}")
+
+        # 若是离散型，追加类别行
+        if getattr(feat, 'is_categorical', False):
+            cats = getattr(feat, 'categories', {})
+            if isinstance(cats, dict):
+                categories = [f"{k}({v})" for k, v in cats.items()]
+            else:
+                categories = [str(c) for c in cats]
+            prompt_parts.append(f"  Categories: {', '.join(categories)}")
+
     prompt_parts.append("")
 
     
@@ -466,59 +472,105 @@ def generate_CoT_tree_prompt(
     prompt_parts.append("")
 
     # ------ 决策树要求 ------
-    prompt_parts.append("# Decision Tree Requirements")
-    prompt_parts.append(f"please generate a decision tree with a maximum depth of {max_depth} (which means {max_depth-1} levels because the max_depth includes the root node).")
-    prompt_parts.append("1. Type Matching: Use integers for int features and floating-point numbers for float features.")
-    prompt_parts.append("2. Decimal Precision: Use precision suited to each feature's scale - typically up to 3 decimals. Avoid overly precise thresholds (e.g., 0.165) when simpler ones (e.g., 0.22) better match value ranges.")
-    prompt_parts.append("3. Use different features for each split.")
-    prompt_parts.append("4. Rules must follow this exact format:")
-    prompt_parts.append(f"4.1 Mathematical Formalism: Let depth d ∈ [1, {max_depth}], for any rule r, |r.conditions| = d-1. Therefore when d=3: ∀r, |r.conditions|=2") 
-    prompt_parts.append("   (N) IF condition [AND condition] THEN label_1")
-    prompt_parts.append(f"MOST IMPORTANT: The decision tree MUST satisfy: ∀rule∈Tree, len(conditions) = {max_depth-1}. Mathematical proof required: depth={max_depth} ⇒ each path has exactly {max_depth-1} splits ⇒ {max_depth-1} conditions per rule")
-    prompt_parts.append("5. If you are highly confident (e.g. >0.95) that a simple rule or shallow tree is sufficient, you may generate a tree with only 1 level. Otherwise, try to use 2 levels and make the splits as full as possible.")
-    prompt_parts.append("6. You must analyse the features about wether they have categories and use the proper way to generate the rules.")
-    prompt_parts.append("7. For features without Categories:you can only use '>=' and '<' conditions,Example: persons >= 5 ")
-    prompt_parts.append("8. For features that provides you Categories:you can only use '=' and '!=' conditions and only use the categories name that I provided,Example: maintenance = high")
-    prompt_parts.append("9. For categorical features: Every '=' condition must be followed by a complementary '!=' condition to ensure exhaustive coverage of all category possibilities. ")
-    prompt_parts.append("10. After splitting on a categorical feature (using '=' in any rule), all subsequent rules for that feature must use '!=' conditions. Example: If rule (1) uses 'size = big', then other rules  cannot use 'size = small' - they must use 'size != big' for further splits.")
-    prompt_parts.append("11. A categorical feature can only be assigned ONE specific '=' value in the ENTIRE tree. Once a value is chosen (e.g. price = vhigh), other rules must use '!=' for this value instead of creating new '=' conditions with different values.")
-    prompt_parts.append("12. IMPORTANT: If the rules are already able to cover all the labels,please stop generating rules and do not generate any other rules.Wrong examples:(1) IF shell_weight >= 0.5 THEN older(2) IF shell_weight < 0.5 THEN younger(3) IF length >= 0.5 THEN older(4) IF length < 0.5 THEN younger(the later two rules are redundant)")
-    prompt_parts.append("")
-
-    # ------ 决策树大师引导与英文推理要求 ------
+    # ------ 推理要求 ------
     prompt_parts.append("# Instructions for LLM")
     prompt_parts.append("You are a Decision Tree Generation Master. Your task is to analyze the following data features and generate a decision tree for classification.")
-    prompt_parts.append("For each decision tree you construct, you must leverage your domain knowledge and expertise in this field to guide the feature selection, splitting, and rule generation process.")
-    prompt_parts.append("Let's think step by step. First, select the best root feature and explain why. Then, based on this feature, describe how to split the dataset. For each subset, explain how to proceed. Please provide a detailed reasoning process in English.")
+    
+    prompt_parts.append("# Decision Tree Requirements")
+    
+    # ------ 规则约束 ------
+    prompt_parts.append("1. HARD CONSTRAINT — One-use-per-feature (per rule): within a single rule, the SAME feature may appear ONLY ONCE. If this is violated, you MUST REWRITE the rule BEFORE emitting the tree.")
+
+    prompt_parts.append("1.1 For numeric ranges, DO NOT place both a lower and an upper bound of the SAME feature in one rule (e.g., 'age >= 18 AND age < 30'). Instead, express ranges via different branches/rules.")
+    prompt_parts.append("1.2 For categorical features, use the SAME feature at most ONCE per rule (e.g., NOT allowed: IF status != 'pending' AND status != 'approved' THEN ...). Use separate branches/rules instead.")
+
+
+    prompt_parts.append("2. Type Matching: Use integers for int features and decimals for float features.")
+    prompt_parts.append("3. Decimal Precision: Use precision suited to each feature's scale - typically up to 3 decimals. Avoid overly precise thresholds when simpler ones better match value ranges.")
+    prompt_parts.append("4. Use different features for each split.")
+    prompt_parts.append("5. Rules must follow this exact format:")
+    prompt_parts.append(f"5.1 Mathematical Formalism: Let depth d ∈ [1, {max_depth}], for any rule r, |r.conditions| = d-1. e.g. when d=3: ∀r, |r.conditions|=2")
+    prompt_parts.append("   (N) IF condition [AND condition] THEN label_1")
+    prompt_parts.append("6. If you are highly confident that a simple rule or shallow tree is sufficient, you may generate a tree with lesser level. Otherwise, try to make the splits as full as possible.")
+    prompt_parts.append("7. You must distinct the categorical features from the numerical ones and use proper ways to generate the rules.")
+    prompt_parts.append("8. For numerical features: you can ONLY use '>=' and '<' conditions, e.g. persons >= 5. Any other operators, such as '=' or '!=', are not allowed.")
+    prompt_parts.append("9. For categorical features: you can only use '=' and '!=' conditions and only use the categories name provided, Example: maintenance = high")
+    prompt_parts.append("10. For categorical features: Every '=' condition must be followed by a complementary '!=' condition to ensure exhaustive coverage of all category possibilities.")
+
+ 
     prompt_parts.append("")
     prompt_parts.append("Each rule must be a single line, start with a number in parentheses, and follow the format: (N) IF ... THEN ... Only use this format. Do NOT use any format like 'Rule N: ...' or with ELSE or jumps. All rules must be complete and mutually exclusive if needed.")
+    
+    
+    prompt_parts.append("You MUST present your reasoning before the final rules. Then output ONLY the final tree rule set: it MUST begin with 'BEGIN_TREE' and end with 'END_TREE'. After 'END_TREE', do not output anything else.")
+
+
     prompt_parts.append("")
     
 
+    prompt_parts.append("# Example(invalid): Such a rule is INVALID because the feature 'income' is used in one rule for more than once")
+    prompt_parts.append("(1) IF income > 50000.00 AND age > 30 AND income > 60000.00 THEN approve")
+    prompt_parts.append("")
     # Example Rules
-    prompt_parts.append("# Example: 1 level of split (only one condition per rule)")
-
-
+    prompt_parts.append("# Example: 1 level of split (1 condition per rule AT MOST)")
+    prompt_parts.append("BEGIN_TREE")
     prompt_parts.append("(1) IF gender = 'male' THEN high_risk")
-    prompt_parts.append("(1) IF gender != 'male' THEN low_risk")
+    prompt_parts.append("(2) IF gender != 'male' THEN low_risk")
+    prompt_parts.append("END_TREE")
 
-    # Two levels of split (depth = 2)
-    prompt_parts.append("# Example: 2 levels of split (two conditions per rule)")
-    prompt_parts.append("(1) IF income >= 50000.50 AND credit_score >= 700 THEN approve")
-    prompt_parts.append("(2) IF income >= 50000.50 AND credit_score < 700 THEN reject")
-    prompt_parts.append("(3) IF income < 50000.50 AND credit_score < 700 THEN approve")
-    prompt_parts.append("(4) IF income < 50000.50 AND credit_score >= 700 THEN reject")
+    # Two levels of split (depth = 3)
+    prompt_parts.append("# Example: 2 levels of split (2 conditions per rule AT MOST)")
+    prompt_parts.append("BEGIN_TREE")
+    prompt_parts.append("(1) IF income >= 50000.00 AND credit_score >= 700 THEN approve")
+    prompt_parts.append("(2) IF income >= 50000.00 AND credit_score < 700 THEN reject")
+    prompt_parts.append("(3) IF income < 50000.00 AND credit_score < 700 THEN approve")
+    prompt_parts.append("(4) IF income < 50000.00 AND credit_score >= 700 THEN reject")
+    prompt_parts.append("END_TREE")
+
+    prompt_parts.append("# Example: 3 levels of split (3 conditions per rule AT MOST)")
+    prompt_parts.append("BEGIN_TREE")
+    prompt_parts.append("(1) IF income >= 50000.00 THEN approve")
+    prompt_parts.append("(2) IF income < 50000.00 AND credit_score < 700 THEN reject")
+    prompt_parts.append("(3) IF income < 50000.00 AND credit_score >= 700 AND sex = male THEN approve")
+    prompt_parts.append("(4) IF income < 50000.00 AND credit_score >= 700 AND sex != male THEN reject")
+    prompt_parts.append("END_TREE")
     
-    prompt_parts.append("NOTE: This is a 2 levels of split, since some rules use 2 features:")
-    prompt_parts.append("(1) IF income >= 50000.50 THEN approve")
-    prompt_parts.append("(2) IF income < 50000.50 AND credit_score < 600 THEN approve")
-    prompt_parts.append("(3) IF income < 50000.50 AND credit_score >= 600 THEN reject")
-    prompt_parts.append("...")
+
+    prompt_parts.append("# Example (invalid): Such a rule set is INVALID because it does NOT cover ALL possible values of the variables")
+    prompt_parts.append("BEGIN_TREE")
+    prompt_parts.append("(1) IF income > 50000.00 AND credit_score >= 600 THEN approve")
+    prompt_parts.append("(2) IF income < 50000.00 AND credit_score < 600 THEN reject")
+    prompt_parts.append("END_TREE")
+
+    prompt_parts.append("")
     
-    prompt_parts.append(f"Please generate corrected tree rules for a tree of max depth of {max_depth} (i.e., {max_depth - 1} levels of splits)")
-    prompt_parts.append(f"Remember you can use {max_depth - 1} features at most for one rule in the tree, and you should generate {2**(max_depth - 1)} rules at most.")
+    prompt_parts.append("Ensure that the output feature names (INCLUDING CASE) are consistent with the originally provided ones.")
+
+
+
 
     
+    prompt_parts.append(f"Please generate reasonable tree rules for a tree with {max_depth - 1} levels of splits)")
+
+    prompt_parts.append("Use your domain knownledge to ensure the rule set is a valid binary-tree rule set with reasonable thresholds/values. Treat training samples as references ONLY; the final rule set do NOT need to cover all samples.")
+
+
+    prompt_parts.append("")
+    prompt_parts.append("### CRITICAL EXPLANATION — Tree Level Constraint")
+    prompt_parts.append("Definition: The tree level is the MAX number of features used in any single rule. (One-use-per-feature (per rule))")
+    prompt_parts.append("Requirement: In a tree of L levels, EACH rule MUST use AT MOST L features.")
+    prompt_parts.append("Example: for a tree with 3 levels of split:")
+    prompt_parts.append("- Allowed (3 features): IF gender = male AND weight > 50 AND income < 3000 THEN yes")
+    prompt_parts.append("- NOT allowed (4 features): IF gender = male AND weight > 50 AND income < 3000 AND age < 30 THEN yes")
+    prompt_parts.append("- NOT allowed (repeated feature): IF gender = male AND weight > 50 AND income < 3000 AND weight < 60 THEN yes")
+    prompt_parts.append("Action: If a candidate rule uses L features, DO NOT split further. If a candidate rule uses > L features, DO NOT include it.")
+    
+    prompt_parts.append("")
+    prompt_parts.append(f"Let's think step by step. First, select the best feature and explain why. Then, based on this feature, think about how to split the dataset. For each subset, continue to proceed until limits are met.")
+    prompt_parts.append(f"Before printing 'BEGIN_TREE', run this Pre-Emission Checklist for EVERY rule: (a) no feature name repeats within the rule; (b) number of features ≤ {max_depth-1}. If any item fails, REVISE the rule; do not emit the tree until all pass.")
+    prompt_parts.append("After the checklist passes, output the final tree rule set only: begin with 'BEGIN_TREE' and end with 'END_TREE'. After 'END_TREE', output nothing further.")
+
+
 
     # ============== 最终组装 ==============
     full_prompt = "\n".join(prompt_parts)

@@ -4,7 +4,7 @@ config:
     model_name: "qwen/qwen3-next-80b-a3b-instruct"
     api_base: "https://api.ppinfra.com/openai"
     request_interval: 0.2
-    timeout: 20
+    timeout: 200
     parallel_batch_size: 6
     temperature: 0.0
     seed: 42
