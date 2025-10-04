@@ -12,6 +12,7 @@ from ..prompt import Serializer, TabularSerializer, ListSerializer, TextSerializ
 from .tree import DecisionTree, RandomForest, TreeBase, RulePath, Node
 from .. import logger
 from .feature_selection import calculate_gini_scores, select_best_feature, calculate_weight_factor, calculate_gini_impurity
+import re
 
 
 def _get_feature_values(
@@ -1325,3 +1326,10 @@ class FeatureBaggingStrategy(TrainStrategy):
             
             logger.log(f"最终选择的最佳分裂点: {best_split:.{decimal_places}f}, 增益: {best_gain:.4f}")
             return best_split
+
+def clean_llm_response(response):
+    if response is None:
+        return None
+    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+    cleaned = cleaned.lstrip('\n')
+    return cleaned
