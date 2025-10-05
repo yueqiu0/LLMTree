@@ -375,6 +375,10 @@ def generate_CoT_tree_prompt(
     # ============== 构建提示词 ==============
     prompt_parts = []
     
+    # ------ 推理要求 ------
+    prompt_parts.append("# Task Description")
+    prompt_parts.append("You are an expert in generating decision trees for classification. Your task is to analyze the given data features and produce a logically valid and well-structured rule set representing a decision tree.")
+    
     # ------ 元数据部分 ------
     prompt_parts.append("# Dataset Information")
     prompt_parts.append(f"Dataset: {getattr(meta, 'name', 'Unnamed Dataset')}")
@@ -471,11 +475,7 @@ def generate_CoT_tree_prompt(
     
     prompt_parts.append("")
 
-    # ------ 决策树要求 ------
-    # ------ 推理要求 ------
-    prompt_parts.append("# Instructions for LLM")
-    prompt_parts.append("You are a Decision Tree Generation Master. Your task is to analyze the following data features and generate a decision tree for classification.")
-    
+
     prompt_parts.append("# Decision Tree Requirements")
     
     # ------ 规则约束 ------
