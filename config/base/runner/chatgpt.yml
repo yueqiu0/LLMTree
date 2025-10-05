@@ -1,15 +1,13 @@
 config:
   runner: openai_api
   runner_args:
-    model_name: Qwen/Qwen2.5-72B-Instruct-Turbo
-    api_base: https://api.together.xyz/v1
+    model_name: "qwen/qwen3-next-80b-a3b-instruct"
+    api_base: "https://api.ppinfra.com/openai"
     request_interval: 0.2
     timeout: 20
     parallel_batch_size: 6
-    temperature: 0.9
-    top_p: 0.95
-    top_k: 50
-    seed: 0
-    presence_penalty: 0.3 
-    frequency_penalty: 0.3
+    temperature: 0.0
+    seed: 42
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
 

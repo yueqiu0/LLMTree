@@ -371,41 +371,49 @@ def generate_ToT_tree_prompt(
 
     # ============== 构建英文任务描述和提示词 ==============
     prompt_parts = []
+
     prompt_parts.append("#Task Description")
-    prompt_parts.append("You are a decision tree generator. Your task is to generate candidate split rules for the current node. Please strictly follow the requirements below.Please don't explain.")
-    prompt_parts.append("#Core Requirements")
-    prompt_parts.append("Generate mutually exclusive rule pairs forming complete branches")
-    prompt_parts.append("Directly assign final class labels to leaf nodes")
-    prompt_parts.append("Mark intermediate nodes with [NODE]")
-    prompt_parts.append("Always inherit parent path conditions")
-    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes must terminate as leaves")
-    prompt_parts.append(f"")
-    prompt_parts.append("#Structural Constraints")
-    prompt_parts.append("Each split must form complete complementary conditions")
-    prompt_parts.append("Continuous features use single-threshold splits,using < and >=")
-    prompt_parts.append("Categorical features use explicit category combinations,using = and !=")
-    prompt_parts.append("Path conditions are automatically inherited without repetition")
-    prompt_parts.append("Final class labels must appear in leaf node rules")
+    prompt_parts.append("You are a decision tree generator. Your task is to generate candidate split rules for the current node. Please strictly follow the requirements below. Please don't explain.")
+    
+    prompt_parts.append("# Dataset Information")
+    prompt_parts.append(f"Dataset: {getattr(meta, 'name', 'Unnamed Dataset')}")
+    prompt_parts.append(f"Target: {getattr(meta, 'target', 'Not Specified')}")
+    prompt_parts.append(f"Samples: {x_train.shape[0]}")
+    prompt_parts.append(f"Features: {len(meta.features)}")
+    prompt_parts.append("")
 
-
-    # ===== 特征定义 =====
+    # ------ 特征定义 ------
     prompt_parts.append("# Feature Definitions")
-    feature_defs = []
+    
     for feat in meta.features:
-        if feat.is_categorical:
-            categories = " | Categories: " + ", ".join([f"{k}({v})" for k, v in feat.categories.items()])
-            feature_defs.append(f"{feat.name} (Cate): {feat.desc}{categories}")
+        # 自动提取单位（如 desc 中有括号）
+        desc = getattr(feat, 'desc', 'No description') or 'No description'
+        import re
+        unit = ''
+        m = re.search(r'\(([^)]+)\)', desc)
+        if m:
+            unit = m.group(1).strip()
+
+        # 新增：类型标记
+        type_tag = 'categorical' if getattr(feat, 'is_categorical', False) else 'numerical'
+
+        # 主行：在 {feat.name} 后紧跟 (Type: ...)
+        if unit:
+            prompt_parts.append(f"- {feat.name} (Type: {type_tag}): {desc} [unit: {unit}]")
         else:
-            feature_defs.append(f"{feat.name} (cont): {feat.desc}")
-    prompt_parts.append("; ".join(feature_defs))
-    
-    # ===== 标签定义 =====
-    prompt_parts.append("# Label Definitions")
-    label_defs = []
-    for label in meta.labels:
-        label_defs.append(f"{label.name}: {label.desc}")
-    prompt_parts.append("; ".join(label_defs))
-    
+            prompt_parts.append(f"- {feat.name} (Type: {type_tag}): {desc}")
+
+        # 若是离散型，追加类别行
+        if getattr(feat, 'is_categorical', False):
+            cats = getattr(feat, 'categories', {})
+            if isinstance(cats, dict):
+                categories = [f"{k}({v})" for k, v in cats.items()]
+            else:
+                categories = [str(c) for c in cats]
+            prompt_parts.append(f"  Categories: {', '.join(categories)}")
+
+    prompt_parts.append("")
+
     
     # ------ 训练样本展示 ------
     prompt_parts.append("# Training Samples")
@@ -461,6 +469,25 @@ def generate_ToT_tree_prompt(
         prompt_parts.append(sample_str)
     
     prompt_parts.append("")
+    
+    
+    
+    
+
+    prompt_parts.append("#Core Requirements")
+    prompt_parts.append("Generate mutually exclusive rule pairs forming complete branches")
+    prompt_parts.append("Directly assign final class labels to leaf nodes")
+    prompt_parts.append("Mark intermediate nodes with [NODE]")
+    prompt_parts.append("Always inherit parent path conditions")
+    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes must terminate as leaves")
+    prompt_parts.append(f"")
+    prompt_parts.append("#Structural Constraints")
+    prompt_parts.append("Each split must form complete complementary conditions")
+    prompt_parts.append("Continuous features use single-threshold splits,using < and >=")
+    prompt_parts.append("Categorical features use explicit category combinations,using = and !=")
+    prompt_parts.append("Path conditions are automatically inherited without repetition")
+    prompt_parts.append("Final class labels must appear in leaf node rules")
+
 
     
     # ===== 示例说明 =====
