@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/spambase.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./strategy/unknown_class.yml
+- ./common.yml
+config:
+  exp_name: chatgpt-spambase
