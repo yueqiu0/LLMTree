@@ -1,0 +1,32 @@
+name: iris
+target: predict iris species from flower measurements
+desc: >
+  Classic dataset introduced by R. A. Fisher (1936), containing 150 iris flowers
+  (50 per species) with four measurements used widely in pattern recognition.
+
+label_meaning: iris species
+
+features:
+  - name: sepal_length
+    desc: Sepal length (cm)
+    type: float
+  - name: sepal_width
+    desc: Sepal width (cm)
+    type: float
+  - name: petal_length
+    desc: Petal length (cm)
+    type: float
+  - name: petal_width
+    desc: Petal width (cm)
+    type: float
+
+labels:
+  - name: setosa
+    value: 0
+    desc: Iris setosa
+  - name: versicolor
+    value: 1
+    desc: Iris versicolor
+  - name: virginica
+    value: 2
+    desc: Iris virginica

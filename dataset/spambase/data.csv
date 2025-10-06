@@ -1,4 +1,4 @@
-word_freq_your,word_freq_000,word_freq_remove,char_freq_dollar,word_freq_you,word_freq_free,word_freq_business,word_freq_hp,capital_run_length_total,word_freq_our,char_freq_exclamation,word_freq_receive,word_freq_hpl,word_freq_over,word_freq_order,word_freq_money,capital_run_length_longest,word_freq_internet,label
+freq_your,freq_000,freq_remove,freq_dollar,freq_you,freq_free,freq_business,freq_hp,capital_total,freq_our,freq_exclamation,freq_receive,freq_hpl,freq_over,freq_order,freq_money,capital_longest,freq_internet,label
 0.96,0.0,0.0,0.0,1.93,0.32,0.0,0.0,278,0.32,0.778,0.0,0.0,0.0,0.0,0.0,61,0.0,1
 1.59,0.43,0.21,0.18,3.47,0.14,0.07,0.0,1028,0.14,0.372,0.21,0.0,0.28,0.0,0.43,101,0.07,1
 0.51,1.16,0.19,0.184,1.36,0.06,0.06,0.0,2259,1.23,0.276,0.38,0.0,0.19,0.64,0.06,485,0.12,1

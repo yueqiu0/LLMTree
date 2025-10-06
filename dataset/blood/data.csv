@@ -1,4 +1,4 @@
-v1,v2,v3,v4,label
+recency,frequency,monetary,time,label
 2,50,12500,98,1
 0,13,3250,28,1
 1,16,4000,35,1

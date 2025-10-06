@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/glioma-grading.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: glioma-grading-xgboost
+  tree_only: true
