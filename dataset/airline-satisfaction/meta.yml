@@ -1,0 +1,116 @@
+name: airline_satisfaction
+target: predict passenger satisfaction from survey responses and flight info
+desc: >
+  Airline passenger satisfaction survey data including demographics, travel context, service ratings, and delay minutes. 
+
+label_meaning: passenger satisfaction
+
+features:
+  - name: gender
+    desc: passenger gender
+    type: categorical
+    categories:
+      male: male
+      female: female
+
+  - name: customer_type
+    desc: loyalty status of the passenger
+    type: categorical
+    categories:
+      loyal: loyal customer
+      disloyal: disloyal customer
+
+  - name: age
+    desc: passenger age in years
+    type: int
+
+  - name: travel_type
+    desc: purpose of travel
+    type: categorical
+    categories:
+      business: business travel
+      personal: personal travel
+
+  - name: cabin_class
+    desc: travel cabin class
+    type: categorical
+    categories:
+      business: business class
+      eco: economy class
+      eco_plus: economy plus class
+
+  - name: flight_distance
+    desc: flight distance of the trip (km or miles, dataset-specific)
+    type: int
+
+  - name: inflight_wifi_service
+    desc: satisfaction with inflight wifi service (0=Not Applicable; 1–5)
+    type: int
+
+  - name: departure_arrival_convenient
+    desc: convenience of departure/arrival time (1–5)
+    type: int
+
+  - name: online_booking
+    desc: ease of online booking (1–5)
+    type: int
+
+  - name: gate_location
+    desc: satisfaction with gate location (1–5)
+    type: int
+
+  - name: food_and_drink
+    desc: satisfaction with food and drink (1–5)
+    type: int
+
+  - name: online_boarding
+    desc: satisfaction with online boarding (1–5)
+    type: int
+
+  - name: seat_comfort
+    desc: seat comfort (1–5)
+    type: int
+
+  - name: inflight_entertainment
+    desc: inflight entertainment (1–5)
+    type: int
+
+  - name: onboard_service
+    desc: on-board service (1–5)
+    type: int
+
+  - name: legroom_service
+    desc: leg room service (1–5)
+    type: int
+
+  - name: baggage_handling
+    desc: baggage handling (1–5)
+    type: int
+
+  - name: checkin_service
+    desc: check-in service (1–5)
+    type: int
+
+  - name: inflight_service
+    desc: inflight service (1–5)
+    type: int
+
+  - name: cleanliness
+    desc: cabin cleanliness (1–5)
+    type: int
+
+  - name: departure_delay_min
+    desc: departure delay in minutes
+    type: int
+
+  - name: arrival_delay_min
+    desc: arrival delay in minutes
+    type: int
+
+labels:
+  - name: not_satisfied
+    value: 0
+    desc: passenger is neutral or dissatisfied
+  - name: satisfied
+    value: 1
+    desc: passenger is satisfied

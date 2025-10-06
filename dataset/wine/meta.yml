@@ -1,0 +1,57 @@
+name: wine
+target: Classify wines based on chemical analysis of different constituents.
+desc: 'These data are the results of a chemical analysis of wines grown in the same region in Italy but derived from three different cultivars.'
+label_meaning: Wine cultivar type
+features:
+  - name: Alcohol
+    desc: Alcohol content (% by volume)
+    type: float
+  - name: Malic_acid
+    desc: Malic acid content (g/l)
+    type: float
+  - name: Ash
+    desc: Ash content (g/l)
+    type: float
+  - name: Alcalinity_of_ash
+    desc: Alcalinity of ash (measured in mmol of Na2O)
+    type: float
+  - name: Magnesium
+    desc: Magnesium content (mg/l)
+    type: float
+  - name: Total_phenols
+    desc: Total phenol content (g/l)
+    type: float
+  - name: Flavanoids
+    desc: Flavanoid phenol content (g/l)
+    type: float
+  - name: Nonflavanoid_phenols
+    desc: Non-flavonoid phenol content (g/l)
+    type: float
+  - name: Proanthocyanins
+    desc: Proanthocyanins content (g/l)
+    type: float
+  - name: Color_intensity
+    desc: Color intensity (arbitrary units)
+    type: float
+  - name: Hue
+    desc: Hue (ratio)
+    type: float
+  - name: OD280/OD315_of_diluted_wines
+    desc: Absorbance ratio of diluted wines at 280 and 315 nm
+    type: float
+  - name: Proline
+    desc: Proline content (mg/l)
+    type: int
+labels:
+  - name: Barolo
+    value: 1
+    desc: Full-bodied red wine
+
+  - name: Grignolino
+    value: 2
+    desc: Light red wine
+
+  - name: Barbera
+    value: 3
+    desc: Fruity red wine
+

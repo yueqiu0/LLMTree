@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/wine.yml
+- ../base/common.yml
+- ./tree/random_forest.yml
+- ./common.yml
+config:
+  exp_name: wine-random_forest
+  tree_only: true
