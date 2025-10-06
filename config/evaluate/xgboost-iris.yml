@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/iris.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: iris-xgboost
+  tree_only: true

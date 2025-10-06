@@ -1,41 +1,46 @@
 name: abalone
-target: predict the age of abalone from physical measurements
-desc: ''
-label_meaning: evaluation
+target: classify abalone age group (≤9 vs >9 rings) from physical measurements
+desc: >
+  Collected in Tasmania (Australia) and widely used for predicting abalone age.
+  True age is obtained by counting shell rings after sectioning and staining; here we
+  use easier physical measurements to approximate age.
+
+label_meaning: age group
+
 features:
-- name: sex
-  desc: sex of abalone
-  type: categorical
-  categories:
-    male: male
-    female: female
-    infant: infant
-- name: length
-  desc: longest shell measurement (mm)
-  type: float
-- name: diameter
-  desc: perpendicular to length (mm)
-  type: float
-- name: height
-  desc: with meat in shell (mm)
-  type: float
-- name: whole_weight
-  desc: whole abalone (grams)
-  type: float
-- name: shucked_weight
-  desc: weight of meat (grams)
-  type: float
-- name: viscera_weight
-  desc: gut weight (after bleeding) (grams)
-  type: float
-- name: shell_weight
-  desc: after being dried (grams)
-  type: float
+  - name: sex
+    desc: sex of the abalone
+    type: categorical
+    categories:
+      male: male
+      female: female
+      infant: infant
+  - name: length
+    desc: longest shell measurement (mm)
+    type: float
+  - name: diameter
+    desc: shell diameter perpendicular to length (mm)
+    type: float
+  - name: height
+    desc: shell height with meat in shell (mm)
+    type: float
+  - name: whole_weight
+    desc: whole abalone weight (g)
+    type: float
+  - name: shucked_weight
+    desc: meat weight (g)
+    type: float
+  - name: viscera_weight
+    desc: gut weight after bleeding (g)
+    type: float
+  - name: shell_weight
+    desc: shell weight after drying (g)
+    type: float
 
 labels:
-- name: 'younger'
-  value: 0
-  desc: the age of abalone is less than or equal to 9
-- name: 'older'
-  value: 1
-  desc: the age of abalone is greater than 9
+  - name: younger
+    value: 0
+    desc: age ≤ 9 rings
+  - name: older
+    value: 1
+    desc: age > 9 rings

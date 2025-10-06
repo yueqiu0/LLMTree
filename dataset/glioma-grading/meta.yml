@@ -1,0 +1,153 @@
+name: glioma_grading
+target: classify glioma grade (LGG vs GBM) based on clinical and molecular mutation features
+desc: >
+  Dataset combining clinical and molecular mutation features from TCGA-LGG and TCGA-GBM projects. Each record represents a glioma patient with 20 mutation gene statuses and 3 clinical variables (gender, age, race).
+
+label_meaning: glioma grade classification
+
+features:
+  - name: gender
+    desc: patient's gender
+    type: categorical
+    categories:
+      male: male
+      female: female
+  - name: age_at_diagnosis
+    desc: age at diagnosis (years)
+    type: float
+  - name: race
+    desc: patient's race
+    type: categorical
+    categories:
+      white: white
+      black_or_african_american: black or African American
+      asian: asian
+      american_indian_or_alaska_native: American Indian or Alaska Native
+  - name: idh1
+    desc: isocitrate dehydrogenase (NADP(+))1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: tp53
+    desc: tumor protein p53 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: atrx
+    desc: ATRX chromatin remodeler mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: pten
+    desc: phosphatase and tensin homolog mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: egfr
+    desc: epidermal growth factor receptor mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: cic
+    desc: capicua transcriptional repressor mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: muc16
+    desc: mucin 16, cell surface associated mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: pik3ca
+    desc: phosphatidylinositol-4,5-bisphosphate 3-kinase catalytic subunit alpha mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: nf1
+    desc: neurofibromin 1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: pik3r1
+    desc: phosphoinositide-3-kinase regulatory subunit 1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: fubp1
+    desc: far upstream element binding protein 1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: rb1
+    desc: RB transcriptional corepressor 1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: notch1
+    desc: notch receptor 1 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: bcor
+    desc: BCL6 corepressor mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: csmd3
+    desc: CUB and Sushi multiple domains 3 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: smarca4
+    desc: SWI/SNF related, matrix-associated, actin-dependent regulator of chromatin subfamily A, member 4 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: grin2a
+    desc: glutamate ionotropic receptor NMDA type subunit 2A mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: idh2
+    desc: isocitrate dehydrogenase (NADP(+)) 2 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: fat4
+    desc: FAT atypical cadherin 4 mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+  - name: pdgfra
+    desc: platelet-derived growth factor receptor alpha mutation status
+    type: categorical
+    categories:
+      not_mutated: not mutated
+      mutated: mutated
+
+labels:
+  - name: lgg
+    value: 0
+    desc: lower-grade glioma
+  - name: gbm
+    value: 1
+    desc: glioblastoma multiforme
