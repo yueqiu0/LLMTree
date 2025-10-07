@@ -471,7 +471,7 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("")
     
     
-    
+    prompt_parts.append("Remember the training samples are just for reference, you should generate the rules MAINLY based on your domain knowledge.")   
     
 
     prompt_parts.append("#Core Requirements")
@@ -527,7 +527,11 @@ def generate_ToT_tree_prompt(
     prompt_parts.append("**Current_depth:** ")
     prompt_parts.append(f"{depth}")
     
-    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes MUST terminate as leaves")    
+    prompt_parts.append(f"When parent node depth reaches {max_depth-1}, child nodes MUST terminate as leaves")
+    
+    prompt_parts.append(f"Do not overthink.")
+    
+ 
     # 构建最终提示词
     full_prompt = "\n".join(prompt_parts)
   

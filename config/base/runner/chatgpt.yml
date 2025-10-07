@@ -4,7 +4,7 @@ config:
     model_name: "qwen/qwen3-235b-a22b-thinking-2507"
     api_base: "https://api.ppinfra.com/openai"
     request_interval: 0.2
-    timeout: 20
+    timeout: 100
     parallel_batch_size: 6
     temperature: 0.0
     seed: 42

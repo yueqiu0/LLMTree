@@ -30,16 +30,22 @@ class OpenAIAPIRunner(Runner):
         self.frequency_penalty = frequency_penalty
 
     def run(self, messages: list[str]) -> Generator[tuple[list[str], dict], None, None]:
-        
+        logger.log(f"[OpenAI API] Starting with {len(messages)} messages")
+        logger.log(f"[OpenAI API] Model: {self.model_name}")
+        logger.log(f"[OpenAI API] Base URL: {self.api_base}")
 
-        for prompt in messages:
+        for i, prompt in enumerate(messages):
+            logger.log(f"[OpenAI API] Processing message {i+1}/{len(messages)}")
             client = OpenAI(base_url=self.api_base, api_key=self.api_key)
             stream = False
             max_tokens=2048
 
             retry_count = 0
-            while True:
+            max_retries = 3
+            
+            while retry_count < max_retries:
                 try:
+                    logger.log(f"[OpenAI API] Attempt {retry_count + 1} for message {i+1}")
                     response = client.chat.completions.create(
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
@@ -48,29 +54,42 @@ class OpenAIAPIRunner(Runner):
                         frequency_penalty=self.frequency_penalty,
                         seed=self.seed,
                         stream=False,
+                        max_tokens=max_tokens,
                         extra_body={}
-             
                     )
-                # TODO: real error handling
                 except BaseException as e:
                     err_msg = f"{e}"
-                    if err_msg.find("Rate limit reached") != -1:
+                    logger.log(f"[OpenAI API] Error on attempt {retry_count + 1}: {err_msg}")
+                    
+                    if retry_count >= max_retries - 1:
+                        logger.log(f"[OpenAI API] Max retries reached, giving up")
+                        raise e
+                    
+                    if err_msg.find("Rate limit reached") != -1 or err_msg.find("rate limit") != -1:
                         retry_count += 1
-                        # backoff
-                        delay = 0.5 * 2**retry_count
-                        logger.log(
-                            f"Access too frequent, backoff for {delay} seconds..."
-                        )
+                        delay = 2 ** retry_count  # Exponential backoff
+                        logger.log(f"[OpenAI API] Rate limit hit, waiting {delay} seconds...")
                         time.sleep(delay)
                         continue
-                    elif err_msg.find("maximum context length") != -1:
-                        logger.log("Exceed context length, skipping...")
+                    elif err_msg.find("maximum context length") != -1 or err_msg.find("context length") != -1:
+                        logger.log("[OpenAI API] Context length exceeded, skipping...")
                         result = ""
                         token_info = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                         break
-                    raise e
+                    elif err_msg.find("timeout") != -1 or err_msg.find("Timeout") != -1:
+                        retry_count += 1
+                        delay = 2 ** retry_count
+                        logger.log(f"[OpenAI API] Timeout, retrying in {delay} seconds...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        retry_count += 1
+                        delay = 2 ** retry_count
+                        logger.log(f"[OpenAI API] Unknown error, retrying in {delay} seconds...")
+                        time.sleep(delay)
+                        continue
 
-                # Normalize response (object style)
+                # Success - normalize response
                 result = response.choices[0].message.content or ""
                 usage = getattr(response, "usage", None)
                 token_info = {
@@ -78,10 +97,9 @@ class OpenAIAPIRunner(Runner):
                     "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
                     "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
                 }
+                logger.log(f"[OpenAI API] Success for message {i+1}, tokens: {token_info['total_tokens']}")
 
                 result = clean_llm_response(result)
-                
-                
                 break
 
 
