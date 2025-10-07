@@ -3,7 +3,7 @@ config:
   tree_args:
     max_depth: 3
     llm_tree_args:
-    model_name: Qwen/Qwen2.5-72B-Instruct-Turbo
+    model_name: qwen/qwen3-235b-a22b-thinking-2507
   random_seed: 0
   num_tests_per_set: 5
   test_size: 100

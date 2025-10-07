@@ -1,10 +1,10 @@
 config:
   runner: openai_api
   runner_args:
-    model_name: "qwen/qwen3-next-80b-a3b-instruct"
+    model_name: "qwen/qwen3-235b-a22b-thinking-2507"
     api_base: "https://api.ppinfra.com/openai"
     request_interval: 0.2
-    timeout: 200
+    timeout: 500
     parallel_batch_size: 6
     temperature: 0.0
     seed: 42
