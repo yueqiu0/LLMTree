@@ -1,4 +1,5 @@
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
 import sklearn.tree
 import sklearn.ensemble
 import numpy as np
@@ -69,6 +70,7 @@ class SimpleDecisionTree(DecisionTree):
         super().__init__(meta)
         self.max_depth = max_depth
         self.clf = None
+        self.imputer = SimpleImputer(strategy='most_frequent')
 
     def predict(
         self,
@@ -88,16 +90,23 @@ class SimpleDecisionTree(DecisionTree):
         old_meta = self.meta
         has_categorical = any(f.type == "categorical" for f in self.meta.features)
 
+        # Handle NaN values
+        x_train_imputed = self.imputer.fit_transform(x_train)
+        x_test_imputed = self.imputer.transform(x_test)
+
         # encode one-hot
         if has_categorical:
             new_x, new_meta = _encode_one_hot(
-                np.concatenate([x_train, x_test]), self.meta
+                np.concatenate([x_train_imputed, x_test_imputed]), self.meta
             )
 
             self.meta = new_meta
-            train_size = len(x_train)
+            train_size = len(x_train_imputed)
             x_train = new_x[:train_size]
             x_test = new_x[train_size:]
+        else:
+            x_train = x_train_imputed
+            x_test = x_test_imputed
 
         self.clf = tree.DecisionTreeClassifier(max_depth=self.max_depth)
         self.clf.fit(x_train, y_train)
@@ -175,6 +184,7 @@ class XGBoostDecisionTree(DecisionTree):
         self.max_depth = max_depth
         self.num_trees = num_trees
         self.random_state = random_state
+        self.imputer = SimpleImputer(strategy='most_frequent')
 
     def predict(
         self,
@@ -194,16 +204,23 @@ class XGBoostDecisionTree(DecisionTree):
         old_meta = self.meta
         has_categorical = any(f.type == "categorical" for f in self.meta.features)
 
+        # Handle NaN values
+        x_train_imputed = self.imputer.fit_transform(x_train)
+        x_test_imputed = self.imputer.transform(x_test)
+
         # encode one-hot
         if has_categorical:
             new_x, new_meta = _encode_one_hot(
-                np.concatenate([x_train, x_test]), self.meta
+                np.concatenate([x_train_imputed, x_test_imputed]), self.meta
             )
 
             self.meta = new_meta
-            train_size = len(x_train)
+            train_size = len(x_train_imputed)
             x_train = new_x[:train_size]
             x_test = new_x[train_size:]
+        else:
+            x_train = x_train_imputed
+            x_test = x_test_imputed
 
         clf = XGBClassifier(
             max_depth=self.max_depth,
@@ -238,6 +255,7 @@ class RandomForestDecisionTree(DecisionTree):
         self.num_trees = num_trees
         self.max_depth = max_depth
         self.clf = None
+        self.imputer = SimpleImputer(strategy='most_frequent')
 
     def predict(
         self,
@@ -258,16 +276,23 @@ class RandomForestDecisionTree(DecisionTree):
         old_meta = self.meta
         has_categorical = any(f.type == "categorical" for f in self.meta.features)
 
+        # Handle NaN values
+        x_train_imputed = self.imputer.fit_transform(x_train)
+        x_test_imputed = self.imputer.transform(x_test)
+
         # encode one-hot
         if has_categorical:
             new_x, new_meta = _encode_one_hot(
-                np.concatenate([x_train, x_test]), self.meta
+                np.concatenate([x_train_imputed, x_test_imputed]), self.meta
             )
 
             self.meta = new_meta
-            train_size = len(x_train)
+            train_size = len(x_train_imputed)
             x_train = new_x[:train_size]
             x_test = new_x[train_size:]
+        else:
+            x_train = x_train_imputed
+            x_test = x_test_imputed
 
         self.clf = RandomForestClassifier(
             n_estimators=self.num_trees, max_depth=self.max_depth
