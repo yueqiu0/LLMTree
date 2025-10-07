@@ -1,0 +1,10 @@
+base_configs:
+- ../base/dataset/heart-statlog.yml
+- ../base/runner/chatgpt.yml
+- ./CoT_llm_tree.yml
+- tree/CoT.yml
+- ./common.yml
+config:
+  exp_name: CoT-heart-statlog-baseline
+  template: template/basic.jinja
+  tree_only: false
