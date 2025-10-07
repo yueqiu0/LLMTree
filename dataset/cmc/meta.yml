@@ -42,8 +42,8 @@ features:
     desc: Current working status of the wife
     type: categorical
     categories:
-      yes: Currently working
-      no: Not currently working
+      "yes": Currently working
+      "no": Not currently working
 
   - name: husband_occupation
     desc: Occupation category of the husband

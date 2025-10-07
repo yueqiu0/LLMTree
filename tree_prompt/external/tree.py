@@ -15,11 +15,15 @@ def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, l
     all_categories = []
     for i in range(x_all.shape[1]):
         if meta.features[i].is_categorical:
-            encoder = OneHotEncoder()
-            feat_stack.append(
-                encoder.fit_transform(x_all[:, i].reshape(-1, 1)).toarray()
-            )
-            all_categories.append(encoder.categories_[0])
+            # Get unique values before encoding to preserve original string values
+            unique_values = np.unique(x_all[:, i])
+            # Create manual one-hot encoding to preserve string values
+            one_hot_matrix = np.zeros((x_all.shape[0], len(unique_values)))
+            for j, unique_val in enumerate(unique_values):
+                one_hot_matrix[:, j] = (x_all[:, i] == unique_val).astype(int)
+            feat_stack.append(one_hot_matrix)
+            # Use the original unique values
+            all_categories.append(unique_values)
         else:
             feat_stack.append(x_all[:, i].reshape(-1, 1))
             all_categories.append(None)
@@ -38,7 +42,13 @@ def _encode_one_hot(x_all: np.ndarray, meta: DatasetMeta) -> tuple[np.ndarray, l
             for cat in all_categories[feat_idx]:
                 if cat not in x_all[:, feat_idx]:
                     continue
-                cat_desc = ori_feat.categories[cat]
+                # Add error handling for missing categories
+                if cat in ori_feat.categories:
+                    cat_desc = ori_feat.categories[cat]
+                else:
+                    # Use the category value itself as description if not found
+                    cat_desc = str(cat)
+                    print(f"Warning: Category '{cat}' not found in feature '{ori_feat.name}' categories: {list(ori_feat.categories.keys())}")
                 new_feat = DatasetMeta.Feature()
                 new_feat.name = ori_feat.name + " == " + cat_desc
                 new_feat.desc = ori_feat.desc
@@ -88,7 +98,7 @@ class SimpleDecisionTree(DecisionTree):
             return np.full(x_test.shape[0], y_train[0]), []
 
         old_meta = self.meta
-        has_categorical = any(f.type == "categorical" for f in self.meta.features)
+        has_categorical = any(f.is_categorical for f in self.meta.features)
 
         # Handle NaN values
         x_train_imputed = self.imputer.fit_transform(x_train)
@@ -202,7 +212,7 @@ class XGBoostDecisionTree(DecisionTree):
             return np.full(x_test.shape[0], y_train[0]), []
 
         old_meta = self.meta
-        has_categorical = any(f.type == "categorical" for f in self.meta.features)
+        has_categorical = any(f.is_categorical for f in self.meta.features)
 
         # Handle NaN values
         x_train_imputed = self.imputer.fit_transform(x_train)
@@ -274,7 +284,7 @@ class RandomForestDecisionTree(DecisionTree):
             return np.full(x_test.shape[0], y_train[0]), []
 
         old_meta = self.meta
-        has_categorical = any(f.type == "categorical" for f in self.meta.features)
+        has_categorical = any(f.is_categorical for f in self.meta.features)
 
         # Handle NaN values
         x_train_imputed = self.imputer.fit_transform(x_train)

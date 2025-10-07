@@ -155,7 +155,8 @@ def load_dataset(
         x, y = sklearn.datasets.load_svmlight_file(args.data_file)
         x = x.toarray()
     elif args.format == "csv":
-        df = pd.read_csv(args.data_file)
+        # Read CSV with string dtype to prevent automatic boolean conversion
+        df = pd.read_csv(args.data_file, dtype=str)
         x = df.iloc[:, :-1].to_numpy()
         y = df.iloc[:, -1].to_numpy()
     else:

@@ -215,10 +215,10 @@ class TrainStrategy:
                     label_value = idx
                 
                 y = label_value
-            else:
-                y = idx
+        else:
+            y = idx
             
-            results.append(y)
+        results.append(y)
         
         return results
 
@@ -506,9 +506,6 @@ class TrainStrategy:
             if right_label_counts:
                 right_class = max(right_label_counts.items(), key=lambda x: x[1])[0]
                 logger.log(f"右子节点多数类标签: {right_class}")
-            else:
-                right_class = valid_labels[0] if valid_labels else 0
-                logger.log(f"右子节点无样本，使用默认标签: {right_class}")
         else:
             right_class = valid_labels[0] if valid_labels else 0
             logger.log(f"右子节点无样本，使用默认标签: {right_class}")
