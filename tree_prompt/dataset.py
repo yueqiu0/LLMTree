@@ -219,9 +219,12 @@ def sample_balanced(
             [
                 random_state.choice(
                     np.where(y == l)[0],
-                    num_samples_per_group // len(classes)
-                    if num_samples_per_group != 1
-                    else 1,
+                    min(
+                        num_samples_per_group // len(classes)
+                        if num_samples_per_group != 1
+                        else 1,
+                        len(np.where(y == l)[0])  # Don't exceed available samples
+                    ),
                     replace=False,
                 )
                 for l in classes
