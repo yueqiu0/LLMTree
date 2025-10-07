@@ -1,0 +1,10 @@
+base_configs:
+- ../base/dataset/nursery.yml
+- ../base/runner/chatgpt.yml
+- ./ToT_llm_tree.yml
+- tree/ToT.yml
+- ./common.yml
+config:
+  exp_name: ToT-nursery-baseline
+  template: template/basic.jinja
+  tree_only: false
