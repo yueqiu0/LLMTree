@@ -1,0 +1,82 @@
+name: contraceptive_choice
+target: Predict the current contraceptive method choice for married women
+desc: >
+  Subset of the 1987 Indonesia National Contraceptive Prevalence Survey, focusing on married women who were not pregnant or uncertain at the time of interview. The goal is to predict their current contraceptive method based on demographic and socio-economic factors.
+label_meaning: Contraceptive method type
+
+features:
+  - name: wife_age
+    desc: Age of the wife (years)
+    type: int
+
+  - name: wife_education
+    desc: Education level of the wife
+    type: categorical
+    categories:
+      low: Primary or below
+      medium_low: Lower secondary
+      medium_high: Upper secondary
+      high: Higher education
+
+  - name: husband_education
+    desc: Education level of the husband
+    type: categorical
+    categories:
+      low: Primary or below
+      medium_low: Lower secondary
+      medium_high: Upper secondary
+      high: Higher education
+
+  - name: num_children
+    desc: Number of children ever born
+    type: int
+
+  - name: wife_religion
+    desc: Religion of the wife
+    type: categorical
+    categories:
+      islam: Islam
+      non_islam: Non-Islam
+
+  - name: wife_working
+    desc: Current working status of the wife
+    type: categorical
+    categories:
+      "yes": Currently working
+      "no": Not currently working
+
+  - name: husband_occupation
+    desc: Occupation category of the husband
+    type: categorical
+    categories:
+      low: Labor or similar
+      medium_low: Skilled trade or service
+      medium_high: Office or technical job
+      high: Professional or managerial job
+
+  - name: living_index
+    desc: Standard of living index
+    type: categorical
+    categories:
+      low: Low
+      medium_low: Below average
+      medium_high: Above average
+      high: High
+
+  - name: media_exposure
+    desc: Level of media exposure
+    type: categorical
+    categories:
+      good: Good media exposure
+      not_good: Limited or no media exposure
+
+labels:
+  - name: no_use
+    value: 0
+    desc: No contraceptive method used
+  - name: long_term
+    value: 1
+    desc: Long-term contraceptive method used
+  - name: short_term
+    value: 2
+    desc: Short-term contraceptive method used

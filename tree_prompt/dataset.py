@@ -155,7 +155,8 @@ def load_dataset(
         x, y = sklearn.datasets.load_svmlight_file(args.data_file)
         x = x.toarray()
     elif args.format == "csv":
-        df = pd.read_csv(args.data_file)
+        # Read CSV with string dtype to prevent automatic boolean conversion
+        df = pd.read_csv(args.data_file, dtype=str)
         x = df.iloc[:, :-1].to_numpy()
         y = df.iloc[:, -1].to_numpy()
     else:
@@ -218,9 +219,12 @@ def sample_balanced(
             [
                 random_state.choice(
                     np.where(y == l)[0],
-                    num_samples_per_group // len(classes)
-                    if num_samples_per_group != 1
-                    else 1,
+                    min(
+                        num_samples_per_group // len(classes)
+                        if num_samples_per_group != 1
+                        else 1,
+                        len(np.where(y == l)[0])  # Don't exceed available samples
+                    ),
                     replace=False,
                 )
                 for l in classes

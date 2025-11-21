@@ -1,0 +1,36 @@
+name: balance_scale
+target: Predict the balance state (left tilt, balanced, or right tilt) based on weights and distances on both sides of a scale
+desc: >
+  Dataset generated from psychological experiments on balance perception. 
+  Each instance records the weights and distances on both sides of a balance scale, 
+  and the task is to classify whether the scale tilts left, stays balanced, or tilts right.
+
+label_meaning: Balance state of the scale
+
+features:
+  - name: left_weight
+    desc: Weight placed on the left side of the scale (unitless, range 1–5)
+    type: int
+
+  - name: left_distance
+    desc: Distance of the left weight from the fulcrum (unitless, range 1–5)
+    type: int
+
+  - name: right_weight
+    desc: Weight placed on the right side of the scale (unitless, range 1–5)
+    type: int
+
+  - name: right_distance
+    desc: Distance of the right weight from the fulcrum (unitless, range 1–5)
+    type: int
+
+labels:
+  - name: left_tilt
+    value: 0
+    desc: Scale tilts to the left side (left torque greater than right)
+  - name: balanced
+    value: 1
+    desc: Scale remains level (left and right torques are equal)
+  - name: right_tilt
+    value: 2
+    desc: Scale tilts to the right side (right torque greater than left)

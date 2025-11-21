@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/heart-statlog.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: heart-statlog-xgboost
+  tree_only: true

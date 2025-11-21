@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/wine.yml
+- ../base/runner/chatgpt.yml
+- ../base/common.yml
+- ./tree/simple.yml
+- ./common.yml
+config:
+  exp_name: chatgpt-wine-baseline

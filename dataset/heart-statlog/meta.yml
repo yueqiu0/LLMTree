@@ -1,0 +1,93 @@
+name: heart-statlog
+target: predict the presence or absence of heart disease based on clinical features
+desc: >
+  This dataset contains 270 clinical records collected to study the prediction of heart disease.
+  It includes demographic, electrocardiographic, and exercise-related measurements for each patient.
+label_meaning: presence of heart disease
+
+features:
+  - name: age
+    desc: Age of the patient in years
+    type: float
+
+  - name: sex
+    desc: Gender of the patient
+    type: categorical
+    categories:
+      male: male patient
+      female: female patient
+
+  - name: chest_pain_type
+    desc: Type of chest pain experienced by the patient
+    type: categorical
+    categories:
+      typical_angina: typical angina
+      atypical_angina: atypical angina
+      non_anginal_pain: non-anginal pain
+      asymptomatic: asymptomatic
+
+  - name: resting_blood_pressure
+    desc: Resting blood pressure in millimeters of mercury (mm Hg)
+    type: float
+
+  - name: serum_cholesterol
+    desc: Serum cholesterol level in milligrams per deciliter (mg/dl)
+    type: float
+
+  - name: fasting_blood_sugar
+    desc: Indicates whether fasting blood sugar > 120 mg/dl
+    type: categorical
+    categories:
+      "true": fasting blood sugar above 120 mg/dl
+      "false": fasting blood sugar 120 mg/dl or below
+
+  - name: resting_ecg
+    desc: Resting electrocardiographic results
+    type: categorical
+    categories:
+      normal: normal ECG
+      st_t_abnormality: ST-T wave abnormality
+      left_ventricular_hypertrophy: probable or definite left ventricular hypertrophy
+
+  - name: maximum_heart_rate
+    desc: Maximum heart rate achieved during exercise test (beats per minute)
+    type: float
+
+  - name: exercise_induced_angina
+    desc: Indicates whether exercise induced angina
+    type: categorical
+    categories:
+      "yes": exercise induced angina present
+      "no": exercise induced angina absent
+
+  - name: oldpeak
+    desc: ST depression induced by exercise relative to rest
+    type: float
+
+  - name: slope
+    desc: Slope of the peak exercise ST segment
+    type: categorical
+    categories:
+      upsloping: upsloping
+      flat: flat
+      downsloping: downsloping
+
+  - name: num_major_vessels
+    desc: Number of major vessels (0–3) colored by fluoroscopy
+    type: float
+
+  - name: thal
+    desc: Thalassemia result from nuclear scan
+    type: categorical
+    categories:
+      normal: normal
+      fixed_defect: fixed defect
+      reversible_defect: reversible defect
+
+labels:
+  - name: absence
+    value: 0
+    desc: no presence of heart disease
+  - name: presence
+    value: 1
+    desc: presence of heart disease
