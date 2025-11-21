@@ -3,6 +3,8 @@ evaluate-output*/
 .huggingchat/
 nohup.out
 
+backup*/
+
 # VS Code
 .vscode
 
