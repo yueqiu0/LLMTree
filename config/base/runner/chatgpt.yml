@@ -1,7 +1,7 @@
 config:
   runner: openai_api
   runner_args:
-    model_name: "qwen/qwen3-235b-a22b-thinking-2507"
+    model_name: "qwen/qwen-2.5-72b-instruct"
     api_base: "https://api.ppinfra.com/openai"
     request_interval: 0.2
     timeout: 500

@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/bankruptcy.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: bankruptcy-xgboost
+  tree_only: true
