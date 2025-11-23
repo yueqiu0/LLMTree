@@ -76,17 +76,57 @@ class DatasetMeta:
 
     def value_repr(self, feat_idx: int, val) -> str:
         feat = self.features[feat_idx]
+        
+        # 处理 NaN 值
+        if isinstance(val, (float, np.floating)) and (np.isnan(val) or pd.isna(val)):
+            # 对于 NaN 值，返回一个占位符
+            if feat.type == "categorical":
+                # 对于分类特征，返回第一个类别作为默认值
+                if feat.categories:
+                    return list(feat.categories.keys())[0]
+                return "unknown"
+            elif feat.type == "int":
+                return "0"
+            elif feat.type == "float":
+                return "0.0"
+            else:
+                return "unknown"
+        
         if feat.type == "int":
-            repr = int(val)
+            # 确保不是 NaN 后再转换
+            if isinstance(val, (float, np.floating)) and (np.isnan(val) or pd.isna(val)):
+                repr = "0"
+            else:
+                repr = str(int(val))
         elif feat.type == "categorical":
             if type(val) != str:
-                repr = feat.categories[int(val)]
+                # 处理 NaN 值
+                if isinstance(val, (float, np.floating)) and (np.isnan(val) or pd.isna(val)):
+                    # 返回第一个类别作为默认值
+                    if feat.categories:
+                        repr = list(feat.categories.keys())[0]
+                    else:
+                        repr = "unknown"
+                else:
+                    val_int = int(val)
+                    if val_int in feat.categories:
+                        repr = feat.categories[val_int]
+                    else:
+                        # 如果整数索引不在 categories 中，尝试作为字符串键
+                        repr = feat.categories.get(str(val_int), str(val))
             else:
-                repr = feat.categories[val]
+                if val in feat.categories:
+                    repr = feat.categories[val]
+                else:
+                    # 如果值不在 categories 中，返回原值
+                    repr = str(val)
         elif feat.type == "float":
-            repr = f"{val:.3f}"
+            if isinstance(val, (float, np.floating)) and (np.isnan(val) or pd.isna(val)):
+                repr = "0.0"
+            else:
+                repr = f"{val:.3f}"
         else:
-            repr = f"{val}"
+            repr = str(val)
         return repr
 
     @property
