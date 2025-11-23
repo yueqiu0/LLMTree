@@ -1,0 +1,253 @@
+# IOT (LLM) 命令
+
+## 1. airline-satisfaction (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-airline-satisfaction.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_llm_directly_airline-satisfaction
+
+## 2. bankruptcy (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-bankruptcy.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_llm_directly_bankruptcy
+
+## 3. breast-cancer-coimbra (2分类，测试集30，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-breast-cancer-coimbra.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 30 \
+  --exp-name baseline_llm_directly_breast-cancer-coimbra
+
+## 4. caesarian (2分类，测试集20，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-caesarian.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 20 \
+  --exp-name baseline_llm_directly_caesarian
+
+## 5. climate-model-simulation-crashes (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-climate-model-simulation-crashes.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_llm_directly_climate-model-simulation-crashes
+
+## 6. glioma-grading (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-glioma-grading.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_llm_directly_glioma-grading
+
+## 7. penguins (3分类，测试集100，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/llm_gen_directly-penguins.yml \
+  --tree-type LLM \
+  --with-llm 0 \
+  --train-sizes 6 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_llm_directly_penguins
+
+
+# CoT 命令
+
+## 1. airline-satisfaction (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-airline-satisfaction.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_CoT_airline-satisfaction
+
+## 2. bankruptcy (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-bankruptcy.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_CoT_bankruptcy
+
+## 3. breast-cancer-coimbra (2分类，测试集30，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-breast-cancer-coimbra.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 30 \
+  --exp-name baseline_CoT_breast-cancer-coimbra
+
+## 4. caesarian (2分类，测试集20，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-caesarian.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 20 \
+  --exp-name baseline_CoT_caesarian
+
+## 5. climate-model-simulation-crashes (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-climate-model-simulation-crashes.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_CoT_climate-model-simulation-crashes
+
+## 6. glioma-grading (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-glioma-grading.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_CoT_glioma-grading
+
+## 7. penguins (3分类，测试集100，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/CoT-penguins.yml \
+  --tree-type CoT \
+  --with-llm 0 \
+  --train-sizes 6 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --exp-name baseline_CoT_penguins
+
+
+# ToT 命令
+
+## 1. airline-satisfaction (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-airline-satisfaction.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_airline-satisfaction
+
+## 2. bankruptcy (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-bankruptcy.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_bankruptcy
+
+## 3. breast-cancer-coimbra (2分类，测试集30，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-breast-cancer-coimbra.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 30 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_breast-cancer-coimbra
+
+## 4. caesarian (2分类，测试集20，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-caesarian.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 20 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_caesarian
+
+## 5. climate-model-simulation-crashes (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-climate-model-simulation-crashes.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_climate-model-simulation-crashes
+
+## 6. glioma-grading (2分类，测试集100，深度4)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-glioma-grading.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 4 \
+  --max-depth 4 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_glioma-grading
+
+## 7. penguins (3分类，测试集100，深度3)
+conda activate qy_env && python3 evaluate.py \
+  --config config/evaluate/ToT-penguins.yml \
+  --tree-type ToT \
+  --with-llm 0 \
+  --train-sizes 6 \
+  --max-depth 3 \
+  --num-tests-per-set 10 \
+  --test-size 100 \
+  --candidate-rules 5 \
+  --voting-rounds 5 \
+  --exp-name baseline_ToT_penguins
+
