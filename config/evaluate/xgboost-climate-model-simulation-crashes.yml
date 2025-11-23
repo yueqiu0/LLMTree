@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/climate-model-simulation-crashes.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: climate-model-simulation-crashes-xgboost
+  tree_only: true

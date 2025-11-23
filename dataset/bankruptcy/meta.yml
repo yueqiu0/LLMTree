@@ -1,0 +1,88 @@
+name: bankruptcy
+target: Predict bankruptcy status of American public companies based on financial
+  indicators.
+desc: Dataset comprising accounting data from 8,262 distinct American public companies
+  listed on NYSE and NASDAQ recorded from 1999 to 2018. A company is labeled as bankrupt
+  (1) if it files for Chapter 11 (reorganization) or Chapter 7 (liquidation) bankruptcy
+  in the subsequent year, otherwise labeled as operating normally (0).
+label_meaning: Company bankruptcy status
+features:
+- name: year
+  desc: Fiscal year of the financial data
+  type: int
+- name: current_assets
+  desc: All the assets of a company that are expected to be sold or used as a result
+    of standard business operations over the next year
+  type: float
+- name: cost_of_goods_sold
+  desc: The total amount a company paid as a cost directly related to the sale of
+    products
+  type: float
+- name: depreciation_and_amortization
+  desc: Depreciation refers to the loss of value of a tangible fixed asset over time
+    (such as property, machinery, buildings, and plant). Amortization refers to the
+    loss of value of intangible assets over time
+  type: float
+- name: ebitda
+  desc: Earnings before interest, taxes, depreciation, and amortization. It is a measure
+    of a company's overall financial performance, serving as an alternative to net
+    income
+  type: float
+- name: inventory
+  desc: The accounting of items and raw materials that a company either uses in production
+    or sells
+  type: float
+- name: net_income
+  desc: The overall profitability of a company after all expenses and costs have been
+    deducted from total revenue
+  type: float
+- name: total_receivables
+  desc: The balance of money due to a firm for goods or services delivered or used
+    but not yet paid for by customers
+  type: float
+- name: market_value
+  desc: The price of an asset in a marketplace. In this dataset, it refers to the
+    market capitalization since companies are publicly traded in the stock market
+  type: float
+- name: net_sales
+  desc: The sum of a company's gross sales minus its returns, allowances, and discounts
+  type: float
+- name: total_assets
+  desc: All the assets, or items of value, a business owns
+  type: float
+- name: total_long_term_debt
+  desc: A company's loans and other liabilities that will not become due within one
+    year of the balance sheet date
+  type: float
+- name: ebit
+  desc: Earnings before interest and taxes
+  type: float
+- name: gross_profit
+  desc: The profit a business makes after subtracting all the costs that are related
+    to manufacturing and selling its products or services
+  type: float
+- name: total_current_liabilities
+  desc: The sum of accounts payable, accrued liabilities, and taxes such as Bonds
+    payable at the end of the year, salaries, and commissions remaining
+  type: float
+- name: retained_earnings
+  desc: The amount of profit a company has left over after paying all its direct costs,
+    indirect costs, income taxes, and its dividends to shareholders
+  type: float
+- name: total_revenue
+  desc: The amount of income that a business has made from all sales before subtracting
+    expenses. It may include interest and dividends from investments
+  type: float
+- name: total_liabilities
+  desc: The combined debts and obligations that the company owes to outside parties
+  type: float
+- name: total_operating_expenses
+  desc: The expenses a business incurs through its normal business operations
+  type: float
+labels:
+- name: normal
+  value: 0
+  desc: Company operating normally
+- name: bankrupt
+  value: 1
+  desc: Company filed for bankruptcy in the next fiscal year
