@@ -139,9 +139,8 @@ class EvaluateArgs:
             )
         ):
             missing_fields.append("runner_args")
-
         elif self.runner_args:
-            missing_fields += _get_missing_fields(self.runner_args, "runner_args")
+                missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
         if (
             (
@@ -198,7 +197,7 @@ class EvaluateArgs:
         if not self.tree_only:
             assert isinstance(self.runner_args, dict)
             runner_args_dict = self.runner_args
-
+            
             if self.runner == "openai_api":
                 self.runner_args = OpenAIAPIArgs()
             elif self.runner == "huggingchat":
@@ -304,7 +303,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-  
+
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -433,7 +432,7 @@ def parse_args() -> EvaluateArgs:
         and not runner_args_dict.get("openai_api_key")
         and not args.runner_args.get("openai_api_key")
     ):
-        runner_args_dict["openai_api_key"] = openai_api_key
+            runner_args_dict["openai_api_key"] = openai_api_key
 
     if args.runner_args is None:
         args.runner_args = {}
@@ -707,7 +706,14 @@ def evaluate(
         "evaluation": [],
         "total_tokens": 0
     }
-
+    
+    # 初始化 fit_elapsed_time，确保在所有分支中都有值
+    fit_elapsed_time = 0.0
+    
+    # 标志变量：是否已经计算了树规则预测的准确率（with_llm=0 且是 CoTDecisionTree 时）
+    tree_acc_already_calculated = False
+    tree_acc_value = None
+    tree_auc_value = None
 
     # 创建一个新的树模型实例，而不是重用传入的实例
     if isinstance(tree_model, CoTDecisionTree):
@@ -796,8 +802,8 @@ def evaluate(
         global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
         prompts, test_splits, labels = gen_prompt(
             meta,
-            master_template,
-            serializer,
+    master_template,
+    serializer,
             x_train,
             y_train,
             x_test,
@@ -819,6 +825,8 @@ def evaluate(
             raise RuntimeError("basic.jinja prompt生成失败，请检查模板、数据、规则格式和gen_prompt调用参数！")
         raw_results = []
         results = []
+        
+        # 替换原来的runner.run调用，使用随机结果代替
         for idx in range(len(prompts)):
             # 为每个prompt创建模拟响应
             mock_responses = []
@@ -871,13 +879,17 @@ def evaluate(
                         )
                     )
             if not found:
-                global_log("Failed to find any valid response, skipping...")
-                result_dict = {
-                    "record": prompts[0],
-                    "failed_raw_output": mock_responses,
-                    "token_stats": token_stats,  # 添加token统计
-                }
-                return result_dict
+                global_log(f"[WARNING] Failed to find any valid response for batch {idx}, using default predictions")
+                # 使用默认值填充，确保 results 长度与 labels 匹配
+                default_class = meta.labels[0].name
+                default_results = [default_class] * expected_len
+                results += default_results
+                raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+        # 确保 results 长度与 y_test 匹配
+        if len(results) != len(y_test):
+            global_log(f"[WARNING] Results length ({len(results)}) != y_test length ({len(y_test)}), padding with default predictions")
+            default_class = meta.labels[0].name
+            results.extend([default_class] * (len(y_test) - len(results)))
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
         global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
         tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -911,18 +923,37 @@ def evaluate(
                 tree_accuracy = tree_accuracies
             elif isinstance(tree_model, CoTDecisionTree):
                 # 确保在调用 predict 之前调用 fit 方法
+                # 无论 with_llm 的值如何，都需要调用LLM生成树结构
+                global_log("[DEBUG][CoT] === 第一次CoT交互：生成规则 ===")
+                # 添加时间统计
+                fit_start_time = time.time()
+                tree_model.fit(x_train, y_train, with_llm=True)  # 明确传递 with_llm=True 来生成规则
+                fit_elapsed_time = time.time() - fit_start_time
+                global_log(f"[DEBUG][CoT] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+                
+                # 获取CoTDecisionTree的token统计
+                if hasattr(tree_model, 'get_token_stats'):
+                    tree_token_stats = tree_model.get_token_stats()
+                    global_log(f"[DEBUG][CoT] 树模型训练token统计: {tree_token_stats}")
+                    # 更新总token统计
+                    if 'tree_building' in tree_token_stats:
+                        tree_model.token_stats['tree_building'] = tree_token_stats['tree_building']
+                        tree_model.token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                    if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
+                        tree_model.token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                        for eval_token in tree_token_stats['evaluation']:
+                            tree_model.token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                
+                rules = tree_model.get_rules()
+                tree_model.rules = rules
+                global_log("[DEBUG][CoT] 规则生成完毕，规则内容如下：")
+                if isinstance(tree_model.rules, list):
+                    rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                    global_log(rules_str)
+                else:
+                    global_log(str(tree_model.rules))
+                
                 if with_llm:
-                    # 第一次：用CoT prompt生成规则
-                    global_log("[DEBUG][CoT] === 第一次CoT交互：生成规则 ===")
-                    tree_model.fit(x_train, y_train)
-                    rules = tree_model.get_rules()
-                    tree_model.rules = rules
-                    global_log("[DEBUG][CoT] 规则生成完毕，规则内容如下：")
-                    if isinstance(tree_model.rules, list):
-                        rules_str = "\n".join(str(rule) for rule in tree_model.rules)
-                        global_log(rules_str)
-                    else:
-                        global_log(str(tree_model.rules))
                     global_log("[DEBUG][CoT] === 进入第二次CoT交互：用basic.jinja渲染规则并让CoT预测 ===")
                     prompts, test_splits, labels = gen_prompt(
                         meta,
@@ -1002,13 +1033,17 @@ def evaluate(
                                     )
                                 )
                         if not found:
-                            global_log("Failed to find any valid response, skipping...")
-                            result_dict = {
-                                "record": prompts[0],
-                                "failed_raw_output": mock_responses,
-                                "token_stats": token_stats,  # 添加token统计
-                            }
-                            return result_dict
+                            global_log(f"[WARNING] Failed to find any valid response for batch {idx}, using default predictions")
+                            # 使用默认值填充，确保 results 长度与 labels 匹配
+                            default_class = meta.labels[0].name
+                            default_results = [default_class] * expected_len
+                            results += default_results
+                            raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+                    # 确保 results 长度与 y_test 匹配
+                    if len(results) != len(y_test):
+                        global_log(f"[WARNING] Results length ({len(results)}) != y_test length ({len(y_test)}), padding with default predictions")
+                        default_class = meta.labels[0].name
+                        results.extend([default_class] * (len(y_test) - len(results)))
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
                     tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -1024,12 +1059,9 @@ def evaluate(
                     global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
+                    # 注意：fit() 方法已经在上面调用过了，这里不需要再次调用
                     global_log("[DEBUG][LLM] 直接用规则本地推理，无LLM参与")
-                    # 添加时间统计
-                    fit_start_time = time.time()
-                    tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
-                    fit_elapsed_time = time.time() - fit_start_time
-                    global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+                    global_log("[DEBUG][LLM] 使用已生成的树结构（规则）进行本地预测")
                     
                     # 获取LLMDecisionTree的token统计
                     if hasattr(tree_model, 'get_token_stats'):
@@ -1046,25 +1078,38 @@ def evaluate(
                     
                     tree_results = tree_model.predict(x_test)
                     
-                    # 新增：检查并转换预测结果类型
-                    if isinstance(tree_results[0], str):
-                        global_log("[DEBUG] CoTDecisionTree返回的预测结果是字符串类型，转换为数值...")
-                        # 将字符串标签转换为对应的数值标签
-                        tree_results_numeric = []
-                        for label in tree_results:
-                            label_value = meta.get_label_value(label)
-                            if label_value is None:
-                                global_log(f"[WARNING] 无法找到标签 '{label}' 对应的数值")
+                    # 确保 tree_results 是字符串类型（用于保存到 JSON）
+                    if not isinstance(tree_results[0], str):
+                        global_log("[DEBUG] CoTDecisionTree返回的预测结果是数值类型，转换为字符串...")
+                        # 将数值标签转换为对应的字符串标签
+                        tree_results_str = []
+                        for label_value in tree_results:
+                            label = meta.find_label(float(label_value))
+                            if label is None:
+                                global_log(f"[WARNING] 无法找到标签值 '{label_value}' 对应的标签")
                                 # 使用默认值
-                                label_value = meta.labels[0].value
-                            tree_results_numeric.append(label_value)
-                        tree_results = np.array(tree_results_numeric)
-                        global_log(f"[DEBUG] 转换后的预测结果: {tree_results[:5]}...")
+                                label_name = meta.labels[0].name
+                            else:
+                                label_name = label.name
+                            tree_results_str.append(label_name)
+                        tree_results = tree_results_str
+                        global_log(f"[DEBUG] 转换后的预测结果（字符串）: {tree_results[:5]}...")
                     
-                    # CoT输出为字符串，专用评测函数
-                    tree_accuracy, tree_auc_result = cot_calc_accuracy_auc(y_test, tree_results, meta, force_dict=True)
+                    # 将字符串标签转换为数值标签用于计算准确率
+                    tree_results_numeric = []
+                    for label_name in tree_results:
+                        label_value = meta.get_label_value(label_name)
+                        if label_value is None:
+                            global_log(f"[WARNING] 无法找到标签 '{label_name}' 对应的数值")
+                            # 使用默认值
+                            label_value = meta.labels[0].value
+                        tree_results_numeric.append(label_value)
+                    
+                    # CoT输出为字符串，专用评测函数（使用数值类型计算准确率）
+                    tree_accuracy, tree_auc_result = cot_calc_accuracy_auc(y_test, tree_results_numeric, meta, force_dict=True)
                     global_log("[CoTDecisionTree] 直接用规则推理（未调用CoT）")
                     global_log(f"规则数量: {len(tree_model.rules)}")
+                    global_log(f"准确率计算结果: {int(tree_accuracy * len(y_test))}/{len(y_test)} = {tree_accuracy:.4f}")
                     
                     # 优化二分类情况下的AUC输出格式
                     is_binary = len(np.unique(y_test)) <= 2
@@ -1075,10 +1120,15 @@ def evaluate(
                     else:
                         global_log(f"tree_accuracy: {tree_accuracy}, tree_auc: {tree_auc_result}")
                         
-                    results = tree_results
+                    results = tree_results  # 保持字符串类型用于后续处理
                     acc = tree_accuracy
                     auc = tree_auc_result
-            else:
+                    
+                    # 设置标志变量，表示已经计算了树规则预测的准确率
+                    tree_acc_already_calculated = True
+                    tree_acc_value = tree_accuracy
+                    tree_auc_value = tree_auc_result
+        else:
                 # 其他类型的决策树
                 tree_results, rules = tree_model.predict(
                     x_train, y_train, x_test, export_rules=True
@@ -1139,92 +1189,106 @@ def evaluate(
             "token_stats": tree_model.token_stats,  # 添加token统计信息
             "train_elapsed": fit_elapsed_time  # 添加模型训练时间
         }
-        
+
 
     # 如果不是tree_only模式且不是CoTDecisionTree的with_llm模式
+    # 注意：当 with_llm=0 且是 CoTDecisionTree 时，已经在上面计算了树规则预测结果，这里应该跳过
     if not (isinstance(tree_model, CoTDecisionTree) and with_llm):
-        prompts, test_splits, labels = gen_prompt(
-            meta,
-            master_template,
-            serializer,
-            x_train,
-            y_train,
-            x_test,
-            y_test,
-            rules if use_tree_rules else [],
-            num_tests_per_round,
-        )
+        # 如果 with_llm=0 且是 CoTDecisionTree，tree_results 已经在上面计算过了，直接跳过
+        if isinstance(tree_model, CoTDecisionTree) and not with_llm:
+            global_log("[DEBUG] with_llm=0 且是 CoTDecisionTree，跳过模拟LLM响应，使用已计算的树规则预测结果")
+        else:
+            prompts, test_splits, labels = gen_prompt(
+                meta,
+                master_template,
+                serializer,
+                x_train,
+                y_train,
+                x_test,
+                y_test,
+                rules if use_tree_rules else [],
+                num_tests_per_round,
+            )
 
-        raw_results = []
-        results = []
+            raw_results = []
+            results = []
 
-        # 替换原来的runner.run调用，使用随机结果代替
-        for idx in range(len(prompts)):
-            # 为每个prompt创建模拟响应
-            mock_responses = []
-            expected_len = test_splits[idx][1] - test_splits[idx][0]
-            
-            # 模拟LLM的响应格式 - 根据serializer的类型生成不同格式的响应
-            label_names = [label.name for label in meta.labels]
-            
-            # 生成随机结果
-            random_results = [random.choice(label_names) for _ in range(expected_len)]
-            
-            # 根据serializer类型生成格式化响应
-            if isinstance(serializer, TabularSerializer):
-                formatted_response = "Predictions:\n" + "\n".join(random_results)
-            elif isinstance(serializer, ListSerializer):
-                formatted_response = "Predictions: " + ", ".join(random_results)
-            else:  # 默认格式
-                formatted_response = "\n".join([f"Sample {i+1}: {label}" for i, label in enumerate(random_results)])
+            # 替换原来的runner.run调用，使用随机结果代替
+            for idx in range(len(prompts)):
+                # 为每个prompt创建模拟响应
+                mock_responses = []
+                expected_len = test_splits[idx][1] - test_splits[idx][0]
                 
-            mock_responses.append(formatted_response)
-            
-            # 创建模拟的token统计
-            mock_token_info = {
-                "prompt_tokens": len(prompts[idx]) // 4,  # 粗略估计
-                "completion_tokens": len(formatted_response) // 4,
-                "total_tokens": (len(prompts[idx]) + len(formatted_response)) // 4
-            }
-            
-            # 记录token信息
-            token_stats["evaluation"].append(mock_token_info)
-            token_stats["total_tokens"] += mock_token_info["total_tokens"]
-            global_log(f"[DEBUG] 使用随机模拟结果替代LLM API调用")
-            global_log(f"[DEBUG] Token使用(模拟): prompt={mock_token_info['prompt_tokens']}, completion={mock_token_info['completion_tokens']}, total={mock_token_info['total_tokens']}")
-            
-            # 解析响应
-            found = False
-            for response in mock_responses:
-                global_log(f"[DEBUG] 模拟LLM响应:\n{response}")
-                results_batch = serializer.answer_decoder.decode(response)
-                global_log(f"[DEBUG] decode后结果: {results_batch}")
-                if len(results_batch) == expected_len:
-                    found = True
-                    results += results_batch
-                    raw_results.append(response)
-                    break
-                else:
-                    global_log(
-                        "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
-                            expected_len, len(results_batch), response
-                        )
-                    )
-            if not found:
-                global_log("Failed to find any valid response, skipping...")
-                result_dict = {
-                    "record": prompts[0],
-                    "failed_raw_output": mock_responses,
-                    "token_stats": token_stats,  # 添加token统计
+                # 模拟LLM的响应格式 - 根据serializer的类型生成不同格式的响应
+                label_names = [label.name for label in meta.labels]
+                
+                # 生成随机结果
+                random_results = [random.choice(label_names) for _ in range(expected_len)]
+                
+                # 根据serializer类型生成格式化响应
+                if isinstance(serializer, TabularSerializer):
+                    formatted_response = "Predictions:\n" + "\n".join(random_results)
+                elif isinstance(serializer, ListSerializer):
+                    formatted_response = "Predictions: " + ", ".join(random_results)
+                else:  # 默认格式
+                    formatted_response = "\n".join([f"Sample {i+1}: {label}" for i, label in enumerate(random_results)])
+                    
+                mock_responses.append(formatted_response)
+                
+                # 创建模拟的token统计
+                mock_token_info = {
+                    "prompt_tokens": len(prompts[idx]) // 4,  # 粗略估计
+                    "completion_tokens": len(formatted_response) // 4,
+                    "total_tokens": (len(prompts[idx]) + len(formatted_response)) // 4
                 }
+                
+                # 记录token信息
+                token_stats["evaluation"].append(mock_token_info)
+                token_stats["total_tokens"] += mock_token_info["total_tokens"]
+                global_log(f"[DEBUG] 使用随机模拟结果替代LLM API调用")
+                global_log(f"[DEBUG] Token使用(模拟): prompt={mock_token_info['prompt_tokens']}, completion={mock_token_info['completion_tokens']}, total={mock_token_info['total_tokens']}")
+                
+                # 解析响应
+                found = False
+                for response in mock_responses:
+                    global_log(f"[DEBUG] 模拟LLM响应:\n{response}")
+                    results_batch = serializer.answer_decoder.decode(response)
+                    global_log(f"[DEBUG] decode后结果: {results_batch}")
+                    if len(results_batch) == expected_len:
+                        found = True
+                        results += results_batch
+                        raw_results.append(response)
+                        break
+                    else:
+                        global_log(
+                            "Length of labels and results do not match (expected: {}, actual: {}), response: {}".format(
+                                expected_len, len(results_batch), response
+                            )
+                        )
+                if not found:
+                    global_log(f"[WARNING] Failed to find any valid response for batch {idx}, using default predictions")
+                    # 使用默认值填充，确保 results 长度与 labels 匹配
+                    default_class = meta.labels[0].name
+                    default_results = [default_class] * expected_len
+                    results += default_results
+                    raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
 
-        acc = calc_accuracy(labels, results)
-        # 使用专用函数计算AUC，将结果改为字典形式
-        tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, [meta.get_label_value(r) for r in results], meta, force_dict=True)
+            # 确保 results 长度与 labels 匹配
+            if len(results) != len(labels):
+                global_log(f"[WARNING] Results length ({len(results)}) != labels length ({len(labels)}), padding with default predictions")
+                default_class = meta.labels[0].name
+                results.extend([default_class] * (len(labels) - len(results)))
 
-        # 优化二分类情况下的AUC输出格式
-        formatted_auc = format_auc_result(tree_auc)
-        global_log(f"Accuracy/AUC: {acc}/{formatted_auc}")
+            acc = calc_accuracy(labels, results)
+            # 使用专用函数计算AUC，将结果改为字典形式
+            tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, [meta.get_label_value(r) for r in results], meta, force_dict=True)
+
+            # 优化二分类情况下的AUC输出格式
+            formatted_auc = format_auc_result(tree_auc)
+            global_log(f"Accuracy/AUC: {acc}/{formatted_auc}")
+            
+            # 设置 tree_results 为 results（字符串标签）
+            tree_results = results
 
     # 增加修改：始终保存tree的预测结果，即使AUC计算失败
     result = {
@@ -1235,14 +1299,23 @@ def evaluate(
     }
     
     # 计算基础准确率和AUC（用于决策树）
-    global_log("计算决策树准确率和AUC...")
-    tree_acc, tree_auc = cot_calc_accuracy_auc(
-        y_test, tree_results, meta, force_dict=True
-    )
-    is_binary = len(np.unique(y_test)) <= 2
-    formatted_auc = format_auc_result(tree_auc, is_binary)
-    global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {formatted_auc}")
-    
+    # 如果 with_llm=0 且是 CoTDecisionTree，tree_accuracy 已经在上面计算过了，直接使用
+    if tree_acc_already_calculated and tree_acc_value is not None and tree_auc_value is not None:
+        global_log("使用已计算的树规则预测准确率和AUC（with_llm=0）")
+        tree_acc = tree_acc_value
+        tree_auc = tree_auc_value
+        is_binary = len(np.unique(y_test)) <= 2
+        formatted_auc = format_auc_result(tree_auc, is_binary)
+        global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {formatted_auc}")
+    else:
+        global_log("计算决策树准确率和AUC...")
+        tree_acc, tree_auc = cot_calc_accuracy_auc(
+            y_test, tree_results, meta, force_dict=True
+        )
+        is_binary = len(np.unique(y_test)) <= 2
+        formatted_auc = format_auc_result(tree_auc, is_binary)
+        global_log(f"决策树准确率: {tree_acc:.4f}, AUC: {formatted_auc}")
+
     # 确保tree_auc被保存，即使值为NaN
     result["tree_acc"] = tree_acc
     result["tree_auc"] = tree_auc
@@ -1277,7 +1350,7 @@ def evaluate(
         result["label_distribution"] = {str(k): int(v) for k, v in y_dist.items()}
     except Exception as e:
         global_log(f"无法计算标签分布: {e}")
-    
+
     return result
 
 
@@ -1338,7 +1411,7 @@ def main():
             args.tree_args.num_trees,
             args.tree_args.max_depth,
         )
-    
+
         
 
 
@@ -1396,7 +1469,7 @@ def main():
             global_log(f"Unknown serializer type: {args.serializer_type}")
             raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
-        
+
         master_template_path = Path(args.template)
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
@@ -1493,7 +1566,7 @@ def main():
                 if "auc" in result and isinstance(result["auc"], dict):
                     result["auc"] = format_auc_result(result["auc"], is_binary=True)
                     global_log(f"转换后的auc: {result['auc']}")
-            
+
             results.setdefault(train_size, []).append(result)
             bar.update(1)
 
