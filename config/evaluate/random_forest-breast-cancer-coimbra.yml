@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/breast-cancer-coimbra.yml
+- ../base/common.yml
+- ./tree/random_forest.yml
+- ./common.yml
+config:
+  exp_name: breast-cancer-coimbra-random_forest
+  tree_only: true

@@ -1,4 +1,4 @@
-gender,customer_type,age,travel_type,cabin_class,flight_distance,inflight_wifi_service,departure_arrival_convenient,online_booking,gate_location,food_and_drink,online_boarding,seat_comfort,inflight_entertainment,onboard_service,legroom_service,baggage_handling,checkin_service,inflight_service,cleanliness,departure_delay_min,arrival_delay_min,satisfaction
+gender,customer_type,age,travel_type,cabin_class,flight_distance,inflight_wifi_service,departure_arrival_convenient,online_booking,gate_location,food_and_drink,online_boarding,seat_comfort,inflight_entertainment,onboard_service,legroom_service,baggage_handling,checkin_service,inflight_service,cleanliness,departure_delay_min,arrival_delay_min,label
 male,loyal,13,personal,eco_plus,460,3,4,3,1,5,3,5,5,4,3,4,4,5,5,25,18.0,0
 male,disloyal,25,business,business,235,3,2,3,3,1,3,1,1,1,5,3,1,4,1,1,6.0,0
 female,loyal,26,business,business,1142,2,2,2,2,5,5,5,5,4,3,4,4,4,5,0,0.0,1

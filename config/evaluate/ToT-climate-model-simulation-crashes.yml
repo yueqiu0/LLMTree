@@ -1,0 +1,10 @@
+base_configs:
+- ../base/dataset/climate-model-simulation-crashes.yml
+- ../base/runner/chatgpt.yml
+- ./ToT_llm_tree.yml
+- tree/ToT.yml
+- ./common.yml
+config:
+  exp_name: ToT-climate-model-simulation-crashes-baseline
+  template: template/basic.jinja
+  tree_only: false

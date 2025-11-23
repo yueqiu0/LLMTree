@@ -1,0 +1,46 @@
+name: penguins
+target: Classify penguin species based on physical measurements and location.
+desc: Dataset containing measurements of 344 penguins from three species (Adelie,
+  Chinstrap, Gentoo) collected from three islands in the Palmer Archipelago, Antarctica.
+  Data were collected and made available by Dr. Kristen Gorman and the Palmer Station,
+  Antarctica LTER.
+label_meaning: Penguin species
+features:
+- name: island
+  desc: Island where the penguin was observed
+  type: categorical
+  categories:
+    Torgersen: Torgersen Island
+    Biscoe: Biscoe Island
+    Dream: Dream Island
+- name: bill_length_mm
+  desc: Culmen (bill) length (mm)
+  type: float
+- name: bill_depth_mm
+  desc: Culmen (bill) depth (mm)
+  type: float
+- name: flipper_length_mm
+  desc: Flipper length (mm)
+  type: int
+- name: body_mass_g
+  desc: Body mass (grams)
+  type: int
+- name: sex
+  desc: Sex of the penguin
+  type: categorical
+  categories:
+    male: male
+    female: female
+- name: year
+  desc: Year of observation
+  type: int
+labels:
+- name: Adelie
+  value: 0
+  desc: Adelie penguin
+- name: Chinstrap
+  value: 1
+  desc: Chinstrap penguin
+- name: Gentoo
+  value: 2
+  desc: Gentoo penguin

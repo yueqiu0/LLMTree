@@ -1,0 +1,67 @@
+name: climate-model-simulation-crashes
+target: Predict whether a climate model simulation run will crash or not, based on
+  simulation parameters and conditions.
+desc: ''
+label_meaning: whether the climate model simulation run crashed (1) or not (0)
+features:
+- name: vconst_corr
+  desc: Vertical constant correction parameter
+  type: float
+- name: vconst_2
+  desc: Vertical constant parameter 2
+  type: float
+- name: vconst_3
+  desc: Vertical constant parameter 3
+  type: float
+- name: vconst_4
+  desc: Vertical constant parameter 4
+  type: float
+- name: vconst_5
+  desc: Vertical constant parameter 5
+  type: float
+- name: vconst_7
+  desc: Vertical constant parameter 7
+  type: float
+- name: ah_corr
+  desc: Horizontal advection correction parameter
+  type: float
+- name: ah_bolus
+  desc: Horizontal advection bolus parameter
+  type: float
+- name: slm_corr
+  desc: Sea level model correction parameter
+  type: float
+- name: efficiency_factor
+  desc: Efficiency factor parameter
+  type: float
+- name: tidal_mix_max
+  desc: Maximum tidal mixing parameter
+  type: float
+- name: vertical_decay_scale
+  desc: Vertical decay scale parameter
+  type: float
+- name: convect_corr
+  desc: Convection correction parameter
+  type: float
+- name: bckgrnd_vdc1
+  desc: Background vertical diffusion coefficient 1
+  type: float
+- name: bckgrnd_vdc_ban
+  desc: Background vertical diffusion coefficient (ban)
+  type: float
+- name: bckgrnd_vdc_eq
+  desc: Background vertical diffusion coefficient (equatorial)
+  type: float
+- name: bckgrnd_vdc_psim
+  desc: Background vertical diffusion coefficient (psim)
+  type: float
+- name: Prandtl
+  desc: Prandtl number parameter
+  type: float
+labels:
+- name: no_crash
+  value: 0
+  desc: simulation run did not crash
+- name: crash
+  value: 1
+  desc: simulation run crashed

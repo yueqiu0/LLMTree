@@ -1,0 +1,41 @@
+name: breast-cancer-coimbra
+target: Classify breast cancer based on clinical and biochemical measurements.
+desc: Dataset containing breast cancer cases from Coimbra, Portugal, with clinical
+  and biochemical measurements including age, BMI, glucose, insulin, HOMA, leptin,
+  adiponectin, resistin, and MCP.1 levels.
+label_meaning: Classification
+features:
+- name: age
+  desc: Age of the patient (years)
+  type: int
+- name: bmi
+  desc: Body Mass Index (kg/m²)
+  type: float
+- name: glucose
+  desc: Glucose level (mg/dl)
+  type: int
+- name: insulin
+  desc: Insulin level (μU/ml)
+  type: float
+- name: homa
+  desc: HOMA (Homeostatic Model Assessment)
+  type: float
+- name: leptin
+  desc: Leptin level (ng/ml)
+  type: float
+- name: adiponectin
+  desc: Adiponectin level (μg/ml)
+  type: float
+- name: resistin
+  desc: Resistin level (ng/ml)
+  type: float
+- name: mcp.1
+  desc: MCP.1 (Monocyte Chemoattractant Protein-1) level (pg/dl)
+  type: float
+labels:
+- name: healthy
+  value: 1
+  desc: Healthy control
+- name: patient
+  value: 2
+  desc: Breast cancer patient

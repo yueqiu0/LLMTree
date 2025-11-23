@@ -1,0 +1,39 @@
+name: caesarian
+target: Predict whether a caesarian section delivery is needed based on patient characteristics.
+desc: Dataset containing cases of caesarian section delivery classified based on patient
+  age, delivery number, delivery time, blood pressure, and heart problem status.
+label_meaning: Caesarian
+features:
+- name: age
+  desc: Age of the patient (years)
+  type: int
+- name: delivery_number
+  desc: Number of previous deliveries
+  type: int
+- name: delivery_time
+  desc: Timing of delivery relative to expected due date
+  type: categorical
+  categories:
+    timely: timely delivery
+    premature: premature delivery
+    latecomer: late delivery
+- name: blood_of_pressure
+  desc: Blood pressure level of the patient
+  type: categorical
+  categories:
+    low: low blood pressure
+    normal: normal blood pressure
+    high: high blood pressure
+- name: heart_problem
+  desc: Presence of heart problems in the patient
+  type: categorical
+  categories:
+    "no": no heart problems
+    "yes": heart problems present
+labels:
+- name: 'no'
+  value: 0
+  desc: Caesarian section not needed
+- name: 'yes'
+  value: 1
+  desc: Caesarian section needed

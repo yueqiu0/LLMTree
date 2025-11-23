@@ -1,0 +1,8 @@
+base_configs:
+- ../base/dataset/caesarian.yml
+- ../base/common.yml
+- ./tree/xgboost.yml
+- ./common.yml
+config:
+  exp_name: caesarian-xgboost
+  tree_only: true
