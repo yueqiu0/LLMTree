@@ -1,6 +1,6 @@
 base_configs:
 - ../base/dataset/climate-model-simulation-crashes.yml
-- ../base/runner/climate-model-simulation-crashes.yml
+- ../base/runner/chatgpt.yml
 - ./CoT_llm_tree.yml
 - tree/CoT.yml
 - ./common.yml

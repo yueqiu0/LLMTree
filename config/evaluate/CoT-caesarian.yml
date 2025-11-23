@@ -1,6 +1,6 @@
 base_configs:
 - ../base/dataset/caesarian.yml
-- ../base/esarian.yml
+- ../base/runner/chatgpt.yml
 - ./CoT_llm_tree.yml
 - tree/CoT.yml
 - ./common.yml
