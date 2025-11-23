@@ -1,0 +1,10 @@
+config:
+  tree_type: CoT
+  tree_args:
+    max_depth: 3
+  random_seed: 0
+  num_tests_per_set: 5
+  test_size: 100
+  test_batch: 8
+  use_tree_rules: True
+

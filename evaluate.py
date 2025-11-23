@@ -81,6 +81,8 @@ class LLMTreeArgs:
 
         self.temperature = 0.7
         #      self.num_rules = 10
+        self.candidate_rules = None  # ToT方法使用的候选规则数量
+        self.voting_rounds = None  # ToT方法使用的投票轮数
 
     def __repr__(self):
         return str(self.__dict__)
@@ -125,22 +127,22 @@ class EvaluateArgs:
         missing_fields = _get_missing_fields(self)
 
         if (
-            (
-                self.runner == "openai_api"
-                and not isinstance(self.runner_args, OpenAIAPIArgs)
-            )
-            or (
-                self.runner == "huggingchat"
-                and not isinstance(self.runner_args, HuggingChatArgs)
-            )
-            or (
-                self.runner == "together_api"
-                and not isinstance(self.runner_args, TogetherAPIArgs)
-            )
-        ):
-            missing_fields.append("runner_args")
+                (
+                    self.runner == "openai_api"
+                    and not isinstance(self.runner_args, OpenAIAPIArgs)
+                )
+                or (
+                    self.runner == "huggingchat"
+                    and not isinstance(self.runner_args, HuggingChatArgs)
+                )
+                or (
+                    self.runner == "together_api"
+                    and not isinstance(self.runner_args, TogetherAPIArgs)
+                )
+            ):
+                missing_fields.append("runner_args")
         elif self.runner_args:
-            missing_fields += _get_missing_fields(self.runner_args, "runner_args")
+                missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
         if (
             (
@@ -158,7 +160,16 @@ class EvaluateArgs:
         ):
             missing_fields.append("tree_args")
         elif self.tree_args:
-            missing_fields += _get_missing_fields(self.tree_args, "tree_args")
+            # 对于 LLMTreeArgs，需要根据 tree_type 决定是否检查 candidate_rules 和 voting_rounds
+            if isinstance(self.tree_args, LLMTreeArgs):
+                # 获取所有缺失字段
+                all_missing = _get_missing_fields(self.tree_args, "tree_args")
+                # 如果不是 ToT 类型，移除 candidate_rules 和 voting_rounds 的检查
+                if self.tree_type != "ToT":
+                    all_missing = [f for f in all_missing if f not in ["tree_args.candidate_rules", "tree_args.voting_rounds"]]
+                missing_fields += all_missing
+            else:
+                missing_fields += _get_missing_fields(self.tree_args, "tree_args")
 
         if self.dataset_args:
             missing_fields += _get_missing_fields(self.dataset_args, "dataset")
@@ -220,6 +231,8 @@ class EvaluateArgs:
             self.tree_args = RandomForestArgs()
         elif self.tree_type == "CoT":
             self.tree_args = LLMTreeArgs()
+        elif self.tree_type == "ToT":
+            self.tree_args = LLMTreeArgs()
         elif self.tree_type == "LLM":
             self.tree_args = LLMTreeArgs()
         else:
@@ -255,13 +268,15 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--together-api-base", type=str, help="together api base url")
     parser.add_argument("--model-name", type=str, help="model name")
 
-    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'LLM','CoT'], 
+    parser.add_argument('--tree-type', choices=['simple', 'xgboost', 'random_forest', 'LLM','CoT','ToT'], 
                        default='simple')
     parser.add_argument('--with-llm', type=int, choices=[0, 1], default=1,
                        help='Use LLM for final prediction (1) or use rules directly (0)')
     parser.add_argument("--tree-only", type=int, help="only evaluate the tree")
     parser.add_argument("--max-depth", type=int, help="max depth of the tree")
     parser.add_argument("--num-trees", type=int, help="number of trees")
+    parser.add_argument("--candidate-rules", type=int, help="number of candidate rules for ToT method")
+    parser.add_argument("--voting-rounds", type=int, help="number of voting rounds for ToT method")
 
     parser.add_argument("--output-dir", type=str, help="output directory")
     parser.add_argument("--random-seed", type=int, help="random seed for the tree")
@@ -382,6 +397,10 @@ def parse_args() -> EvaluateArgs:
         tree_args_dict["max_depth"] = cml_args.max_depth
     if cml_args.num_trees is not None:
         tree_args_dict["num_trees"] = cml_args.num_trees
+    if cml_args.candidate_rules is not None:
+        tree_args_dict["candidate_rules"] = cml_args.candidate_rules
+    if cml_args.voting_rounds is not None:
+        tree_args_dict["voting_rounds"] = cml_args.voting_rounds
     if cml_args.output_dir is not None:
         args.output_dir = cml_args.output_dir
     if cml_args.random_seed is not None:
@@ -706,6 +725,12 @@ def evaluate(
         "evaluation": [],
         "total_tokens": 0
     }
+    
+    # 初始化 fit_elapsed_time，确保在所有分支中都有值
+    fit_elapsed_time = 0.0
+    
+    # 初始化 tree_results，确保在所有分支中都有值
+    tree_results = None
 
     # 创建一个新的树模型实例，而不是重用传入的实例
     if isinstance(tree_model, LLMDecisionTree):
@@ -779,8 +804,8 @@ def evaluate(
         global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
         prompts, test_splits, labels = gen_prompt(
             meta,
-    master_template,
-    serializer,
+            master_template,
+            serializer,
             x_train,
             y_train,
             x_test,
@@ -861,6 +886,13 @@ def evaluate(
                 results += default_results
                 raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
                 global_log(f"[WARNING] Using default predictions: {default_results}")
+        
+        # 确保 results 长度与 labels 匹配
+        if len(results) != len(labels):
+            global_log(f"[WARNING] Results length ({len(results)}) != labels length ({len(labels)}), padding with default predictions")
+            default_class = meta.labels[0].name
+            results.extend([default_class] * (len(labels) - len(results)))
+        
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
         global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
         tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -894,37 +926,38 @@ def evaluate(
                 tree_accuracy = tree_accuracies
             elif isinstance(tree_model, LLMDecisionTree):
                 # 确保在调用 predict 之前调用 fit 方法
+                # 无论 with_llm 的值如何，都需要调用LLM生成树结构
+                global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
+                
+                # 添加时间统计
+                fit_start_time = time.time()
+                tree_model.fit(x_train, y_train)  # 总是调用fit来生成树
+                fit_elapsed_time = time.time() - fit_start_time
+                global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
+                
+                # 获取LLMDecisionTree的token统计
+                if hasattr(tree_model, 'get_token_stats'):
+                    tree_token_stats = tree_model.get_token_stats()
+                    global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
+                    # 更新总token统计
+                    if 'tree_building' in tree_token_stats:
+                        token_stats['tree_building'] = tree_token_stats['tree_building']
+                        token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
+                    if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
+                        token_stats['evaluation'].extend(tree_token_stats['evaluation'])
+                        for eval_token in tree_token_stats['evaluation']:
+                            token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                
+                rules = tree_model.get_rules()
+                tree_model.rules = rules
+                global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
+                if isinstance(tree_model.rules, list):
+                    rules_str = "\n".join(str(rule) for rule in tree_model.rules)
+                    global_log(rules_str)
+                else:
+                    global_log(str(tree_model.rules))
+                
                 if with_llm:
-                    # 第一次：用LLM prompt生成规则
-                    global_log("[DEBUG][LLM] === 第一次LLM交互：生成规则 ===")
-                    
-                    # 添加时间统计
-                    fit_start_time = time.time()
-                    tree_model.fit(x_train, y_train)
-                    fit_elapsed_time = time.time() - fit_start_time
-                    global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
-                    
-                    # 获取LLMDecisionTree的token统计
-                    if hasattr(tree_model, 'get_token_stats'):
-                        tree_token_stats = tree_model.get_token_stats()
-                        global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
-                        # 更新总token统计
-                        if 'tree_building' in tree_token_stats:
-                            tree_model.token_stats['tree_building'] = tree_token_stats['tree_building']
-                            tree_model.token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
-                        if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
-                            tree_model.token_stats['evaluation'].extend(tree_token_stats['evaluation'])
-                            for eval_token in tree_token_stats['evaluation']:
-                                tree_model.token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
-                    
-                    rules = tree_model.get_rules()
-                    tree_model.rules = rules
-                    global_log("[DEBUG][LLM] 规则生成完毕，规则内容如下：")
-                    if isinstance(tree_model.rules, list):
-                        rules_str = "\n".join(str(rule) for rule in tree_model.rules)
-                        global_log(rules_str)
-                    else:
-                        global_log(str(tree_model.rules))
                     global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
                     prompts, test_splits, labels = gen_prompt(
                         meta,
@@ -1004,13 +1037,20 @@ def evaluate(
                                     )
                                 )
                         if not found:
-                            global_log(f"[WARNING] Failed to find any valid response, using default predictions (first class: {meta.labels[0].name})")
+                            global_log(f"[WARNING] Failed to find any valid response for batch {idx}, using default predictions (first class: {meta.labels[0].name})")
                             # 使用默认值（第一个类别）继续处理，而不是直接返回
                             default_class = meta.labels[0].name
                             default_results = [default_class] * expected_len
                             results += default_results
                             raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
                             global_log(f"[WARNING] Using default predictions: {default_results}")
+                    
+                    # 确保 results 长度与 labels 匹配
+                    if len(results) != len(labels):
+                        global_log(f"[WARNING] Results length ({len(results)}) != labels length ({len(labels)}), padding with default predictions")
+                        default_class = meta.labels[0].name
+                        results.extend([default_class] * (len(labels) - len(results)))
+                    
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
                     tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -1026,25 +1066,9 @@ def evaluate(
                     global_log(f"[DEBUG][LLM] <<< 结束LLMDecisionTree二次LLM推理分支，已完成全部流程 >>>")
                 else:
                     # 直接应用规则进行预测（with_llm=0时）
+                    # 注意：fit方法已经在上面调用过了，这里不需要再次调用
                     global_log("[DEBUG][LLM] 直接用规则本地推理，无LLM参与")
-                    
-                    # 添加时间统计
-                    fit_start_time = time.time()
-                    tree_model.fit(x_train, y_train)  # 先生成规则，防止predict报错
-                    fit_elapsed_time = time.time() - fit_start_time
-                    global_log(f"[DEBUG][LLM] 树模型训练耗时: {fit_elapsed_time:.2f}秒")
-                    
-                    # 获取LLMDecisionTree的token统计
-                    if hasattr(tree_model, 'get_token_stats'):
-                        tree_token_stats = tree_model.get_token_stats()
-                        global_log(f"[DEBUG][LLM] 树模型训练token统计: {tree_token_stats}")
-                        if 'tree_building' in tree_token_stats:
-                            tree_model.token_stats['tree_building'] = tree_token_stats['tree_building']
-                            tree_model.token_stats['total_tokens'] += tree_token_stats['tree_building']['total']
-                        if 'evaluation' in tree_token_stats and tree_token_stats['evaluation']:
-                            tree_model.token_stats['evaluation'].extend(tree_token_stats['evaluation'])
-                            for eval_token in tree_token_stats['evaluation']:
-                                tree_model.token_stats['total_tokens'] += eval_token.get('total_tokens', 0)
+                    global_log("[DEBUG][LLM] 使用已生成的树结构（规则）进行本地预测")
                     
                     tree_results = tree_model.predict(x_test)
                     
@@ -1080,7 +1104,7 @@ def evaluate(
                     results = tree_results
                     acc = tree_accuracy
                     auc = tree_auc_result
-            else:
+        else:
                 # 其他类型的决策树
                 tree_results, rules = tree_model.predict(
                     x_train, y_train, x_test, export_rules=True
@@ -1211,14 +1235,20 @@ def evaluate(
                             expected_len, len(results_batch), response
                         )
                     )
-        if not found:
-            global_log(f"[WARNING] Failed to find any valid response, using default predictions (first class: {meta.labels[0].name})")
-            # 使用默认值（第一个类别）继续处理，而不是直接返回
+            if not found:
+                global_log(f"[WARNING] Failed to find any valid response for batch {idx}, using default predictions (first class: {meta.labels[0].name})")
+                # 使用默认值（第一个类别）继续处理，而不是直接返回
+                default_class = meta.labels[0].name
+                default_results = [default_class] * expected_len
+                results += default_results
+                raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+                global_log(f"[WARNING] Using default predictions: {default_results}")
+
+        # 确保 results 长度与 labels 匹配
+        if len(results) != len(labels):
+            global_log(f"[WARNING] Results length ({len(results)}) != labels length ({len(labels)}), padding with default predictions")
             default_class = meta.labels[0].name
-            default_results = [default_class] * expected_len
-            results += default_results
-            raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
-            global_log(f"[WARNING] Using default predictions: {default_results}")
+            results.extend([default_class] * (len(labels) - len(results)))
 
         acc = calc_accuracy(labels, results)
         # 使用专用函数计算AUC，将结果改为字典形式
@@ -1227,6 +1257,9 @@ def evaluate(
         # 优化二分类情况下的AUC输出格式
         formatted_auc = format_auc_result(tree_auc)
         global_log(f"Accuracy/AUC: {acc}/{formatted_auc}")
+        
+        # 设置 tree_results 为 results（字符串标签）
+        tree_results = results
 
     # 增加修改：始终保存tree的预测结果，即使AUC计算失败
     result = {
@@ -1237,6 +1270,11 @@ def evaluate(
     }
     
     # 计算基础准确率和AUC（用于决策树）
+    # 确保 tree_results 已经被设置
+    if tree_results is None:
+        global_log("[WARNING] tree_results is None, using empty list as fallback")
+        tree_results = []
+    
     global_log("计算决策树准确率和AUC...")
     tree_acc, tree_auc = cot_calc_accuracy_auc(
         y_test, tree_results, meta, force_dict=True
@@ -1405,7 +1443,7 @@ def main():
         )
         master_template = env.get_template(master_template_path.name)
         global_log(f"Template loaded from: {master_template_path}")
-    if args.tree_type == "LLM":
+    if args.tree_type == "LLM" or args.tree_type == "ToT":
         template_dir = Path("C:/Users/chenx/git/tree/template")
         tree_template_path = template_dir / "basic.jinja"
         # 这里log_file_path和主日志文件一致
@@ -1415,7 +1453,7 @@ def main():
             runner=runner,
             log_file=log_file_path,
         )
-        global_log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth}")
+        global_log(f"LLMDecisionTree initialized with max_depth={args.tree_args.max_depth} for tree_type={args.tree_type}")
     
 
     results: dict[int, list[dict]] = {}
@@ -1440,14 +1478,14 @@ def main():
         for train_x, train_y in train_cases:
             # 添加开始时间统计
             eval_start_time = time.time()
-            if args.tree_type == "LLM":
+            if args.tree_type == "LLM" or args.tree_type == "ToT":
                 current_tree_model = LLMDecisionTree(
                     meta=meta,
                     max_depth=args.tree_args.max_depth,
                     runner=runner,
                     log_file=log_file_path,
                 )
-                global_log(f"[DEBUG] 为当前训练样本创建了新的LLMDecisionTree实例")
+                global_log(f"[DEBUG] 为当前训练样本创建了新的LLMDecisionTree实例 (tree_type={args.tree_type})")
             else:
                 current_tree_model = tree_model  # 其他类型的树直接使用原始实例
             result = evaluate(

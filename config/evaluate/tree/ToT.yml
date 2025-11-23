@@ -1,0 +1,12 @@
+config:
+  tree_type: ToT
+  tree_args:
+    max_depth: 3
+    candidate_rules: 5
+    voting_rounds: 5
+  random_seed: 0
+  num_tests_per_set: 5
+  test_size: 100
+  test_batch: 8
+  use_tree_rules: True
+
