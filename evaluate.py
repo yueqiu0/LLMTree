@@ -494,63 +494,57 @@ def evaluate(
         tree_predict, rules = tree_model.predict(
             train_x, train_y, test_x, export_rules
         )
-        # 获取树的训练时间
         train_elapsed = getattr(tree_model, "train_elapsed", 0.0)
     except NotImplementedError:
-        # 如果规则导出不被支持，重新调用但禁用规则导出
         tree_predict, rules = tree_model.predict(
             train_x, train_y, test_x, False
         )
-        # 获取树的训练时间
         train_elapsed = getattr(tree_model, "train_elapsed", 0.0)
-        rules = []  # 提供空规则列表
-    
+        rules = []
+
     tree_accuracy = calc_accuracy(test_y, tree_predict)
     tree_auc = None
     
-    # 只在需要使用树规则或只使用树时计算树模型的AUC
+    # 计算树AUC
     if use_tree_rules or tree_only:
         n_classes = len(np.unique(test_y))
-        tree_predict_values = np.array(tree_predict)  # 确保预测值是numpy数组
-        
-        # 处理树模型预测的AUC计算
+        tree_predict_values = np.array(tree_predict)
         try:
             if n_classes > 2:
                 from sklearn.preprocessing import label_binarize
                 classes = np.unique(test_y)
-                
-                # 二进制化真实标签
                 y_test_bin = label_binarize(test_y, classes=classes)
-                
-                # 检查树模型预测是否需要二进制化
                 if tree_predict_values.ndim == 1:
-                    # 如果是一维预测（类别标签），则二进制化
                     tree_predict_bin = label_binarize(tree_predict_values, classes=classes)
                     tree_auc = {
                         'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='macro'),
                         'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_bin, average='micro')
                     }
                 else:
-                    # 如果已经是概率矩阵，则直接使用
                     tree_auc = {
                         'macro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_values, average='macro'),
                         'micro': sklearn.metrics.roc_auc_score(y_test_bin, tree_predict_values, average='micro')
                     }
-                
-                # 将计算结果记录到日志
                 logger.log(f"Tree AUC (macro/micro): {tree_auc['macro']:.4f}/{tree_auc['micro']:.4f}")
             else:
-                # 二分类情况，直接计算AUC
                 tree_auc = sklearn.metrics.roc_auc_score(test_y, tree_predict_values)
                 logger.log(f"Tree AUC: {tree_auc:.4f}")
         except Exception as e:
-            # 处理AUC计算中可能出现的错误（例如所有预测都是同一个类别）
             logger.log(f"计算树模型AUC时出错: {e}")
             if n_classes > 2:
                 tree_auc = {'macro': 0.5, 'micro': 0.5, 'error': str(e)}
             else:
                 tree_auc = 0.5
                 logger.log("使用默认AUC值: 0.5")
+    
+    # 导出树结构
+    tree_structure = None
+    if hasattr(tree_model, "export_tree_structure"):
+        try:
+            tree_structure = tree_model.export_tree_structure()
+            logger.log(f"决策树结构:\n{json.dumps(tree_structure, indent=2, ensure_ascii=False)}")
+        except Exception as e:
+            logger.log(f"导出树结构失败: {e}")
 
     if tree_only:
         logger.log(f"树模型训练时间: {train_elapsed:.4f}秒")
@@ -558,9 +552,11 @@ def evaluate(
             "tree_auc": tree_auc,
             "tree_accuracy": tree_accuracy,
             "tree_results": tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict,
-            "train_elapsed": train_elapsed  # 添加树训练时间
+            "train_elapsed": train_elapsed,
+            "tree_structure": tree_structure
         }
 
+    # 生成 prompts 并运行 LLM
     prompts, test_splits, labels = gen_prompt(
         meta,
         master_template,
@@ -575,91 +571,64 @@ def evaluate(
 
     raw_results = []
     results = []
-    # 添加token统计
     eval_tokens = []
 
     for idx, response_data in enumerate(runner.run(prompts)):
-        responses, token_info = response_data  # 解包响应和token信息
-        # 记录token信息
+        responses, token_info = response_data
         eval_tokens.append(token_info)
         logger.log(f"评估 #{idx+1} Token使用: 输入={token_info['prompt_tokens']}, 输出={token_info['completion_tokens']}, 总计={token_info['total_tokens']}")
-        
         expected_len = test_splits[idx][1] - test_splits[idx][0]
         found = False
         for response in responses:
-            # 清理响应中的<think>标签
             response = clean_llm_response(response)
-            
-            # 预处理响应 - 分割每行并清理空白
             try:
-                # 尝试不同的响应格式处理方法
-                # 方法1: 按行分割，清理每行的空白
                 lines = [line.strip() for line in response.strip().split('\n') if line.strip()]
                 if len(lines) == expected_len:
                     found = True
                     results += lines
                     raw_results.append(response)
                     break
-                
-                # 方法2: 使用原有解码器
                 results_batch = serializer.answer_decoder.decode(response)
                 if len(results_batch) == expected_len:
                     found = True
                     results += results_batch
                     raw_results.append(response)
                     break
-                
             except Exception as e:
                 logger.log(f"解析响应时出错: {e}")
                 logger.log(f"原始响应: {response}")
         if not found:
             logger.log("Failed to find any valid response, skipping...")
-            result_dict = {
-                "record": prompts[0],
-                "failed_raw_output": responses,
-                "eval_tokens": eval_tokens  # 添加token统计
-            }
-            return result_dict
+            return {"record": prompts[0], "failed_raw_output": responses, "eval_tokens": eval_tokens}
 
     acc = calc_accuracy(labels, results)
     
-    # 收集并清理预测结果值，确保没有None值
     results_values = []
     for r in results:
         try:
             value = meta.get_label_value(r)
-            if value is not None:  # 确保没有None值
+            if value is not None:
                 results_values.append(value)
             else:
-                # 如果找不到对应的标签值，使用0作为默认值（或者其他合适的默认值）
                 logger.log(f"警告: 无法为'{r}'找到有效的标签值，使用默认值0")
                 results_values.append(0)
         except Exception as e:
             logger.log(f"警告: 处理预测结果'{r}'时出错: {e}，使用默认值0")
             results_values.append(0)
     
-    # 确保结果长度与测试标签相同
-    if len(results_values) != len(test_y):
-        logger.log(f"警告: 预测结果数量({len(results_values)})与测试标签数量({len(test_y)})不匹配")
-        # 如果长度不匹配，可能需要调整
-        
-    # 计算AUC，添加异常处理
     try:
         n_classes = len(meta.labels)
         if n_classes > 2:
             from sklearn.preprocessing import label_binarize
             classes = np.unique(test_y)
-            
-            # 二进制化处理
             y_test_bin = label_binarize(test_y, classes=classes)
-            if np.array(results_values).ndim == 1:  # 如果预测是一维的
+            if np.array(results_values).ndim == 1:
                 results_bin = label_binarize(results_values, classes=classes)
-                # 计算宏平均AUC和微平均AUC
                 auc = {
                     'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='macro'),
                     'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_bin, average='micro')
                 }
-            else:  # 如果已经是二维的
+            else:
                 auc = {
                     'macro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='macro'),
                     'micro': sklearn.metrics.roc_auc_score(y_test_bin, results_values, average='micro')
@@ -668,7 +637,6 @@ def evaluate(
             auc = sklearn.metrics.roc_auc_score(test_y, results_values)
     except Exception as e:
         logger.log(f"计算LLM预测AUC时出错: {e}")
-        # 提供默认的AUC值
         if n_classes > 2:
             auc = {'macro': 0.5, 'micro': 0.5, 'error': str(e)}
         else:
@@ -680,7 +648,6 @@ def evaluate(
     else:
         logger.log("LLM Accuracy/AUC: {:.4f}/{:.4f}".format(acc, auc))
 
-    # 只在使用树规则时输出树模型的结果
     if use_tree_rules and tree_auc is not None:
         if isinstance(tree_auc, dict):
             logger.log("Tree Accuracy/AUC (macro/micro): {:.4f}/{:.4f}/{:.4f}".format(
@@ -689,7 +656,6 @@ def evaluate(
         else:
             logger.log("Tree Accuracy/AUC: {:.4f}/{:.4f}".format(tree_accuracy, tree_auc))
 
-    # 计算总token使用量
     total_tokens = {"prompt": 0, "completion": 0, "total": 0}
     for token_info in eval_tokens:
         total_tokens["prompt"] += token_info.get("prompt_tokens", 0)
@@ -698,25 +664,22 @@ def evaluate(
     
     logger.log(f"总评估Token使用: 输入={total_tokens['prompt']}, 输出={total_tokens['completion']}, 总计={total_tokens['total']}")
 
-    result_dict = {}
-    result_dict["record"] = {"prompt": prompts[0]}
-    result_dict["labels"] = [int(y) for y in test_y]
-    result_dict["results"] = [meta.get_label_value(r) for r in results]
-    result_dict["auc"] = auc
-    result_dict["accuracy"] = acc
-    result_dict["eval_tokens"] = eval_tokens
-    result_dict["total_tokens"] = total_tokens
-
-    # 只在使用树规则时添加树相关结果
-    if use_tree_rules or tree_only:
-        result_dict["tree_auc"] = tree_auc
-        result_dict["tree_accuracy"] = tree_accuracy
-        result_dict["tree_results"] = tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict
-        result_dict["train_elapsed"] = train_elapsed  # 添加树训练时间
-        logger.log(f"最终决策树训练时间: {train_elapsed:.4f}秒")
+    result_dict = {
+        "record": {"prompt": prompts[0]},
+        "labels": [int(y) for y in test_y],
+        "results": [meta.get_label_value(r) for r in results],
+        "auc": auc,
+        "accuracy": acc,
+        "eval_tokens": eval_tokens,
+        "total_tokens": total_tokens,
+        "tree_auc": tree_auc,
+        "tree_accuracy": tree_accuracy,
+        "tree_results": tree_predict.tolist() if isinstance(tree_predict, np.ndarray) else tree_predict,
+        "train_elapsed": train_elapsed,
+        "tree_structure": tree_structure
+    }
 
     return result_dict
-
 
 def main():
     args = parse_args()

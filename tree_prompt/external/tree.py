@@ -75,41 +75,43 @@ class DecisionTree:
         raise NotImplementedError()
 
 
+
+import os
+import time
+import json
+import numpy as np
+from sklearn.impute import SimpleImputer
+from sklearn import tree
+import sklearn
+
 class SimpleDecisionTree(DecisionTree):
-    def __init__(self, meta: dataset.DatasetMeta, max_depth: int) -> None:
+    def __init__(self, meta, max_depth: int, log_dir: str = "./logs") -> None:
         super().__init__(meta)
         self.max_depth = max_depth
         self.clf = None
         self.imputer = SimpleImputer(strategy='most_frequent')
+        self.log_dir = log_dir
+        # 创建日志目录
+        os.makedirs(self.log_dir, exist_ok=True)
 
-    def predict(
-        self,
-        x_train: np.ndarray,
-        y_train: np.ndarray,
-        x_test: np.ndarray,
-        export_rules: bool = True,
-    ):
-        from sklearn import tree
-
+    def predict(self, x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray, export_rules: bool = True):
         start_time = time.time()
 
-        
         if len(np.unique(y_train)) == 1:
             return np.full(x_test.shape[0], y_train[0]), []
 
         old_meta = self.meta
         has_categorical = any(f.is_categorical for f in self.meta.features)
 
-        # Handle NaN values
+        # 处理缺失值
         x_train_imputed = self.imputer.fit_transform(x_train)
         x_test_imputed = self.imputer.transform(x_test)
 
-        # encode one-hot
+        # one-hot编码
         if has_categorical:
             new_x, new_meta = _encode_one_hot(
                 np.concatenate([x_train_imputed, x_test_imputed]), self.meta
             )
-
             self.meta = new_meta
             train_size = len(x_train_imputed)
             x_train = new_x[:train_size]
@@ -118,19 +120,29 @@ class SimpleDecisionTree(DecisionTree):
             x_train = x_train_imputed
             x_test = x_test_imputed
 
+        # 训练CART决策树
         self.clf = tree.DecisionTreeClassifier(max_depth=self.max_depth)
         self.clf.fit(x_train, y_train)
-
         self.train_elapsed = time.time() - start_time
-
 
         if not export_rules:
             self.meta = old_meta
             return self.clf.predict(x_test), []
 
+        # 导出规则
         x_names = [f.name for f in self.meta.features]
         desc = sklearn.tree.export_text(self.clf, feature_names=x_names)
         rules = self._build_rules(desc)
+
+        # 保存规则到JSON
+        log_path = os.path.join(self.log_dir, "decision_tree.json")
+        with open(log_path, "w") as f:
+            json.dump({
+                "rules": rules,
+                "train_elapsed": self.train_elapsed,
+                "max_depth": self.max_depth
+            }, f, indent=2)
+
         self.meta = old_meta
         return self.clf.predict(x_test), rules
 
@@ -144,7 +156,6 @@ class SimpleDecisionTree(DecisionTree):
             level = line.count("|")
             cond = line[4 * level :].strip()
 
-            # for categorical features (e.g. price == high)
             if "==" in cond:
                 is_gt = ">" in cond
                 cond = cond.replace("<=", ">")
@@ -154,7 +165,6 @@ class SimpleDecisionTree(DecisionTree):
             if level > current_level:
                 conditions.append(cond)
             elif level < current_level:
-                # previously leaf
                 rule_desc = self._build_one_rule(conditions)
                 if rule_desc is not None:
                     outputs.append((rule_desc, current_level))
@@ -165,9 +175,7 @@ class SimpleDecisionTree(DecisionTree):
 
             current_level = level
 
-        # sort by depth
         outputs.sort(key=lambda x: x[1])
-
         return [x[0] for x in outputs]
 
     def _build_one_rule(self, conditions: list[str]) -> str:
@@ -180,6 +188,7 @@ class SimpleDecisionTree(DecisionTree):
         class_name = self.meta.find_label(float(class_components[1].strip())).name
         res = class_name + ": " + res
         return res
+
 
 
 class XGBoostDecisionTree(DecisionTree):
