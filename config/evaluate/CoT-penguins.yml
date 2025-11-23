@@ -1,6 +1,6 @@
 base_configs:
 - ../base/dataset/penguins.yml
-- ../base/runner/penguins.yml
+- ../base/runner/chatgpt.yml
 - ./CoT_llm_tree.yml
 - tree/CoT.yml
 - ./common.yml
