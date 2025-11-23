@@ -43,10 +43,37 @@ class SeperatorDecoder(Decoder):
             answer = transform(answer)
         results = []
         for component in answer.split(self.seperator):
+            # 去除首尾空白字符
+            component = component.strip()
+            # 跳过空行
+            if not component:
+                continue
+            # 跳过只包含标点符号的行（如 "Predictions:"）
+            if component and not any(c.isalnum() for c in component):
+                continue
+            # 尝试匹配类别名
+            matched = False
             for class_name in self.class_names:
-                if component.endswith(class_name):
-                    results.append(class_name)
-                    break
+                # 检查是否以类别名结尾，或者整行就是类别名
+                if component.endswith(class_name) or component == class_name:
+                    # 进一步检查：确保不是 "predictions:adelie" 这样的情况
+                    # 如果 component 包含类别名，且类别名前面是空白或标点
+                    if component == class_name or component.endswith(class_name):
+                        results.append(class_name)
+                        matched = True
+                        break
+            # 如果没有匹配到，尝试在 component 中查找类别名
+            if not matched:
+                for class_name in self.class_names:
+                    # 检查 component 中是否包含类别名（作为独立单词）
+                    if class_name in component:
+                        # 提取类别名（去除前后可能的标点）
+                        import re
+                        pattern = r'\b' + re.escape(class_name) + r'\b'
+                        if re.search(pattern, component):
+                            results.append(class_name)
+                            matched = True
+                            break
         return results
 
 

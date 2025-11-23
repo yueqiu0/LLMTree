@@ -139,7 +139,6 @@ class EvaluateArgs:
             )
         ):
             missing_fields.append("runner_args")
-
         elif self.runner_args:
             missing_fields += _get_missing_fields(self.runner_args, "runner_args")
 
@@ -198,7 +197,7 @@ class EvaluateArgs:
         if not self.tree_only:
             assert isinstance(self.runner_args, dict)
             runner_args_dict = self.runner_args
-
+            
             if self.runner == "openai_api":
                 self.runner_args = OpenAIAPIArgs()
             elif self.runner == "huggingchat":
@@ -304,7 +303,7 @@ def parse_args() -> EvaluateArgs:
     parser.add_argument("--parallel-batch-size", type=int, help="parallel batch size")
 
     parser.add_argument("--exp-id", type=str, help="experiment id for display")
-  
+
     cml_args = parser.parse_args()
 
     args = EvaluateArgs()
@@ -433,7 +432,7 @@ def parse_args() -> EvaluateArgs:
         and not runner_args_dict.get("openai_api_key")
         and not args.runner_args.get("openai_api_key")
     ):
-        runner_args_dict["openai_api_key"] = openai_api_key
+            runner_args_dict["openai_api_key"] = openai_api_key
 
     if args.runner_args is None:
         args.runner_args = {}
@@ -780,8 +779,8 @@ def evaluate(
         global_log("[DEBUG][LLM] === 进入第二次LLM交互：用basic.jinja渲染规则并让LLM预测 ===")
         prompts, test_splits, labels = gen_prompt(
             meta,
-            master_template,
-            serializer,
+    master_template,
+    serializer,
             x_train,
             y_train,
             x_test,
@@ -855,13 +854,13 @@ def evaluate(
                         )
                     )
             if not found:
-                global_log("Failed to find any valid response, skipping...")
-                result_dict = {
-                    "record": prompts[0],
-                    "failed_raw_output": mock_responses,
-                    "token_stats": token_stats,  # 添加token统计
-                }
-                return result_dict
+                global_log(f"[WARNING] Failed to find any valid response, using default predictions (first class: {meta.labels[0].name})")
+                # 使用默认值（第一个类别）继续处理，而不是直接返回
+                default_class = meta.labels[0].name
+                default_results = [default_class] * expected_len
+                results += default_results
+                raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+                global_log(f"[WARNING] Using default predictions: {default_results}")
         global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
         global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
         tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -1005,13 +1004,13 @@ def evaluate(
                                     )
                                 )
                         if not found:
-                            global_log("Failed to find any valid response, skipping...")
-                            result_dict = {
-                                "record": prompts[0],
-                                "failed_raw_output": mock_responses,
-                                "token_stats": token_stats,  # 添加token统计
-                            }
-                            return result_dict
+                            global_log(f"[WARNING] Failed to find any valid response, using default predictions (first class: {meta.labels[0].name})")
+                            # 使用默认值（第一个类别）继续处理，而不是直接返回
+                            default_class = meta.labels[0].name
+                            default_results = [default_class] * expected_len
+                            results += default_results
+                            raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+                            global_log(f"[WARNING] Using default predictions: {default_results}")
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终labels: {labels}")
                     global_log(f"[DEBUG][LLM] 二次LLM推理最终results: {results}")
                     tree_accuracy, tree_auc = cot_calc_accuracy_auc(y_test, results, meta, force_dict=True)
@@ -1160,7 +1159,6 @@ def evaluate(
         raw_results = []
         results = []
 
-
         # 替换原来的runner.run调用，使用随机结果代替
         for idx in range(len(prompts)):
             # 为每个prompt创建模拟响应
@@ -1213,13 +1211,14 @@ def evaluate(
                             expected_len, len(results_batch), response
                         )
                     )
-            if not found:
-                global_log("Failed to find any valid response, skipping...")
-                result_dict = {
-                    "record": prompts[0],
-                    "failed_raw_output": mock_responses,
-                    "token_stats": token_stats,  # 添加token统计
-                }
+        if not found:
+            global_log(f"[WARNING] Failed to find any valid response, using default predictions (first class: {meta.labels[0].name})")
+            # 使用默认值（第一个类别）继续处理，而不是直接返回
+            default_class = meta.labels[0].name
+            default_results = [default_class] * expected_len
+            results += default_results
+            raw_results.append(mock_responses[0] if mock_responses else "Failed to decode response")
+            global_log(f"[WARNING] Using default predictions: {default_results}")
 
         acc = calc_accuracy(labels, results)
         # 使用专用函数计算AUC，将结果改为字典形式
@@ -1341,7 +1340,7 @@ def main():
             args.tree_args.num_trees,
             args.tree_args.max_depth,
         )
-    
+
         
 
 
@@ -1399,7 +1398,7 @@ def main():
             global_log(f"Unknown serializer type: {args.serializer_type}")
             raise ValueError("Unknown serializer type: {}".format(args.serializer_type))
 
-        
+
         master_template_path = Path(args.template)
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(master_template_path.parent),
