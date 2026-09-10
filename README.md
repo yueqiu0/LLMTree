@@ -2,7 +2,7 @@
 
 This repository contains the official implementation of our EMNLP 2026 paper, **From Prompts to Trees: Effective LLM-Guided Tree Generation for Few-Shot Tabular Classification**.
 
-<img width="1200" alt="Overview of the LLMTree framework" src="assets/framework.png" />
+![Overview of the LLMTree framework](assets/framework.png)
 
 # Paper Link
 
