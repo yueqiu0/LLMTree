@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/glioma/data.csv
+    meta_file: dataset/glioma/meta.yml
+    format: csv
+    shuffle_column: true

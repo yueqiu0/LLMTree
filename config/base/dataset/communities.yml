@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/communities/data.csv
+    meta_file: dataset/communities/meta.yml
+    format: csv
+    shuffle_column: true

@@ -1,0 +1,60 @@
+## Role and Task:
+You are an expert data analyst specializing in {{ meta.target or "classification tasks" }}. 
+Your task is to generate high-quality meta-rules to build a decision tree predicting the target variable '{{ meta.label_meaning or "output" }}' using the features below.
+  
+## Dataset Information:  
+  
+### Features:  
+{% for feature in meta.features %}  
+{{ loop.index }}. {{ feature.name }}: {{ feature.desc or 'No description available' }} (Type: {{ feature.type }}) 
+{% if feature.is_categorical and feature.categories %}
+   Possible values:
+{% for cat_value, cat_desc in feature.categories.items() %}
+   - {{ cat_value }}: {{ cat_desc }}
+{% endfor %}
+{% endif %}   
+{% endfor %}  
+
+### Target Variable: {{ meta.label_meaning or 'The output' }}  
+Possible values:  
+{% for label in meta.labels %}  
+- {{ label.name }}{% if label.desc %} ({{ label.desc }}){% endif %}  
+{% endfor %}  
+  
+## Task Requirements:  
+Generate exactly {{ num_rules_required }} distinct and important meta-rules for splitting the dataset into subsets with different values of the '{{ meta.label_meaning or "output" }}' label.
+
+  
+## Rule Format( Strict):  
+- For **numerical** features (int, float): `feature_name < value` 
+- For **categorical** features: `feature_name = category`  
+Note: We ONLY allow '<' and '=' as numerical and categorical operators respectively, '>' or '!=' is NOT allowed.
+  
+
+**Important Constraints & Guidelines:**
+
+1. **Confidence Score**: Assign an integer from 0 (no classification power) to 10 (completely certain classification). Do not give 10 confidence unless you are sure.  
+2. **Type Matching**: Use integers for `int` features and floating-point numbers for `float` features.  
+3. **Decimal Precision**: Use precision suited to each feature’s scale — typically up to 3 decimals. Avoid overly precise thresholds (e.g., `0.165`) when simpler ones (e.g., `0.22`) better match value ranges. 
+Precision reflects reasoning, not formatting.
+4. **Rule Quality**: Choose thresholds that create meaningful splits and align with typical value patterns. Avoid overfitting to noise; confidence < 5 only if necessary. 
+5. **No Redundancy**: Avoid trivially similar rules. Use `<` for numeric, `=` for categorical.  
+6. **Maximize Purity**: Prefer rules that create purer (more homogeneous) subgroups.  
+7. **Score Consistency**: Rules of similar quality should have similar confidence (difference ≤ 2).  
+8. **Dominant Feature Priority**: A strong feature can have MULTIPLE high-confidence rules — even HIGHER than ALL rules from weaker features.
+9. **First Rule Matters**: Think carefully about the first rule — its feature and threshold should reflect your strongest, most confident split. It is often treated as the default decision.
+  
+## Output Format (Strict):  
+Provide the list of rules, one per line, exactly in the specified format, sorted by confidence descending. Do NOT include any other text, explanations, or headers.  
+  
+Example:  
+study hours per week < 3.25 [ confidence: 10 ]
+attendance rate < 74.5 [ confidence: 9 ]
+assignment completion rate < 62.75 [ confidence: 8 ]
+study hours per week < 6.0 [ confidence: 7 ]
+participation = low [ confidence: 7 ]
+attendance rate < 85.000 [ confidence: 6 ]
+previous exam grade < 59.5 [ confidence: 6 ]
+ 
+  
+## Generated Meta-Rules:

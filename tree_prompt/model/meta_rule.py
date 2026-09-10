@@ -1,0 +1,86 @@
+import re
+from typing import Union, Optional, List
+from .tree import Condition
+
+
+class MetaRule:
+    def __init__(
+        self,
+        feature_idx: int,
+        feature_name: str,
+        split_value: Union[float, str, int],
+        is_categorical: bool,
+        confidence: int,
+    ):
+        self.feature_idx = feature_idx
+        self.feature_name = feature_name
+        self.split_value = split_value
+        self.is_categorical = is_categorical
+        self.confidence = confidence
+
+    def to_condition(self) -> Condition:
+        if self.is_categorical:
+            return Condition.categorical(self.feature_idx, {self.split_value})
+        else:
+            return Condition.numerical(self.feature_idx, None, self.split_value)
+
+    def __str__(self) -> str:
+        op = "=" if self.is_categorical else "<"
+        return f"{self.feature_name} {op} {self.split_value} [ confidence: {self.confidence} ]"
+
+    @staticmethod
+    def parse_rule(rule_str: str, meta) -> Optional["MetaRule"]:
+        pattern = r"(.*?)\s*([<>=]+)\s*(.*?)\s*\[\s*confidence:\s*(\d+)\s*\]"
+        match = re.match(pattern, rule_str.strip())
+
+        if not match:
+            return None
+
+        feature_name, operator, value_str, confidence_str = match.groups()
+        feature_name = feature_name.strip()
+        value_str = value_str.strip()
+        confidence = int(confidence_str)
+
+        feature_idx = -1
+        for idx, feature in enumerate(meta.features):
+            if feature.name.lower() == feature_name.lower():
+                feature_idx = idx
+                break
+
+        if feature_idx == -1:
+            return None
+
+        feature = meta.features[feature_idx]
+        is_categorical = operator == "="
+
+        if is_categorical:
+            split_value = value_str
+        else:
+            try:
+                if feature.type == "int":
+                    split_value = int(float(value_str))
+                else:
+                    split_value = float(value_str)
+            except ValueError:
+                is_categorical = True
+                split_value = value_str
+
+        return MetaRule(
+            feature_idx=feature_idx,
+            feature_name=feature_name,
+            split_value=split_value,
+            is_categorical=is_categorical,
+            confidence=confidence,
+        )
+
+    @staticmethod
+    def parse_rules(rules_text: str, meta) -> List["MetaRule"]:
+        rules = []
+        for line in rules_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            rule = MetaRule.parse_rule(line, meta)
+            if rule:
+                rules.append(rule)
+        return rules

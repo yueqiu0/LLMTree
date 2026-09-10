@@ -1,0 +1,13 @@
+config:
+  runner: openai_api
+  runner_args:
+    model_name: "qwen/qwen-2.5-72b-instruct"
+    api_base: "https://api.ppinfra.com/openai"
+    request_interval: 0.2
+    timeout: 20
+    parallel_batch_size: 6
+    temperature: 0.0
+    seed: 42
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+

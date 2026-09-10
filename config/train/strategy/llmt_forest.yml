@@ -1,0 +1,7 @@
+config:
+  strategy: llmt_forest
+  strategy_args:
+    num_trees: 3
+    max_depth: 3
+    # null uses min(num_trees, runner_args.parallel_batch_size).
+    tree_parallelism: null

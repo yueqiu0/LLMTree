@@ -1,0 +1,6 @@
+config:
+  dataset_args:
+    data_file: dataset/ecom/data.csv
+    meta_file: dataset/ecom/meta.yml
+    format: csv
+    shuffle_column: true

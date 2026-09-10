@@ -1,0 +1,4 @@
+config:
+  strategy: single
+  strategy_args:
+    max_depth: 3

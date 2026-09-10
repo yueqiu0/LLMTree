@@ -1,0 +1,8 @@
+config:
+  runner: openai_api
+  runner_args:
+    api_base: http://localhost:7801/v1
+    model_name: Llama-2-7b-chat-hf
+    request_interval: 0.5
+    timeout: 100
+    parallel_batch_size: 4

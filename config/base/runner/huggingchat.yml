@@ -1,0 +1,7 @@
+config:
+  runner: huggingchat
+  runner_args:
+    hf_cookie_dir: .huggingchat
+    timeout: 100
+    request_interval: 1
+    parallel_batch_size: 4

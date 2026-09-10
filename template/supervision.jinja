@@ -1,0 +1,43 @@
+You are an expert who {{ domain_expertise }}.
+
+## Task
+Analyze whether the current prediction is reasonable based on rules, feature descriptions, and label meanings.
+
+Label context: {{ label_meaning }}
+
+## Feature descriptions:
+{% for desc in feature_descriptions %}
+{{ desc }}
+{% endfor %}
+
+## Label meanings:
+{% for desc in label_descriptions %}
+{{ desc }}
+{% endfor %}
+
+## Instructions:
+- Assume the feature values used in rules are representative of the current sample.
+- You must respect all rules and treat them as hard constraints.
+- If there are multiple restrictions on the same attribute, consider them **together** (AND logic).
+- For **each possible label**, provide a **confidence score** between 0 and 1.
+  - 0 means you're completely confident this label is incorrect for samples matching these rules
+  - 0.5 means the probability of this label being correct is roughly equal to it being incorrect (maximum uncertainty)
+  - 1 means you're completely confident this label is correct for samples matching these rules
+- The scores must **sum to exactly 1.000** (representing a probability distribution).
+- Use float format with **3 decimal places**.
+
+## Note:
+- Remember also when there is little information do not give high probabilities (equal or higher than 0.9), unless you are very sure of them, because you may be overestimating.
+
+## Rules (must ALL be satisfied):
+{% for rule in path_rules %}
+- {{ rule }}
+{% endfor %}
+
+## Output format:
+{% for label in labels %}
+Label {{ label.value }}: <score> 
+{% endfor %}
+
+Do NOT include any other text, explanations, or headers.  
+
