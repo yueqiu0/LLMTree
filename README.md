@@ -6,7 +6,7 @@ This repository contains the official implementation of our EMNLP 2026 paper, **
 
 # Paper Link
 
-(arxiv)[https://arxiv.org/abs/2610.10227]
+[arxiv](https://arxiv.org/abs/2610.10227)
 
 # Data Preparation
 
